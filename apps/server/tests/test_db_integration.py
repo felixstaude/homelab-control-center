@@ -95,9 +95,9 @@ async def test_readiness_reports_ready_against_live_database(test_database_url: 
         response = await client.get("/readyz")
 
     assert response.status_code == 200
-    body = response.json()
-    assert body["status"] == "ready"
-    assert all(dep["status"] == "ok" for dep in body["dependencies"])
+    # Aggregate only: /readyz is public, so it discloses no dependency detail
+    # (milestone 1.4).
+    assert response.json() == {"status": "ready"}
 
 
 async def test_disconnect_is_idempotent(database: Database) -> None:

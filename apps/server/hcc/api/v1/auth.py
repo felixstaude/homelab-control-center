@@ -14,6 +14,12 @@ prefix because ADR-006 makes every product route versioned, with only the
 operational probes unversioned. An unversioned authentication surface would be
 one we could never change without breaking clients.
 
+``login`` is the only public route here and lives on its own
+``public_router``; ``logout`` and ``me`` are on ``router``, which
+:mod:`hcc.api.v1.router` mounts beneath a router-level authentication
+dependency. Public access is therefore something a route has to be moved to
+obtain, not something it gets by omission.
+
 ## Cookies
 
 ``hcc_session`` — the credential. ``HttpOnly``, ``Secure``*,
@@ -92,6 +98,11 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+# Two routers, because login must be reachable without a session while
+# logout and `/me` must not. The protected one is mounted by
+# `hcc.api.v1.router` beneath a router-level authentication dependency, so
+# nothing here can forget it. See that module for the default-deny design.
+public_router = APIRouter(prefix="/auth", tags=["authentication"])
 router = APIRouter(prefix="/auth", tags=["authentication"])
 
 #: Upper bound on the username and password a client may submit. Generous
@@ -221,7 +232,7 @@ def _clear_session_cookies(response: Response, settings: Settings) -> None:
         )
 
 
-@router.post(
+@public_router.post(
     "/login",
     summary="Authenticate and start a session",
     response_model=CurrentUserResponse,

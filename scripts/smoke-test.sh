@@ -167,18 +167,29 @@ assert_status       "Liveness probe"              200 "$BASE/healthz"
 assert_json_contains "Liveness reports ok"            "$BASE/healthz" '"status":"ok"'
 assert_status       "Readiness probe"             200 "$BASE/readyz"
 assert_json_contains "Readiness reports ready"        "$BASE/readyz" '"status":"ready"'
-assert_json_contains "Readiness confirms PostgreSQL"  "$BASE/readyz" '"name":"postgresql","status":"ok"'
-assert_status       "Versioned info endpoint"     200 "$BASE/api/v1/info"
-assert_json_contains "Info reports API version"       "$BASE/api/v1/info" '"api_version":"v1"'
 assert_status       "OpenAPI schema"              200 "$BASE/openapi.json"
 assert_status       "Swagger UI (non-production)" 200 "$BASE/docs"
+
+# --- Default-deny authentication (milestone 1.4) ---
+# Every product route requires a session. Login is the only public one, and
+# the health probes, which orchestrators cannot authenticate.
+assert_status "Info endpoint requires a session"   401 "$BASE/api/v1/info"
+assert_status "Current-user endpoint needs auth"  401 "$BASE/api/v1/auth/me"
+assert_json_contains "Unauthenticated uses the envelope" \
+  "$BASE/api/v1/auth/me" '"code":"not_authenticated"'
+
+# Public endpoints must disclose as little as possible.
+assert_absent "Liveness hides the version"  "$BASE/healthz" '"version"'
+assert_absent "Readiness hides dependencies" "$BASE/readyz" 'postgres'
 
 # Unversioned product routes must not exist (ADR-006).
 assert_status "Unversioned product route absent" 404 "$BASE/api/info"
 # Probes must stay outside the version prefix.
 assert_status "Probe not served under /api/v1"   404 "$BASE/api/v1/healthz"
 
-# Uniform error envelope.
+# Uniform error envelope. An unknown path under the versioned prefix is a 404
+# rather than a 401: routing happens before authentication, so a nonexistent
+# route cannot be probed for existence by its auth response.
 assert_json_contains "404 uses the error envelope" "$BASE/api/v1/nope" '"code":"not_found"'
 assert_json_contains "Errors carry a request id"   "$BASE/api/v1/nope" '"request_id"'
 

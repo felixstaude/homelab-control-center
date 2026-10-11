@@ -133,6 +133,24 @@ class NotAuthenticatedError(AppError):
     message = "Authentication required."
 
 
+class InsufficientPermissionsError(AppError):
+    """The caller is authenticated but not permitted.
+
+    403, not 401: re-authenticating would not help, so a client must not be
+    prompted to log in again.
+
+    One error for both reasons a request can be refused — the role is too low,
+    or the capability is not enabled on the target host. The client learns only
+    that it is not permitted; enumerating what a higher role or a different
+    host would allow is information an attacker can use. The distinction is in
+    the server log, where it is actionable.
+    """
+
+    status_code = status.HTTP_403_FORBIDDEN
+    code = "insufficient_permissions"
+    message = "You do not have permission to perform this action."
+
+
 class CsrfValidationError(AppError):
     """A state-changing request failed its CSRF check.
 

@@ -30,10 +30,10 @@ from hcc.app import create_app
 from hcc.config import Settings
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable, Iterator
+    from collections.abc import AsyncIterator, Callable, Iterator, Sequence
     from contextlib import AbstractAsyncContextManager
 
-    from fastapi import FastAPI
+    from fastapi import APIRouter, FastAPI
 
 # Credentials for a throwaway local test database. Not a secret.
 _UNREACHABLE_TEST_DSN = "postgresql://hcc:hcc_test@127.0.0.1:1/hcc_test"
@@ -245,11 +245,20 @@ async def api_factory(
     truncate_url: str | None = None
 
     @asynccontextmanager
-    async def build(**overrides: object) -> AsyncIterator[AsyncClient]:
+    async def build(
+        *, routers: Sequence[APIRouter] = (), **overrides: object
+    ) -> AsyncIterator[AsyncClient]:
         nonlocal truncate_url
         settings = api_settings_factory(**overrides)
         truncate_url = settings.sqlalchemy_url()
         app = create_app(settings)
+        # `routers` mounts test-only endpoints. Role-gated routes have no
+        # production call site yet — user management is a later milestone — so
+        # the authorization dependencies are exercised against synthetic
+        # routes rather than by inventing product endpoints for the tests to
+        # lean on.
+        for extra in routers:
+            app.include_router(extra, prefix=f"{settings.api_prefix}/v1")
         transport = ASGITransport(app=app)
         async with (
             app.router.lifespan_context(app),

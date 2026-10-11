@@ -5,8 +5,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
+from fastapi import APIRouter
 from httpx import ASGITransport, AsyncClient
 
+# Runtime import: annotates a FastAPI route handler below.
+from hcc.api.deps import SettingsDep  # noqa: TC001
 from hcc.app import create_app
 from hcc.config import Settings
 
@@ -23,9 +26,15 @@ def test_injected_settings_are_exposed_on_app_state(settings: Settings) -> None:
 
 
 async def test_handlers_observe_injected_settings_not_the_environment() -> None:
-    # The environment is not configured in this test process at all; if any
-    # handler fell back to get_settings() it would raise a ValidationError and
-    # return 500 instead of the injected value.
+    # Regression test for a real Phase 0 defect: dependencies resolved the
+    # environment-backed get_settings() singleton, so handlers saw different
+    # configuration than create_app() was given.
+    #
+    # Asserted through a test-only route rather than /api/v1/info, which has
+    # required authentication since milestone 1.4. The property under test is
+    # the dependency, not the endpoint. The environment is not configured in
+    # this process at all, so a fallback to get_settings() would raise a
+    # ValidationError and produce a 500 instead of the injected value.
     app = create_app(
         Settings(
             environment="production",
@@ -33,9 +42,18 @@ async def test_handlers_observe_injected_settings_not_the_environment() -> None:
             log_level="WARNING",
         )
     )
+
+    probe = APIRouter()
+
+    @probe.get("/_settings-probe")
+    async def settings_probe(settings: SettingsDep) -> dict[str, str]:
+        return {"environment": settings.environment}
+
+    app.include_router(probe)
+
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.get("/api/v1/info")
+        response = await client.get("/_settings-probe")
 
     assert response.status_code == 200
     assert response.json()["environment"] == "production"

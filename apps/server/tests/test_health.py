@@ -17,7 +17,16 @@ async def test_liveness_returns_ok_without_touching_dependencies(client: AsyncCl
     response = await client.get("/healthz")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "version": __version__}
+    assert response.json() == {"status": "ok"}
+
+
+async def test_liveness_does_not_disclose_the_version(client: AsyncClient) -> None:
+    # Public endpoint, so it discloses as little as possible (milestone 1.4).
+    # The version is available to an authenticated caller at /api/v1/info.
+    response = await client.get("/healthz")
+
+    assert "version" not in response.json()
+    assert __version__ not in response.text
 
 
 async def test_liveness_echoes_request_id_header(client: AsyncClient) -> None:
@@ -36,18 +45,46 @@ async def test_liveness_assigns_request_id_when_absent(client: AsyncClient) -> N
 
 
 async def test_readiness_reports_503_when_database_is_unreachable(client: AsyncClient) -> None:
-    # Degraded dependency => not ready, but the error is reported explicitly
-    # rather than swallowed into a 200.
+    # Degraded dependency => not ready. The failure is reported through the
+    # status code rather than swallowed into a 200.
     response = await client.get("/readyz")
 
     assert response.status_code == 503
-    body = response.json()
-    assert body["status"] == "not_ready"
-    assert body["environment"] == "test"
+    assert response.json() == {"status": "not_ready"}
 
-    postgres = next(dep for dep in body["dependencies"] if dep["name"] == "postgresql")
-    assert postgres["status"] == "error"
-    assert postgres["detail"]
+
+async def test_readiness_does_not_disclose_which_dependency_failed(
+    client: AsyncClient,
+) -> None:
+    # Public endpoint, so the aggregate is the whole signal (milestone 1.4).
+    # Enumerating dependencies by name and state tells an anonymous caller
+    # what the deployment is built from, and when a component is down.
+    response = await client.get("/readyz")
+    body = response.text
+
+    assert "postgres" not in body.lower()
+    assert "dependenc" not in body.lower()
+    assert "environment" not in body.lower()
+    assert __version__ not in body
+
+
+async def test_readiness_failure_is_logged_with_the_detail(
+    client: AsyncClient,
+) -> None:
+    from structlog.testing import capture_logs
+
+    # The detail did not disappear — it moved to the log, which is where an
+    # operator debugging a deployment is looking anyway.
+    with capture_logs() as events:
+        await client.get("/readyz")
+
+    failures = [event for event in events if event["event"] == "readiness_check_failed"]
+    assert len(failures) == 1
+    assert failures[0]["dependency"] == "postgresql"
+    assert failures[0]["error_type"]
+    # The exception *type*, never its message: a driver message can contain
+    # the connection string and therefore the password.
+    assert "hcc_test" not in repr(events)
 
 
 async def test_readiness_does_not_leak_credentials_in_failure_detail(client: AsyncClient) -> None:

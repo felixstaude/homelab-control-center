@@ -8,7 +8,7 @@ effects.
 from __future__ import annotations
 
 import contextlib
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,12 +16,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from hcc import __version__
 from hcc.api import health
 from hcc.api.v1 import router as v1_router
+from hcc.api.v1.router import PUBLIC_V1_PATHS
 from hcc.config import Settings, get_settings
 from hcc.db import Database
 from hcc.errors import ErrorResponse, register_exception_handlers
 from hcc.logging import configure_logging, get_logger
 from hcc.middleware import RequestContextMiddleware, SecurityHeadersMiddleware
 from hcc.security.authentication import AuthenticationService
+from hcc.security.authorization import Authorizer
 from hcc.security.password import build_password_hasher
 from hcc.security.ratelimit import LoginThrottle, RateLimiter
 from hcc.security.sessions import SessionService
@@ -41,6 +43,28 @@ to operational endpoints and version metadata.
 
 # Paths excluded from per-request access logging (polled continuously).
 _UNLOGGED_PATHS = frozenset({"/healthz", "/readyz"})
+
+#: Every path reachable without a session, with the reason it has to be.
+#:
+#: Authentication is default-deny: product routes are mounted beneath a
+#: router-level dependency in `hcc.api.v1.router`, so a route becomes public
+#: only by being deliberately placed outside it. This mapping is the
+#: human-readable record of that set, and
+#: `tests/test_api_authorization.py` asserts the running application's
+#: behaviour matches it exactly — so the list cannot drift from reality in
+#: either direction.
+PUBLIC_PATHS: Final[dict[str, str]] = {
+    "/healthz": (
+        "Liveness. Probed by orchestrators and container runtimes that have no "
+        "session and often cannot present credentials. Returns a status and "
+        "nothing else."
+    ),
+    "/readyz": (
+        "Readiness. Same reason. Returns an aggregate status; which dependency "
+        "failed goes to the log, not to an anonymous caller."
+    ),
+    **PUBLIC_V1_PATHS,
+}
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -96,6 +120,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # that dependencies resolve the same configuration the app was built with
     # even in tests that skip the lifespan.
     app.state.settings = settings
+    # A self-reference, so anything holding the state can reach the
+    # application — used by the authorization tests to enumerate routes
+    # without reaching into httpx's internals.
+    app.state.app = app
 
     # Security services. Built here rather than in the lifespan because they
     # hold no connections and tests that skip the lifespan still need them.
@@ -120,6 +148,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         sessions=app.state.session_service,
         throttle=app.state.login_throttle,
     )
+    # No capability resolver: per-host capability configuration does not exist
+    # yet, so the second authorization axis is unavailable and any request for
+    # it is denied rather than approximated. See hcc/security/authorization.py.
+    app.state.authorizer = Authorizer()
 
     register_exception_handlers(app)
 

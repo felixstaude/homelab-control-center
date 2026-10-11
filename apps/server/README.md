@@ -24,11 +24,14 @@ hcc/
 │   ├── tokens.py         # token generation + SHA-256 storage hashing
 │   ├── ratelimit.py      # in-process login throttling
 │   ├── sessions.py       # session lifecycle (DB-aware, HTTP-free)
-│   └── authentication.py # login: throttle, verify, issue
+│   ├── authentication.py # login: throttle, verify, issue
+│   └── authorization.py  # roles + the fail-closed capability interface
 └── api/
-    ├── deps.py     # shared dependencies incl. CurrentSessionDep + CSRF
-    ├── health.py   # /healthz (liveness), /readyz (readiness)
-    └── v1/         # versioned product API — auth.py, router.py
+    ├── deps.py     # dependencies: session, CSRF, Viewer/Operator/AdminDep
+    ├── health.py   # /healthz, /readyz — public, minimal disclosure
+    └── v1/
+        ├── router.py  # the default-deny boundary: public vs protected
+        └── auth.py    # login (public), logout + me (protected)
 alembic/            # migration environment + versions
 tests/              # unit tests (always run) + integration tests (need Postgres)
 ```
@@ -48,15 +51,28 @@ Configuration comes from the environment; copy `.env.example` to `.env` first.
 
 ## Endpoints (Phase 0)
 
-| Method | Path | Auth | Purpose |
+Authentication is **default-deny**: every route requires a session unless it
+appears in the public list below. See
+[`docs/SECURITY.md`](../../docs/SECURITY.md#authentication-enforcement-implemented).
+
+**Public — the complete list.**
+
+| Method | Path | Why it has to be public |
+| --- | --- | --- |
+| GET | `/healthz` | Liveness. Orchestrators have no session. Returns `{"status": "ok"}` and nothing more. |
+| GET | `/readyz` | Readiness. Same reason. Returns an aggregate status; 503 when degraded. |
+| POST | `/api/v1/auth/login` | Authentication precedes any session. Throttled before password verification. |
+
+**Authenticated.**
+
+| Method | Path | Requires | Purpose |
 | --- | --- | --- | --- |
-| GET | `/healthz` | — | Liveness. No dependency checks. |
-| GET | `/readyz` | — | Readiness. Verifies PostgreSQL. 503 when degraded. |
-| GET | `/api/v1/info` | — | API and server version metadata. |
-| POST | `/api/v1/auth/login` | — | Authenticate; sets the session and CSRF cookies. |
+| GET | `/api/v1/info` | session | API and server version, environment. |
 | POST | `/api/v1/auth/logout` | session + CSRF | Revoke the session server-side and clear its cookies. |
 | GET | `/api/v1/auth/me` | session | The authenticated identity, and the CSRF token. |
-| GET | `/docs` | — | Swagger UI. Disabled when `HCC_ENVIRONMENT=production`. |
+
+`/docs` and `/openapi.json` are served unauthenticated outside production and
+are **disabled entirely** when `HCC_ENVIRONMENT=production`.
 
 ### Authentication
 
@@ -122,9 +138,23 @@ unset. CI always sets it, so they never skip silently there.
 - Password hashing goes through `hcc.security.password`. Use the `*_async`
   methods from request handlers: a hash costs ~50 ms of CPU and would
   otherwise block the event loop.
-- An authenticated endpoint takes `CurrentSessionDep`. That dependency also
-  enforces CSRF and `Origin` on state-changing methods, so protection cannot
-  be forgotten by adding a route and omitting a separate dependency.
+- **Mount new routers on the protected router** in `hcc/api/v1/router.py`.
+  Authentication comes from a router-level dependency, so a route is protected
+  by default and public only by being deliberately moved. Making something
+  public also means adding it to `hcc.app.PUBLIC_PATHS` with a reason, and to
+  the expected set in `tests/test_api_authorization.py` — both deliberately,
+  because a silently growing public surface is the failure being guarded
+  against.
+- An authenticated endpoint takes `CurrentSessionDep`, or a role dependency
+  (`ViewerDep`, `OperatorDep`, `AdminDep`) which returns the same session.
+  FastAPI caches dependencies per request, so the session is resolved once
+  either way. The session dependency also enforces CSRF and `Origin` on
+  state-changing methods.
+- Role checks use `require_min_role`; roles are hierarchical. If a permission
+  is not monotonic in `viewer < operator < administrator`, it belongs on the
+  capability axis rather than becoming a new role (ADR-023).
+- A role denial must not reveal the required role. Raise
+  `InsufficientPermissionsError` and let the dependency log the specifics.
 - Authentication failures must stay indistinguishable. Raise
   `InvalidCredentialsError` for every cause and log the real reason; a login
   that separates "unknown user" from "wrong password" is a username oracle.

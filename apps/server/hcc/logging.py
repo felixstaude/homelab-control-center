@@ -59,7 +59,14 @@ def configure_logging(*, level: LogLevel, log_format: LogFormat) -> None:
         ],
         logger_factory=structlog.stdlib.LoggerFactory(),
         wrapper_class=structlog.stdlib.BoundLogger,
-        cache_logger_on_first_use=True,
+        # Deliberately NOT cached. Caching binds a logger to whatever
+        # processor chain existed at its first use, so a later
+        # `configure_logging` call silently has no effect on any logger
+        # already used — which makes logging configuration order-dependent
+        # and, in tests, makes captured output depend on which test ran
+        # first. The per-call cost is a dictionary lookup; deterministic
+        # observability is worth more than that.
+        cache_logger_on_first_use=False,
     )
 
     # Route stdlib logging (uvicorn, SQLAlchemy, alembic) through the same

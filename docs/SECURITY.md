@@ -312,10 +312,56 @@ Design points:
 
 ---
 
-## Authorization (design)
+## Authentication enforcement (implemented)
 
-Role-based, enforced **server-side on every request**. The web client is an
-untrusted client; anything it decides can be forged.
+**Default-deny at the router boundary** (ADR-031). Product routes are mounted
+beneath a router-level authentication dependency in `hcc/api/v1/router.py`, so
+a route requires a session unless it is deliberately placed on the separate
+public router. Forgetting to protect a route is not possible by omission; it
+takes an explicit move.
+
+### The complete public surface
+
+Three paths, and only three. Each is listed with its reason in
+`hcc.app.PUBLIC_PATHS`, and a test asserts the running application's behaviour
+matches that list **in both directions** — nothing unlisted is reachable, and
+nothing listed is unreachable.
+
+| Path | Why it has to be public |
+| --- | --- |
+| `GET /healthz` | Liveness. Probed by orchestrators and container runtimes that have no session and frequently cannot present credentials. |
+| `GET /readyz` | Readiness. Same reason. |
+| `POST /api/v1/auth/login` | Authentication must be reachable before a session exists. |
+
+What protects each of them instead of a session:
+
+- The probes do no work beyond a trivial query and **disclose almost nothing**
+  (ADR-032): a status and nothing else. No version, no environment, no
+  dependency names. Those moved to `GET /api/v1/info`, which needs a session,
+  and to the structured log.
+- Login is protected by credentials, by per-address and per-username
+  throttling applied **before** any password verification, by a cap on
+  concurrent Argon2 operations, and by a bounded request body.
+
+Everything else — including `GET /api/v1/info`, which used to be public —
+returns `401 not_authenticated` without a valid session.
+
+### The regression test
+
+`tests/test_api_authorization.py` walks every path the application advertises,
+calls it without credentials, and requires a 401 unless it is allow-listed.
+It is behavioural rather than introspective on purpose, so it catches a route
+mounted anywhere in the application, and it includes a self-check that mounts
+a deliberately unprotected route and asserts the scan detects it — so the scan
+cannot pass by doing nothing.
+
+## Authorization
+
+The **role axis is implemented**; the **capability axis is an interface with
+no implementation**, because per-host capability configuration does not exist
+yet. Enforced server-side on every request: the web client is untrusted, and
+anything it decides can be forged. Hiding a control in the UI is not a
+security measure.
 
 Two axes, both of which must permit an action: the user's **role**, and the
 target host's enabled **capability** ([the capability section](#remote-management-capabilities)).
@@ -326,6 +372,39 @@ A role grants nothing on a host whose capability is off.
 | Viewer | ✓ | | | | | |
 | Operator | ✓ | ✓ | ✓ | ✓ | | |
 | Administrator | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+
+### Authentication and authorization are separate checks
+
+Deliberately, with distinct failures:
+
+| Situation | Response | Why |
+| --- | --- | --- |
+| No session, or an expired, revoked or unknown one | `401 not_authenticated` | Logging in again would help. |
+| Account deactivated | `401 not_authenticated` | `is_active` is re-checked on every request, so deactivation invalidates the session itself. |
+| Valid session, role too low | `403 insufficient_permissions` | Logging in again would **not** help, so the client must not be prompted to. |
+
+A role denial does not reveal which role would have been sufficient:
+enumerating what a higher role could do is information an attacker can use.
+The specifics — required role, actual role, user id — go to the server log,
+where they are actionable.
+
+### Roles are hierarchical by design
+
+`viewer < operator < administrator`, so a minimum-role test is sufficient and
+`require_min_role` is the only role primitive. That is not an accident of the
+current matrix: granularity is meant to come from the capability axis, not
+from inventing roles (ADR-023). A test asserts the ordering property holds, so
+a future non-monotonic permission fails there and gets routed to the
+capability axis instead of growing the role set.
+
+### The capability axis fails closed
+
+`hcc/security/authorization.py` defines the full interface — a `Capability`
+enum mirroring the seven management capabilities, a per-capability minimum
+role, and a `CapabilityResolver` protocol — and the application wires an
+`Authorizer` with **no resolver**. A capability check therefore denies, logs
+an error, and never approximates an answer. An authorization question that
+cannot be answered is answered "no".
 
 Every management action passes through, in order:
 
@@ -583,40 +662,45 @@ authentication endpoints face an untrusted network.
 1. **No user can be created.** There is no registration, no setup wizard and
    no CLI. The endpoints work but no account exists to log into until
    milestone 1.5. This is the main reason the current state is not deployable.
-2. **No authorization.** Roles exist on the user row and are returned by
-   `/auth/me`, but nothing enforces them yet: any authenticated user can reach
-   any authenticated endpoint. Milestone 1.7.
-3. **Rate limiting is per process.** Several uvicorn workers each keep their
+2. **Role authorization has no production call site yet.** The dependencies
+   are implemented and tested, and every product route requires
+   authentication — but no current endpoint needs more than "logged in",
+   because user and host management do not exist. The first real use is
+   milestone 1.5.
+3. **The capability axis is not implemented.** Its interface exists and fails
+   closed, so nothing can accidentally rely on it. Per-host capability
+   configuration lands with host management.
+4. **Rate limiting is per process.** Several uvicorn workers each keep their
    own counters, multiplying the effective limit by the worker count, and a
    restart clears them. **Deploy with one worker until this is addressed**
    (ADR-029).
-4. **Timing-based user enumeration is narrowed, not eliminated.** An unknown
+5. **Timing-based user enumeration is narrowed, not eliminated.** An unknown
    username is verified against a dummy hash so the Argon2 cost is paid
    either way, but one database query versus none remains measurable in
    principle. The rate limiter bounds how many samples an attacker can
    collect. Closing it fully would require constant-time work across the whole
    request, which is not achievable in a Python web application and is not
    claimed.
-5. **`Origin` is only checked when present.** Absent `Origin` falls back to
+6. **`Origin` is only checked when present.** Absent `Origin` falls back to
    the CSRF token alone, because non-browser clients send none. Browsers
    always send it for the cross-site requests this guards against, so the gap
    is narrow — but it is a gap.
-6. **No audit log.** Login, logout and revocation are logged as structured
+7. **No audit log.** Login, logout and revocation are logged as structured
    events, but there is no append-only audit table yet. Milestone 1.14.
-7. **No account lockout.** Throttling slows an attacker but never locks an
+8. **No account lockout.** Throttling slows an attacker but never locks an
    account, deliberately: lockout is itself a denial-of-service vector against
    a known username. Revisit if it proves insufficient.
-8. **Sessions are not listed or revocable in the UI.**
+9. **Sessions are not listed or revocable in the UI.**
    `SessionService.revoke_all_for_user` exists and is tested, but nothing calls
    it. Milestone 10.1.
-9. **No password change or reset flow**, so a compromised password cannot be
+10. **No password change or reset flow**, so a compromised password cannot be
    rotated by its owner. `rehash_if_needed` exists for parameter upgrades but
    is not yet wired into login.
-10. **Session pruning is not scheduled.** `prune_expired` exists and is
+11. **Session pruning is not scheduled.** `prune_expired` exists and is
     tested; the scheduler arrives with the other periodic jobs. Until then the
     table grows with expired rows.
-11. **`pip-audit` and `npm audit` are not yet CI-blocking.**
-12. **Nothing in the agent, monitoring, capability or terminal sections
+12. **`pip-audit` and `npm audit` are not yet CI-blocking.**
+13. **Nothing in the agent, monitoring, capability or terminal sections
     exists.** They are specified because they constrain what is being built,
     not because any of it is live.
 

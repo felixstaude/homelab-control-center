@@ -24,15 +24,27 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from hcc.config import Settings
 from hcc.db import Database
-from hcc.errors import CsrfValidationError, NotAuthenticatedError
+from hcc.errors import (
+    CsrfValidationError,
+    InsufficientPermissionsError,
+    NotAuthenticatedError,
+)
 from hcc.logging import get_logger
+from hcc.models.user import UserRole
 from hcc.security.authentication import AuthenticationService
+from hcc.security.authorization import (
+    AuthorizationRequest,
+    Authorizer,
+    CapabilityNotAvailableError,
+    CapabilityNotEnabledError,
+    InsufficientRoleError,
+)
 from hcc.security.password import PasswordHasher
 from hcc.security.sessions import AuthenticatedSession, SessionService
 from hcc.security.tokens import tokens_equal
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
 logger = get_logger(__name__)
 
@@ -174,6 +186,71 @@ async def get_current_session(
     return authenticated
 
 
+# ---------------------------------------------------------------------------
+# Authorization
+#
+# Separate from authentication above, deliberately: a missing session is a 401
+# and an insufficient role is a 403, and a client must be able to tell "log in
+# again" from "you are not allowed".
+# ---------------------------------------------------------------------------
+
+
+def get_authorizer(request: Request) -> Authorizer:
+    """Return the process-wide authorizer."""
+    authorizer: Authorizer = request.app.state.authorizer
+    return authorizer
+
+
+def require_min_role(
+    minimum: UserRole,
+) -> Callable[[AuthenticatedSession, Authorizer], Awaitable[AuthenticatedSession]]:
+    """Build a dependency admitting callers at or above ``minimum``.
+
+    Returns the authenticated session, so an endpoint needs one dependency
+    rather than two:
+
+        @router.get("/things")
+        async def list_things(current: OperatorDep) -> ...:
+
+    Roles are hierarchical (``viewer < operator < administrator``), so a
+    minimum is sufficient; see :mod:`hcc.security.authorization` for why that
+    is the design rather than a coincidence.
+
+    The capability axis is not wired in here. An endpoint that needs one will
+    call the authorizer directly with the target host, because the host comes
+    from the request path and a dependency factory cannot know it.
+    """
+
+    async def dependency(
+        current: Annotated[AuthenticatedSession, Depends(get_current_session)],
+        authorizer: Annotated[Authorizer, Depends(get_authorizer)],
+    ) -> AuthenticatedSession:
+        try:
+            await authorizer.authorize(AuthorizationRequest(session=current, minimum_role=minimum))
+        except InsufficientRoleError as exc:
+            # Logged with the specifics; the client is told only that it is
+            # not permitted.
+            logger.warning(
+                "authorization_denied",
+                reason="insufficient_role",
+                required_role=exc.required.value,
+                actual_role=exc.actual.value,
+                user_id=str(current.user.id),
+                # No path: the dependency has no Request, and the request id
+                # already correlates this line with the access log, which
+                # carries the path.
+            )
+            raise InsufficientPermissionsError from exc
+        except (CapabilityNotEnabledError, CapabilityNotAvailableError) as exc:
+            # Unreachable from this dependency, which never requests a
+            # capability — but mapped so that a future caller cannot turn a
+            # denial into a 500, which some clients treat as retryable.
+            raise InsufficientPermissionsError from exc
+        return current
+
+    return dependency
+
+
 SettingsDep = Annotated[Settings, Depends(get_app_settings)]
 DatabaseDep = Annotated[Database, Depends(get_database)]
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
@@ -181,3 +258,15 @@ PasswordHasherDep = Annotated[PasswordHasher, Depends(get_password_hasher)]
 SessionServiceDep = Annotated[SessionService, Depends(get_session_service)]
 AuthenticationServiceDep = Annotated[AuthenticationService, Depends(get_authentication_service)]
 CurrentSessionDep = Annotated[AuthenticatedSession, Depends(get_current_session)]
+AuthorizerDep = Annotated[Authorizer, Depends(get_authorizer)]
+
+#: Any authenticated user. Authentication only — no role requirement beyond
+#: being logged in. Named for the lowest role so that call sites read as a
+#: permission level rather than as "merely authenticated".
+ViewerDep = Annotated[AuthenticatedSession, Depends(require_min_role(UserRole.VIEWER))]
+
+#: Operator or above: read access plus permitted operational actions.
+OperatorDep = Annotated[AuthenticatedSession, Depends(require_min_role(UserRole.OPERATOR))]
+
+#: Administrator only: configuration and user management.
+AdminDep = Annotated[AuthenticatedSession, Depends(require_min_role(UserRole.ADMIN))]

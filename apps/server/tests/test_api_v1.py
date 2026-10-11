@@ -4,22 +4,28 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from hcc import __version__
-
 if TYPE_CHECKING:
     from fastapi import FastAPI
     from httpx import AsyncClient
 
 
-async def test_info_endpoint_is_served_under_the_v1_prefix(client: AsyncClient) -> None:
+async def test_info_endpoint_requires_authentication(client: AsyncClient) -> None:
+    # Protected since milestone 1.4: the release version and environment name
+    # are of no use to a legitimate anonymous caller and of obvious use to
+    # someone matching the deployment against known vulnerabilities. The
+    # authenticated response shape is asserted in
+    # tests/test_api_authorization.py.
     response = await client.get("/api/v1/info")
 
-    assert response.status_code == 200
-    assert response.json() == {
-        "api_version": "v1",
-        "server_version": __version__,
-        "environment": "test",
-    }
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "not_authenticated"
+
+
+async def test_info_endpoint_is_registered_under_the_v1_prefix(
+    client: AsyncClient,
+) -> None:
+    schema = (await client.get("/openapi.json")).json()
+    assert "/api/v1/info" in schema["paths"]
 
 
 async def test_unversioned_product_route_is_not_served(client: AsyncClient) -> None:

@@ -1639,3 +1639,72 @@ gets the protection.
 A missing `Origin` header falls back to the token check alone, because
 non-browser clients send none; that is a deliberate, documented gap rather
 than an oversight.
+
+### ADR-031: Authentication is default-deny at the router boundary
+
+**Decision.** Product routes are mounted beneath a **router-level**
+authentication dependency in `hcc/api/v1/router.py`. A route becomes public
+only by being deliberately placed on the separate public router, and the
+public set is recorded with a reason in `hcc.app.PUBLIC_PATHS`. A
+**behavioural** regression test walks every path in the running application's
+OpenAPI schema, calls it unauthenticated, and requires a 401 unless the path
+is allow-listed.
+
+**Why not per-endpoint dependencies.** They were the Phase 1.3 arrangement and
+they work, but their failure mode is silence: forgetting one produces an
+unauthenticated endpoint and no signal at all. Under a router-level
+dependency, forgetting is impossible — a developer has to actively move a
+route out to expose it, which is a visible diff.
+
+**Why not middleware.** A middleware checking a path allow-list would catch
+routes mounted anywhere, but it needs pattern matching against paths with
+parameters, duplicates the dependency's work, and sits awkwardly relative to
+the database session. The router dependency is the idiomatic FastAPI
+mechanism, and the behavioural test closes the gap middleware would have
+covered.
+
+**Why the test is behavioural rather than introspective.** Walking
+`app.routes` to look for the dependency would be the obvious check, but this
+FastAPI version nests included routers behind private internals, and a test
+coupled to those would break on upgrade while proving less. Issuing a real
+unauthenticated request proves the property that actually matters, and catches
+a route mounted outside `hcc.api.v1.router` entirely — which no amount of
+router nesting could prevent. The test includes a self-check that mounts a
+deliberately unprotected route and asserts the scan detects it, so the scan
+cannot pass by doing nothing.
+
+**Cost.** Two routers to keep straight in one module, and an allow-list
+duplicated between the application and the test. The duplication is
+deliberate: widening the public surface then requires editing both, which
+makes it a reviewed decision.
+
+### ADR-032: Public endpoints disclose as little as possible
+
+**Decision.** `/healthz` returns `{"status": "ok"}`. `/readyz` returns
+`{"status": "ready"}` or a 503 with `{"status": "not_ready"}`. Neither
+includes the release version, the environment name, or the per-dependency
+breakdown they previously carried. The version and environment moved to
+`GET /api/v1/info`, which requires a session; the dependency detail moved to
+the structured log.
+
+**Amends ADR-005**, which specified the readiness probe without considering
+that it is necessarily unauthenticated.
+
+**Why.** These two endpoints have to be public — orchestrators, reverse-proxy
+health checks and container runtimes probe them before any session exists and
+frequently cannot present credentials. Being public, everything they return is
+returned to anyone who can reach the port. A release version lets an attacker
+match the deployment against known vulnerabilities, and an enumerated
+dependency list tells them what the deployment is built from and when a
+component is down — a useful signal for timing an attack.
+
+**Why nothing is lost.** The orchestrator consumes the HTTP status code, which
+is unchanged. The operator debugging a failed readiness check reads the log,
+which now records the dependency and the exception type — and which already
+had to be the source of truth, since the probe only ever reported the first
+failure it found.
+
+**Cost.** An operator can no longer see the version without logging in, and
+`curl /readyz` no longer says which dependency is down. Accepted: both are one
+authenticated request or one log line away, and neither is worth handing to an
+anonymous caller.
