@@ -164,11 +164,36 @@ stall an event loop. The control plane is fully async (ADR-004), so
 :meth:`PasswordHasher.hash_async` and :meth:`PasswordHasher.verify_async`
 offload to a worker thread. Request handlers must use those; the synchronous
 methods are for CLI and test use.
+
+## Concurrency is bounded
+
+Memory is charged per concurrent hash, so N simultaneous operations need
+N x 64 MiB. Left unbounded, a burst of login attempts would exhaust memory on
+the hardware this product targets — and the login endpoint is reachable
+without authentication, so the burst does not have to come from a legitimate
+user.
+
+Every call therefore acquires a semaphore before touching Argon2, capped by
+``max_concurrency`` (default 4, so ~256 MiB peak at the default memory cost).
+Requests beyond the cap wait rather than being rejected; rejecting them is the
+job of the rate limiter in :mod:`hcc.security.ratelimit`, which is consulted
+*before* verification is attempted at all.
+
+The two bounds are complementary and neither subsumes the other: the rate
+limiter bounds attempts over time, the semaphore bounds peak memory at an
+instant. Ten attempts per second is survivable spread out and is not
+survivable all at once.
+
+A ``threading`` semaphore rather than an ``asyncio`` one, because the work
+happens in a worker thread either way, and a threading primitive bounds the
+sync and async paths with one mechanism and no event-loop affinity. See
+ADR-029.
 """
 
 from __future__ import annotations
 
 import asyncio
+import threading
 import unicodedata
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
@@ -217,6 +242,13 @@ HASH_LENGTH: Final = 32
 #: recommendation, and a shorter salt weakens the per-hash uniqueness that
 #: makes precomputation infeasible.
 SALT_LENGTH: Final = 16
+
+#: Default cap on simultaneous Argon2 operations. Four at the default 64 MiB
+#: memory cost is a ~256 MiB peak, which fits the target hardware while still
+#: letting a household log in concurrently.
+DEFAULT_MAX_CONCURRENCY: Final = 4
+MIN_MAX_CONCURRENCY: Final = 1
+MAX_MAX_CONCURRENCY: Final = 64
 
 
 def _is_text(value: object) -> bool:
@@ -375,10 +407,27 @@ class PasswordHasher:
     need specific parameters.
     """
 
-    __slots__ = ("_hasher", "_parameters")
+    __slots__ = ("_hasher", "_max_concurrency", "_parameters", "_semaphore")
 
-    def __init__(self, parameters: Argon2Parameters | None = None) -> None:
+    def __init__(
+        self,
+        parameters: Argon2Parameters | None = None,
+        *,
+        max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
+    ) -> None:
+        if not MIN_MAX_CONCURRENCY <= max_concurrency <= MAX_MAX_CONCURRENCY:
+            raise ValueError(
+                f"max_concurrency must be between {MIN_MAX_CONCURRENCY} and "
+                f"{MAX_MAX_CONCURRENCY}, got {max_concurrency}"
+            )
+
         self._parameters = parameters or DEFAULT_PARAMETERS
+        self._max_concurrency = max_concurrency
+        # Bounds peak memory: see "Concurrency is bounded" in the module
+        # docstring. A threading primitive, because the work runs in a worker
+        # thread for async callers and inline for sync ones, and this bounds
+        # both with no event-loop affinity.
+        self._semaphore = threading.BoundedSemaphore(max_concurrency)
         self._hasher = _Argon2Hasher(
             time_cost=self._parameters.time_cost,
             memory_cost=self._parameters.memory_cost,
@@ -391,6 +440,20 @@ class PasswordHasher:
     def parameters(self) -> Argon2Parameters:
         """The cost parameters new hashes are produced with."""
         return self._parameters
+
+    @property
+    def max_concurrency(self) -> int:
+        """Cap on simultaneous Argon2 operations."""
+        return self._max_concurrency
+
+    @property
+    def peak_memory_mib(self) -> float:
+        """Worst-case memory use when the concurrency cap is saturated.
+
+        The figure to size a deployment against, since Argon2 charges its
+        memory cost per concurrent operation rather than globally.
+        """
+        return self._parameters.memory_cost_mib * self._max_concurrency
 
     # --- Hashing ----------------------------------------------------------
 
@@ -408,7 +471,8 @@ class PasswordHasher:
         """
         candidate = validate_password(password)
         try:
-            return self._hasher.hash(candidate)
+            with self._semaphore:
+                return self._hasher.hash(candidate)
         except HashingError as exc:
             # Wrapped so callers need not import argon2's exceptions, and so
             # the message cannot carry library internals to a client. The
@@ -460,7 +524,8 @@ class PasswordHasher:
             return False
 
         try:
-            self._hasher.verify(encoded_hash, candidate)
+            with self._semaphore:
+                self._hasher.verify(encoded_hash, candidate)
         except VerifyMismatchError:
             # The expected negative case: a wrong password. Not logged — on a
             # login endpoint this would be attacker-controlled log volume, and
@@ -522,7 +587,8 @@ class PasswordHasher:
         return (
             f"PasswordHasher(memory_cost={self._parameters.memory_cost}, "
             f"time_cost={self._parameters.time_cost}, "
-            f"parallelism={self._parameters.parallelism})"
+            f"parallelism={self._parameters.parallelism}, "
+            f"max_concurrency={self._max_concurrency})"
         )
 
 
@@ -539,5 +605,6 @@ def build_password_hasher(settings: Settings) -> PasswordHasher:
             memory_cost=settings.password_hash_memory_cost,
             time_cost=settings.password_hash_time_cost,
             parallelism=settings.password_hash_parallelism,
-        )
+        ),
+        max_concurrency=settings.password_hash_max_concurrency,
     )

@@ -1,8 +1,6 @@
 """v1 router aggregation.
 
-Feature routers are included here as they are built. Phase 0 exposes only a
-metadata endpoint — enough to prove versioning, routing, response models and
-OpenAPI generation work end to end, without shipping product behaviour.
+Feature routers are included here as they are built.
 """
 
 from __future__ import annotations
@@ -12,8 +10,11 @@ from pydantic import BaseModel, Field
 
 from hcc import __version__
 from hcc.api.deps import SettingsDep
+from hcc.api.v1 import auth
 
 router = APIRouter()
+
+router.include_router(auth.router)
 
 
 class ApiInfo(BaseModel):

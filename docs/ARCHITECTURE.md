@@ -1513,3 +1513,129 @@ silently alter the secret — the same class of mistake as truncation.
 deliberately **not** when verifying one, so that raising the minimum later
 cannot lock out existing users. The byte cap is enforced on both paths,
 because that bound exists to limit work rather than to express policy.
+
+### ADR-027: Session tokens are hashed with SHA-256, not Argon2
+
+**Decision.** Session and CSRF tokens are 256-bit values from
+`secrets.token_bytes`, stored as an **unsalted hex SHA-256 digest**.
+
+**Why not Argon2, when passwords use it (ADR-025).** Argon2's cost exists to
+defeat *guessing* of low-entropy secrets. A password has perhaps 30–60 bits of
+entropy, so an attacker holding the hash can enumerate candidates, and making
+each attempt cost 64 MiB makes that uneconomic.
+
+A session token has 256 bits from a CSPRNG. There is no candidate list, no
+dictionary and no structure to exploit, so a slow KDF has nothing to slow
+down. Using Argon2 here would be actively harmful: **every authenticated
+request** would cost ~50 ms of CPU and 64 MiB of RAM, making the session
+lookup more expensive than the login that created it and turning every
+authenticated endpoint into a denial-of-service amplifier.
+
+**Why unsalted.** The hash must be deterministic so a presented token resolves
+in one indexed lookup; a per-row salt would force a table scan with one hash
+per row. Salts defend against precomputation across a shared keyspace, and
+256-bit random tokens have no shared keyspace.
+
+**What the hashing buys.** A database dump, backup or leaked log yields hashes
+that cannot be replayed. That is the entire threat, and SHA-256 covers it.
+
+**Cost.** Two hashing strategies in one codebase, which invites "why is this
+one different?" — answered in the module docstring and here.
+
+### ADR-028: Server-side sessions, not JWT
+
+**Decision.** A `sessions` table. The cookie carries an opaque random token;
+every authorization decision reads the row.
+
+**Why.** **Revocation.** Logging out, deactivating a user or revoking a
+credential must take effect immediately — the same promise
+`AGENT_ARCHITECTURE.md` makes for agents. A self-contained JWT is valid until
+it expires, so immediate revocation needs a server-side deny-list; at that
+point every request hits the database anyway and the statelessness has bought
+nothing, while adding signature verification, key rotation and a much larger
+footgun surface (algorithm confusion, `alg: none`, unverified claims).
+
+Stateless tokens pay off at a scale this product explicitly does not target:
+many services verifying tokens without a shared datastore. Here there is one
+control plane and one database (ADR-001), so a row is simpler, smaller and
+revocable.
+
+It also makes `is_active` live: the user is loaded with the session on every
+request, so disabling an account takes effect on its next request with no
+session sweep.
+
+**Cost.** A database read per authenticated request — one indexed lookup on a
+small table, with the user eagerly joined. A session table to prune, for which
+`SessionService.prune_expired` exists. And sessions do not survive a database
+loss, which is correct: they are state, and the database is where state lives.
+
+### ADR-029: In-process rate limiting, plus a semaphore on Argon2
+
+**Decision.** Two independent bounds on the login path. A rate limiter
+(`hcc/security/ratelimit.py`) with separate per-address and per-username
+budgets, consulted **before** password verification. And a
+`threading.BoundedSemaphore` inside `PasswordHasher` capping simultaneous
+Argon2 operations (default 4, so ~256 MiB peak).
+
+**Why both.** They bound different things and neither subsumes the other: the
+limiter bounds attempts over time, the semaphore bounds peak memory at an
+instant. Ten attempts per second is survivable spread out and is not
+survivable all at once.
+
+**Why the ordering matters.** A limiter consulted *after* verification still
+lets an attacker spend 64 MiB and 50 ms per request. Checking first is the
+whole point, and it is asserted by a test.
+
+**Why both keys.** Per-address alone lets a botnet spray one account from many
+addresses, each under the limit. Per-username alone lets one host enumerate
+usernames freely, and lets an attacker lock a user out by burning their budget.
+Usernames are keyed canonically, so casing variants share a budget.
+
+**Why in-process, and not Redis.** Redis would be a second stateful service
+for one feature, which ADR-001 and ADR-003 exist to avoid.
+
+**Cost, stated plainly.** State is per process. Several uvicorn workers each
+get their own counters, multiplying the effective limit by the worker count,
+and a restart clears them. Acceptable for the single-container deployment
+targeted here; if multi-worker support ever lands, the limiter moves to
+PostgreSQL or the deployment pins one worker. Recorded in
+[`SECURITY.md`](SECURITY.md#known-gaps).
+
+**Why a threading semaphore** rather than an asyncio one: the work runs in a
+worker thread for async callers and inline for sync ones, so one threading
+primitive bounds both paths with no event-loop affinity.
+
+### ADR-030: CSRF via a session-bound double-submit token
+
+**Decision.** Every state-changing authenticated request must carry the
+session's CSRF token in `X-CSRF-Token`. The token is generated per session,
+stored **in the session row**, and compared against that row in constant time.
+A present `Origin` must additionally match an allowed origin.
+
+**Why not rely on `SameSite=Lax` alone.** It is one browser-side control on an
+API that hands out credentials, and it depends on browser behaviour the server
+cannot verify. Defence in depth is cheap here.
+
+**Why session-bound rather than a bare double-submit cookie.** A plain
+double-submit trusts that only the real origin can set the cookie. That fails
+if an attacker can write cookies for the parent domain — a realistic risk on a
+homelab where several services share one domain. Comparing against the session
+row removes the assumption, making this a synchronizer token with no extra
+state, since the session row already exists. A test asserts that a forged
+cookie-and-header pair is still refused.
+
+**Why the CSRF token is stored in plaintext** while the session token is
+hashed: it must be handed back to a legitimate client on `/auth/me`, which is
+how double-submit works at all. It is not a credential on its own — an
+attacker holding it can do nothing without the session cookie, which *is*
+hashed.
+
+**Why the check lives in the session dependency.** Were it separate, an author
+could add an authenticated mutating route and forget it, and the omission
+would be invisible until exploited. Asking for the current session necessarily
+gets the protection.
+
+**Cost.** Clients must read a cookie and set a header — ordinary SPA work.
+A missing `Origin` header falls back to the token check alone, because
+non-browser clients send none; that is a deliberate, documented gap rather
+than an oversight.

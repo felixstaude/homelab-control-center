@@ -19,11 +19,16 @@ hcc/
 ├── middleware.py   # request id correlation + access logging
 ├── db.py           # engine, session factory, DeclarativeBase
 ├── models/         # ORM models — user.py (see the module docstring)
-├── security/       # framework-free auth primitives — password.py (Argon2id)
+├── security/       # framework-free auth primitives
+│   ├── password.py       # Argon2id hashing, policy, concurrency cap
+│   ├── tokens.py         # token generation + SHA-256 storage hashing
+│   ├── ratelimit.py      # in-process login throttling
+│   ├── sessions.py       # session lifecycle (DB-aware, HTTP-free)
+│   └── authentication.py # login: throttle, verify, issue
 └── api/
-    ├── deps.py     # shared FastAPI dependencies
+    ├── deps.py     # shared dependencies incl. CurrentSessionDep + CSRF
     ├── health.py   # /healthz (liveness), /readyz (readiness)
-    └── v1/         # versioned product API
+    └── v1/         # versioned product API — auth.py, router.py
 alembic/            # migration environment + versions
 tests/              # unit tests (always run) + integration tests (need Postgres)
 ```
@@ -43,12 +48,49 @@ Configuration comes from the environment; copy `.env.example` to `.env` first.
 
 ## Endpoints (Phase 0)
 
-| Method | Path           | Purpose |
-| ------ | -------------- | ------- |
-| GET    | `/healthz`     | Liveness. No dependency checks. |
-| GET    | `/readyz`      | Readiness. Verifies PostgreSQL. 503 when degraded. |
-| GET    | `/api/v1/info` | API and server version metadata. |
-| GET    | `/docs`        | Swagger UI. Disabled when `HCC_ENVIRONMENT=production`. |
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| GET | `/healthz` | — | Liveness. No dependency checks. |
+| GET | `/readyz` | — | Readiness. Verifies PostgreSQL. 503 when degraded. |
+| GET | `/api/v1/info` | — | API and server version metadata. |
+| POST | `/api/v1/auth/login` | — | Authenticate; sets the session and CSRF cookies. |
+| POST | `/api/v1/auth/logout` | session + CSRF | Revoke the session server-side and clear its cookies. |
+| GET | `/api/v1/auth/me` | session | The authenticated identity, and the CSRF token. |
+| GET | `/docs` | — | Swagger UI. Disabled when `HCC_ENVIRONMENT=production`. |
+
+### Authentication
+
+```
+POST /api/v1/auth/login
+  {"username": "...", "password": "..."}
+  -> 200  + Set-Cookie: hcc_session (HttpOnly, Secure*, SameSite=Lax)
+          + Set-Cookie: hcc_csrf    (readable, Secure*, SameSite=Lax)
+          {"user_id", "username", "role", "is_active",
+           "session_expires_at", "csrf_token"}
+  -> 401  invalid_credentials   (identical for wrong password, unknown
+                                 username and inactive account)
+  -> 429  rate_limited          + Retry-After
+  -> 422  validation_failed     (malformed body)
+
+GET  /api/v1/auth/me
+  -> 200  the same body as login, for a client recovering state after a reload
+  -> 401  not_authenticated     (identical for absent, malformed, unknown,
+                                 expired, idle, revoked, or inactive user)
+
+POST /api/v1/auth/logout
+  X-CSRF-Token: <csrf_token>
+  -> 200  {"status": "logged_out"}
+  -> 401  not_authenticated
+  -> 403  csrf_validation_failed
+```
+
+Every state-changing authenticated request must send the session's CSRF token
+in `X-CSRF-Token`. Get it from the login response, from `/auth/me`, or from
+the readable `hcc_csrf` cookie.
+
+\* `Secure` is on in production and off elsewhere, so plain-HTTP local
+development works. Full model in
+[`docs/SECURITY.md`](../../docs/SECURITY.md#sessions-and-login-implemented).
 
 ## Tests
 
@@ -80,3 +122,9 @@ unset. CI always sets it, so they never skip silently there.
 - Password hashing goes through `hcc.security.password`. Use the `*_async`
   methods from request handlers: a hash costs ~50 ms of CPU and would
   otherwise block the event loop.
+- An authenticated endpoint takes `CurrentSessionDep`. That dependency also
+  enforces CSRF and `Origin` on state-changing methods, so protection cannot
+  be forgotten by adding a route and omitting a separate dependency.
+- Authentication failures must stay indistinguishable. Raise
+  `InvalidCredentialsError` for every cause and log the real reason; a login
+  that separates "unknown user" from "wrong password" is a username oracle.

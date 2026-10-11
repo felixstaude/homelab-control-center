@@ -12,12 +12,14 @@ import sys
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, PostgresDsn, ValidationError, field_validator
+from pydantic import Field, PostgresDsn, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Environment = Literal["development", "test", "production"]
 LogFormat = Literal["console", "json"]
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
+CookieSameSite = Literal["lax", "strict", "none"]
+DatabasePoolClass = Literal["queue", "null"]
 
 
 class Settings(BaseSettings):
@@ -57,6 +59,12 @@ class Settings(BaseSettings):
     database_pool_size: int = Field(default=5, ge=1, le=100)
     database_max_overflow: int = Field(default=10, ge=0, le=100)
     database_echo: bool = False
+    # `queue` keeps connections open between requests, which is what a
+    # long-running server wants. `null` opens and closes one per checkout:
+    # correct behind an external pooler such as PgBouncer, which does the
+    # pooling itself and for which a second layer causes session-state bugs,
+    # and for short-lived processes where pooling buys nothing.
+    database_pool_class: DatabasePoolClass = "queue"
 
     # --- Password hashing -------------------------------------------------
     # Argon2id cost parameters. Defaults are the RFC 9106 "low memory"
@@ -76,6 +84,64 @@ class Settings(BaseSettings):
     password_hash_parallelism: int = Field(
         default=4, ge=1, le=16, description="Argon2id parallel lanes."
     )
+    # Caps simultaneous Argon2 operations, and therefore peak memory:
+    # max_concurrency x memory_cost. Unbounded, a burst of login attempts
+    # would exhaust memory, and the login endpoint is reachable without
+    # authentication. See ADR-029.
+    password_hash_max_concurrency: int = Field(
+        default=4, ge=1, le=64, description="Simultaneous Argon2id operations."
+    )
+
+    # --- Sessions ---------------------------------------------------------
+    session_cookie_name: str = "hcc_session"
+    # Absolute lifetime. A session dies this long after login regardless of
+    # activity, which bounds the damage from a stolen cookie. 12 hours suits a
+    # dashboard someone leaves open during a working day.
+    session_lifetime_seconds: int = Field(
+        default=43200, ge=60, le=2592000, description="Absolute session lifetime."
+    )
+    # Idle timeout, enforced from `last_seen_at`. Zero disables it, leaving
+    # only the absolute lifetime.
+    session_idle_timeout_seconds: int = Field(
+        default=3600, ge=0, le=2592000, description="Idle timeout; 0 disables."
+    )
+    # `last_seen_at` is only rewritten once per this interval, so an active
+    # session does not cause a database write on every request.
+    session_touch_interval_seconds: int = Field(
+        default=60, ge=1, le=3600, description="Minimum gap between last_seen_at writes."
+    )
+    # Overrides the Secure cookie flag. None means "derive it": on in
+    # production, off elsewhere so that plain-HTTP local development works.
+    # Setting this False in production is refused at startup.
+    session_cookie_secure: bool | None = None
+    session_cookie_samesite: CookieSameSite = "lax"
+    csrf_cookie_name: str = "hcc_csrf"
+    csrf_header_name: str = "X-CSRF-Token"
+
+    # --- Login throttling -------------------------------------------------
+    # Checked BEFORE password verification. Two independent budgets, per
+    # client address and per username; both must allow an attempt. See
+    # hcc/security/ratelimit.py.
+    login_rate_limit_per_address: int = Field(
+        default=20, ge=1, le=10000, description="Login attempts per address per window."
+    )
+    login_rate_limit_per_username: int = Field(
+        default=10, ge=1, le=10000, description="Login attempts per username per window."
+    )
+    login_rate_limit_window_seconds: int = Field(
+        default=300, ge=1, le=86400, description="Throttle window."
+    )
+    # Headers a reverse proxy sets to report the real client address. Empty by
+    # default: trusting these without a proxy in front lets a client forge its
+    # own address and bypass the per-address budget entirely.
+    trusted_proxy_headers: tuple[str, ...] = ()
+
+    # --- Security headers -------------------------------------------------
+    # A strict Content-Security-Policy breaks the Vite dev server, which needs
+    # inline scripts and a websocket for hot reload. Enabled in production,
+    # off elsewhere, so development does not train people to ignore it.
+    security_headers_enabled: bool = True
+    content_security_policy_enabled: bool | None = None
 
     # --- Logging ----------------------------------------------------------
     log_level: LogLevel = "INFO"
@@ -88,9 +154,60 @@ class Settings(BaseSettings):
             raise ValueError("api_prefix must start with '/'")
         return value.rstrip("/")
 
+    @model_validator(mode="after")
+    def _validate_cookie_security(self) -> Settings:
+        """Refuse a configuration that would send session cookies in clear.
+
+        An operator who sets ``session_cookie_secure=false`` in production has
+        almost certainly done it to work around a missing reverse proxy, which
+        means session cookies would travel unencrypted over the network. That
+        is a silent, total compromise of the session mechanism, so it fails at
+        startup instead.
+        """
+        if self.environment == "production" and self.session_cookie_secure is False:
+            raise ValueError(
+                "session_cookie_secure must not be disabled in production: "
+                "session cookies would be sent over plain HTTP. Terminate TLS "
+                "at a reverse proxy — see docs/SECURITY.md."
+            )
+        if self.session_cookie_samesite == "none" and not self.effective_cookie_secure:
+            # SameSite=None without Secure is rejected by browsers anyway, so
+            # accepting it would produce a confusing "cookie silently dropped"
+            # failure rather than a clear one.
+            raise ValueError(
+                "session_cookie_samesite='none' requires secure cookies; "
+                "browsers reject SameSite=None without Secure."
+            )
+        return self
+
     @property
     def is_production(self) -> bool:
         return self.environment == "production"
+
+    @property
+    def effective_cookie_secure(self) -> bool:
+        """Whether to set the ``Secure`` flag on cookies.
+
+        Derived from the environment unless explicitly overridden, so that
+        local HTTP development works without anyone having to disable a
+        security flag by hand — and so production gets it without anyone
+        having to remember to enable it.
+        """
+        if self.session_cookie_secure is not None:
+            return self.session_cookie_secure
+        return self.is_production
+
+    @property
+    def effective_csp_enabled(self) -> bool:
+        """Whether to send a Content-Security-Policy header.
+
+        Off outside production by default: the Vite dev server needs inline
+        scripts and a websocket, and a policy that has to be weakened for
+        development is one nobody trusts in production.
+        """
+        if self.content_security_policy_enabled is not None:
+            return self.content_security_policy_enabled
+        return self.is_production
 
     def sqlalchemy_url(self) -> str:
         """Return the database URL with the asyncpg driver enforced.

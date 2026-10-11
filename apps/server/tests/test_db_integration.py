@@ -11,6 +11,7 @@ CI always provides a Postgres service container, so these never skip there.
 
 from __future__ import annotations
 
+from contextlib import aclosing
 from typing import TYPE_CHECKING
 
 import pytest
@@ -47,18 +48,27 @@ async def test_check_connection_succeeds_against_live_database(database: Databas
 
 
 async def test_session_executes_a_query(database: Database) -> None:
-    async for session in database.session():
-        result = await session.execute(text("SELECT 42 AS answer"))
-        assert result.scalar_one() == 42
-        break
+    # `aclosing` matters here: breaking out of an `async for` over an async
+    # generator leaves it unclosed, so the session and its connection are
+    # released at garbage-collection time instead of now. That leaked asyncpg
+    # transports between tests and surfaced elsewhere as an
+    # "Exception ignored in deallocator" unraisable warning.
+    async with aclosing(database.session()) as sessions:
+        async for session in sessions:
+            result = await session.execute(text("SELECT 42 AS answer"))
+            assert result.scalar_one() == 42
+            break
 
 
 async def test_session_rolls_back_on_error(database: Database) -> None:
     # A failed unit of work must not leave a usable-but-dirty session behind.
+    # Wrapped in `aclosing` for the same reason as above — raising out of the
+    # loop would otherwise leave the generator for the garbage collector.
     with pytest.raises(RuntimeError):
-        async for session in database.session():
-            await session.execute(text("SELECT 1"))
-            raise RuntimeError("simulated handler failure")
+        async with aclosing(database.session()) as sessions:
+            async for session in sessions:
+                await session.execute(text("SELECT 1"))
+                raise RuntimeError("simulated handler failure")
 
     # The pool is still healthy afterwards.
     await database.check_connection()

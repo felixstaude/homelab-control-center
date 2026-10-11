@@ -2,11 +2,15 @@
 
 The security model for Homelab Control Center.
 
-> **Current status (Phase 1, milestone 1.2).** No authentication flow,
-> authorization, agent communication, monitoring or management is implemented
-> yet. The `users` table (1.1) and Argon2id password hashing (1.2) exist;
-> there is still no login endpoint, session or registration path, so nothing
-> yet *calls* the hasher. See "Known gaps" below.
+> **Current status (Phase 1, milestone 1.3).** **Login, logout and
+> server-side sessions are now implemented**, with CSRF protection, rate
+> limiting and security headers. Authorization (role enforcement), agent
+> communication, monitoring and management are still design only.
+>
+> There is deliberately **no way to create a user** yet — no registration, no
+> setup wizard — so the endpoints are reachable but no account exists to log
+> into until milestone 1.5. See "Known gaps" below for what is still missing
+> before this should face an untrusted network.
 > Sections marked **(design)** describe what later milestones will build; they
 > are documented now because they constrain the architecture that *is* built.
 > Sections marked **(implemented)** are in the code today and covered by
@@ -36,14 +40,16 @@ The security model for Homelab Control Center.
 ### Assumed adversaries
 
 1. **An attacker on the local network** who can reach the control plane's
-   HTTP port.
-5. **A compromised monitored host** — one agent, fully controlled. It must not
+   HTTP port. The authentication endpoints are reachable without a session by
+   design, which is why they are throttled and bounded.
+2. **A compromised monitored host** — one agent, fully controlled. It must not
    escalate to the fleet.
-6. **A malicious or careless authenticated user** with a low-privilege role.
+3. **A malicious or careless authenticated user** with a low-privilege role.
    Now also: an Administrator whose session is stolen, which is the adversary
    the terminal capability's gates exist for.
-7. **A compromised dependency** in any of the three components' supply chains.
-8. **An attacker with a stolen database dump**, offline.
+4. **A compromised dependency** in any of the three components' supply chains.
+5. **An attacker with a stolen database dump**, offline. Password hashes are
+   Argon2id and session tokens are stored hashed, so neither is replayable.
 
 ### Explicitly out of scope
 
@@ -165,6 +171,75 @@ An agent credential authenticates *one host reporting its own data*. It is not
 a user credential with a different shape, and cannot be used to read the fleet
 or issue commands. This is what contains adversary #2.
 
+### Sessions and login (implemented)
+
+`hcc/security/sessions.py`, `hcc/security/authentication.py`,
+`hcc/api/v1/auth.py`. Endpoints: `POST /api/v1/auth/login`,
+`POST /api/v1/auth/logout`, `GET /api/v1/auth/me` — under the version prefix
+because ADR-006 versions every product route.
+
+| Property | Choice |
+| --- | --- |
+| Session state | **Server-side row**, not JWT (ADR-028) |
+| Token | 256-bit CSPRNG, URL-safe base64 |
+| Storage | **Unsalted SHA-256 of the token**, never the token (ADR-027) |
+| Transport | `HttpOnly`, `Secure`\*, `SameSite=Lax`, `Path=/`, no `Domain` |
+| Absolute lifetime | 12 h default, configurable, never extended |
+| Idle timeout | 1 h default, configurable, `0` disables |
+| CSRF | Session-bound double-submit token + `Origin` check (ADR-030) |
+| Throttling | Per-address and per-username, **before** verification (ADR-029) |
+
+\* `Secure` is derived from the environment — on in production, off elsewhere
+so plain-HTTP local development works. Disabling it in production is
+**refused at startup**, because session cookies would then travel in clear.
+
+Properties that hold today, each covered by tests:
+
+- **Failures are indistinguishable.** Wrong password, unknown username and
+  inactive account return the identical 401 body. An unknown username is still
+  verified against a precomputed dummy hash, so the timing does not separate
+  them either. A login that distinguishes these is a username oracle.
+- **Throttling precedes verification.** Each attempt costs ~64 MiB and ~50 ms
+  by design, so a limiter consulted afterwards would still let an attacker
+  spend the server's memory.
+- **Concurrent Argon2 operations are capped**, bounding peak memory
+  independently of the rate limit.
+- **Only token hashes are stored.** A database dump yields nothing replayable.
+- **Session fixation is impossible.** The token is generated server-side and
+  nothing the client sends influences it; any session presented at login is
+  revoked before the new one is issued.
+- **Logout revokes server-side.** The row is marked, resolution rejects it, and
+  replaying the cleared cookie fails. Cookie clearing is a courtesy, not the
+  boundary.
+- **Deactivating a user takes effect immediately**, because `is_active` is
+  re-checked on every request rather than trusted from login time.
+- **Resolution is fail-closed.** Absent, malformed, unknown, expired, idle,
+  revoked and inactive-user all return "not authenticated", identically, so a
+  caller cannot probe whether a captured token is live.
+- **CSRF is enforced in the session dependency**, so an authenticated mutating
+  route cannot be added without it.
+- **No secret reaches a log.** Passwords, session tokens and CSRF tokens are
+  absent from log events, error bodies and `repr`, asserted by capturing
+  structured events and checking every key and value.
+
+### Reverse proxy and HTTPS requirements
+
+This is not optional. The application speaks plain HTTP and expects a
+TLS-terminating reverse proxy in front of it (ADR, `Transport security`
+below).
+
+**Without HTTPS, session cookies travel in clear and the session mechanism is
+fully compromised** — anyone on the path can read the cookie and impersonate
+the user. Concretely:
+
+| Requirement | Why |
+| --- | --- |
+| Terminate TLS at the proxy | `Secure` cookies are only meaningful over HTTPS, and in production the application refuses to disable the flag. |
+| Send HSTS from the proxy | The application deliberately does not: only the proxy knows whether HTTPS is actually in use (see `Application hardening`). |
+| Serve the client same-origin | Removes CORS from the production path entirely and makes `SameSite=Lax` and the `Origin` check straightforward. |
+| Set `HCC_TRUSTED_PROXY_HEADERS` **only** if the proxy overwrites them | Proxy headers are client-supplied. Trusting `X-Forwarded-For` without a proxy that rewrites it lets any caller forge its address and bypass the per-address rate-limit budget. Empty by default for that reason. |
+| Do not expose the port directly | The authentication endpoints are reachable without a session by design. |
+
 ### Password hashing (implemented)
 
 `hcc/security/password.py`. Argon2id through `argon2-cffi`, the reference
@@ -204,13 +279,14 @@ Properties that hold today, each covered by tests:
 - **Hashing is offloaded to a worker thread** by the `*_async` methods, so a
   50 ms CPU-bound operation cannot stall the event loop.
 
-Two consequences for the milestones that will use this:
+Two consequences, both now addressed:
 
-1. **The login endpoint needs rate limiting.** Each attempt costs ~64 MiB and
-   ~50 ms, so an unauthenticated caller can otherwise exhaust memory and CPU.
-   Tracked as a known gap below.
-2. **Handlers must use `hash_async` / `verify_async`.** The synchronous
-   methods are for CLI and test use.
+1. **The login endpoint is rate limited** and concurrent Argon2 operations are
+   capped. Each attempt costs ~64 MiB and ~50 ms, so an unthrottled
+   unauthenticated endpoint would exhaust memory and CPU. Implemented in
+   milestone 1.3 (ADR-029).
+2. **Handlers use `hash_async` / `verify_async`.** The synchronous methods are
+   for CLI and test use.
 
 ### Agent enrolment
 
@@ -259,7 +335,7 @@ Every management action passes through, in order:
    an action that crashes mid-flight is still recorded.
 4. **Validated** — target exists on the target host.
 5. **Scoped** — queued for exactly one agent.
-9. **Expiring** — carries `expires_at`; the agent refuses stale commands, so
+6. **Expiring** — carries `expires_at`; the agent refuses stale commands, so
    one queued during a network partition cannot execute hours later against
    changed state.
 7. **Reported** — the result completes the audit record. A failed command
@@ -344,6 +420,11 @@ configuration time. Tested by `TestRunWarnsWhenTLSVerificationIsDisabled`.
 | Request correlation | `hcc/middleware.py` | Every log line carries a request ID; opaque 500s remain traceable |
 | `pool_pre_ping` | `hcc/db.py` | Recycles connections a restarted database dropped |
 | Bandit lint rules (`S`) | `pyproject.toml` | Flags common insecure patterns in CI |
+| Security headers | `hcc/middleware.py` | `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`, `Cross-Origin-Opener-Policy` on every response, including error responses |
+| Content-Security-Policy | `hcc/middleware.py` | Production only. A policy strict enough to be worth having breaks the Vite dev server, and one weakened for development is one nobody trusts. `script-src 'self'` with no `unsafe-inline`; `frame-ancestors 'none'`; `object-src 'none'` |
+| No HSTS from the application | deliberate | Only the TLS-terminating proxy knows whether HTTPS is in use. Sending it from behind a plain-HTTP proxy would either do nothing or lock a development host out of HTTP |
+| No `WWW-Authenticate: Basic` | `hcc/errors.py` | A bare Basic challenge makes browsers pop a native credential dialog over the SPA |
+| Cookie `Secure` enforced in production | `hcc/config.py` | Startup fails rather than silently sending session cookies in clear |
 
 ### Agent process hardening
 
@@ -496,34 +577,48 @@ them.
 
 ## Known gaps
 
-Stated plainly rather than implied:
+Stated plainly rather than implied. Several of these must close before the
+authentication endpoints face an untrusted network.
 
-1. **There is no authentication flow.** The API is still unauthenticated. It
-   exposes only health probes and version metadata, but it must not be
-   deployed on an untrusted network. Milestones 1.1 and 1.2 added the `users`
-   table and the password hashing component, but no login, session,
-   registration or password-reset path exists yet — nothing in the running
-   application calls the hasher.
-2. **The login path will need rate limiting from the moment it exists.** Each
-   verification costs ~64 MiB of RAM and ~50 ms of CPU by design, so an
-   unauthenticated endpoint that hashes without a limit is a denial-of-service
-   vector. This must land with milestone 1.2's consumer, not after it.
-2. **There is no rate limiting.** Added with the ingestion endpoints in
-   Phase 3, where it matters.
-3. **There is no audit log.** Phase 1.
-4. **There is no CSRF protection.** Not yet needed (no cookies, no mutating
-   endpoints); required in Phase 1 alongside session cookies.
-5. **No security headers** (CSP, HSTS, `X-Frame-Options`). Added in Phase 10
-   with the production image, where the app serves the client itself.
-6. **`pip-audit` and `npm audit` are not yet CI-blocking.** Phase 1.
-7. **Nothing in the capability, external-binary and configuration sections exists yet.** No capability is implemented,
-   no command is executed, no binary is invoked, no configuration is
-   distributed. They are specified now because they constrain milestones that
-   are about to be built — not because any of it is live.
-8. **The terminal capability has no implementation and no security review.**
-   Before it ships it needs a dedicated review of PTY handling, session
-   recording integrity, and the interaction with `docker.control` noted in
-   the terminal assessment above. It is deliberately last in the roadmap for this reason.
+1. **No user can be created.** There is no registration, no setup wizard and
+   no CLI. The endpoints work but no account exists to log into until
+   milestone 1.5. This is the main reason the current state is not deployable.
+2. **No authorization.** Roles exist on the user row and are returned by
+   `/auth/me`, but nothing enforces them yet: any authenticated user can reach
+   any authenticated endpoint. Milestone 1.7.
+3. **Rate limiting is per process.** Several uvicorn workers each keep their
+   own counters, multiplying the effective limit by the worker count, and a
+   restart clears them. **Deploy with one worker until this is addressed**
+   (ADR-029).
+4. **Timing-based user enumeration is narrowed, not eliminated.** An unknown
+   username is verified against a dummy hash so the Argon2 cost is paid
+   either way, but one database query versus none remains measurable in
+   principle. The rate limiter bounds how many samples an attacker can
+   collect. Closing it fully would require constant-time work across the whole
+   request, which is not achievable in a Python web application and is not
+   claimed.
+5. **`Origin` is only checked when present.** Absent `Origin` falls back to
+   the CSRF token alone, because non-browser clients send none. Browsers
+   always send it for the cross-site requests this guards against, so the gap
+   is narrow — but it is a gap.
+6. **No audit log.** Login, logout and revocation are logged as structured
+   events, but there is no append-only audit table yet. Milestone 1.14.
+7. **No account lockout.** Throttling slows an attacker but never locks an
+   account, deliberately: lockout is itself a denial-of-service vector against
+   a known username. Revisit if it proves insufficient.
+8. **Sessions are not listed or revocable in the UI.**
+   `SessionService.revoke_all_for_user` exists and is tested, but nothing calls
+   it. Milestone 10.1.
+9. **No password change or reset flow**, so a compromised password cannot be
+   rotated by its owner. `rehash_if_needed` exists for parameter upgrades but
+   is not yet wired into login.
+10. **Session pruning is not scheduled.** `prune_expired` exists and is
+    tested; the scheduler arrives with the other periodic jobs. Until then the
+    table grows with expired rows.
+11. **`pip-audit` and `npm audit` are not yet CI-blocking.**
+12. **Nothing in the agent, monitoring, capability or terminal sections
+    exists.** They are specified because they constrain what is being built,
+    not because any of it is live.
 
 ## Reporting a vulnerability
 

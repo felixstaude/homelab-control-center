@@ -54,10 +54,10 @@ unauthenticated endpoint or reworking attribution later.
 
 | # | Milestone | Exit criterion |
 | --- | --- | --- |
-| 1.1 | User schema and migration | ✅ `users` table with UUID key, canonical-username uniqueness, role enum, timestamptz timestamps and an `updated_at` trigger; reversible migration `0002_users`; `alembic check` clean. `sessions` moves to 1.4, where it is actually used. |
+| 1.1 | User schema and migration | ✅ `users` table with UUID key, canonical-username uniqueness, role enum, timestamptz timestamps and an `updated_at` trigger; reversible migration `0002_users`; `alembic check` clean. `sessions` landed in 1.3, where it is actually used. |
 | 1.2 | Password hashing | ✅ Argon2id via `argon2-cffi` at RFC 9106 low-memory parameters; configurable with enforced floors; rehash detection; fails closed on malformed hashes; NFC-normalized policy that never truncates. Hashing only — the login endpoint moved to 1.3, since it needs sessions and rate limiting. |
-| 1.3 | Login endpoint and rate limiting | Login returns a `Secure`/`HttpOnly`/`SameSite` session cookie; attempts are rate-limited, because each costs ~64 MiB and ~50 ms |
-| 1.4 | Session middleware | Protected endpoint returns 401 without a session, 200 with one |
+| 1.3 | Login, logout and sessions | ✅ `POST/GET /api/v1/auth/{login,logout,me}`; server-side sessions (ADR-028) with only token hashes stored (ADR-027); `HttpOnly`/`Secure`/`SameSite=Lax` cookies; session-bound CSRF plus `Origin` check (ADR-030); per-address and per-username throttling before verification, and a cap on concurrent Argon2 operations (ADR-029); security headers; migration `0003_sessions` |
+| 1.4 | Protected-route enforcement | A 401 envelope for every protected route, not just the auth endpoints; `CurrentSessionDep` applied across the API |
 | 1.5 | First-run admin setup | Fresh install prompts for an admin account; no default credentials exist |
 | 1.6 | Login UI | Login page, session persistence, logout; protected routes redirect |
 | 1.7 | Role enforcement | Viewer is refused a write endpoint with a 403 in the standard envelope |

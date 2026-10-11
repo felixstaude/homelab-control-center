@@ -106,6 +106,61 @@ class ServiceUnavailableError(AppError):
     message = "A required dependency is unavailable."
 
 
+class InvalidCredentialsError(AppError):
+    """Login failed.
+
+    One error for every cause — wrong password, unknown username, inactive
+    account — so that the endpoint cannot be used to enumerate usernames. The
+    real reason is logged server-side; see
+    :mod:`hcc.security.authentication`.
+    """
+
+    status_code = status.HTTP_401_UNAUTHORIZED
+    code = "invalid_credentials"
+    message = "Invalid username or password."
+
+
+class NotAuthenticatedError(AppError):
+    """No valid session was presented.
+
+    Deliberately indistinguishable between "no cookie", "expired", "revoked"
+    and "unknown token": a client that learns *which* would learn whether a
+    captured token is live.
+    """
+
+    status_code = status.HTTP_401_UNAUTHORIZED
+    code = "not_authenticated"
+    message = "Authentication required."
+
+
+class CsrfValidationError(AppError):
+    """A state-changing request failed its CSRF check.
+
+    403 rather than 401: the caller is authenticated, but this particular
+    request cannot be attributed to a deliberate action by them.
+    """
+
+    status_code = status.HTTP_403_FORBIDDEN
+    code = "csrf_validation_failed"
+    message = "CSRF validation failed."
+
+
+class RateLimitedError(AppError):
+    """Too many requests.
+
+    ``retry_after_seconds`` is rendered into a ``Retry-After`` header by the
+    handler, so a well-behaved client can back off rather than hammering.
+    """
+
+    status_code = status.HTTP_429_TOO_MANY_REQUESTS
+    code = "rate_limited"
+    message = "Too many attempts. Please try again later."
+
+    def __init__(self, retry_after_seconds: int, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.retry_after_seconds = max(1, retry_after_seconds)
+
+
 def _request_id(request: Request) -> str | None:
     value = getattr(request.state, "request_id", None)
     return str(value) if value else None
@@ -170,13 +225,22 @@ def register_exception_handlers(app: FastAPI) -> None:
         else:
             log.info("request_rejected", message=exc.message)
 
-        return _error_response(
+        response = _error_response(
             status_code=exc.status_code,
             code=exc.code,
             message=exc.message,
             request=request,
             details=exc.details,
         )
+        if isinstance(exc, RateLimitedError):
+            # Tells a well-behaved client exactly how long to wait, which is
+            # cheaper for both sides than it guessing.
+            response.headers["Retry-After"] = str(exc.retry_after_seconds)
+        if exc.status_code == status.HTTP_401_UNAUTHORIZED:
+            # A cookie-based API must not send a bare `WWW-Authenticate:
+            # Basic`, or browsers pop a native credential dialog over the SPA.
+            response.headers["WWW-Authenticate"] = 'Cookie realm="hcc"'
+        return response
 
     @app.exception_handler(RequestValidationError)
     async def handle_request_validation_error(

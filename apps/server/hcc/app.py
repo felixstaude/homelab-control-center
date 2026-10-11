@@ -20,7 +20,11 @@ from hcc.config import Settings, get_settings
 from hcc.db import Database
 from hcc.errors import ErrorResponse, register_exception_handlers
 from hcc.logging import configure_logging, get_logger
-from hcc.middleware import RequestContextMiddleware
+from hcc.middleware import RequestContextMiddleware, SecurityHeadersMiddleware
+from hcc.security.authentication import AuthenticationService
+from hcc.security.password import build_password_hasher
+from hcc.security.ratelimit import LoginThrottle, RateLimiter
+from hcc.security.sessions import SessionService
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -56,6 +60,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         database = Database(settings)
         database.connect()
         app.state.database = database
+        logger.info(
+            "password_hashing_configured",
+            memory_cost_mib=app.state.password_hasher.parameters.memory_cost_mib,
+            max_concurrency=app.state.password_hasher.max_concurrency,
+            peak_memory_mib=app.state.password_hasher.peak_memory_mib,
+        )
         try:
             yield
         finally:
@@ -87,10 +97,38 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # even in tests that skip the lifespan.
     app.state.settings = settings
 
+    # Security services. Built here rather than in the lifespan because they
+    # hold no connections and tests that skip the lifespan still need them.
+    # They are stateless apart from configuration, so one instance each is
+    # shared across requests — which is also what makes the password hasher's
+    # concurrency semaphore and the login throttle's counters process-wide
+    # rather than per-request.
+    app.state.password_hasher = build_password_hasher(settings)
+    app.state.session_service = SessionService(settings)
+    app.state.login_throttle = LoginThrottle(
+        per_address=RateLimiter(
+            limit=settings.login_rate_limit_per_address,
+            window_seconds=settings.login_rate_limit_window_seconds,
+        ),
+        per_username=RateLimiter(
+            limit=settings.login_rate_limit_per_username,
+            window_seconds=settings.login_rate_limit_window_seconds,
+        ),
+    )
+    app.state.authentication_service = AuthenticationService(
+        hasher=app.state.password_hasher,
+        sessions=app.state.session_service,
+        throttle=app.state.login_throttle,
+    )
+
     register_exception_handlers(app)
 
-    # Middleware is applied bottom-up: CORS must wrap the request-context
-    # middleware so that preflight responses also carry CORS headers.
+    # Middleware is applied bottom-up, so the last one added is the outermost.
+    # Security headers are added first here and therefore run innermost of the
+    # three, which is what lets them apply to every response including those
+    # produced by CORS preflight and by the exception handlers.
+    if settings.security_headers_enabled:
+        app.add_middleware(SecurityHeadersMiddleware, enable_csp=settings.effective_csp_enabled)
     app.add_middleware(RequestContextMiddleware, exclude_paths=_UNLOGGED_PATHS)
     if settings.cors_origins:
         app.add_middleware(
@@ -98,8 +136,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             allow_origins=list(settings.cors_origins),
             allow_credentials=True,
             allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
-            allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
-            expose_headers=["X-Request-ID"],
+            # The CSRF header must be allowed, or a cross-origin development
+            # client could never send it and every mutation would 403.
+            allow_headers=[
+                "Authorization",
+                "Content-Type",
+                "X-Request-ID",
+                settings.csrf_header_name,
+            ],
+            expose_headers=["X-Request-ID", "Retry-After"],
             max_age=600,
         )
 

@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -29,7 +30,8 @@ from hcc.app import create_app
 from hcc.config import Settings
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Iterator
+    from collections.abc import AsyncIterator, Callable, Iterator
+    from contextlib import AbstractAsyncContextManager
 
     from fastapi import FastAPI
 
@@ -41,8 +43,19 @@ _SERVER_DIR = Path(__file__).resolve().parent.parent
 
 # Tables emptied between integration tests. Listed explicitly rather than
 # discovered from metadata, so adding a table is a deliberate decision about
-# test isolation instead of a silent change in behaviour.
-_TRUNCATED_TABLES = ("users",)
+# test isolation instead of a silent change in behaviour. Order is irrelevant
+# because the truncation uses CASCADE.
+_TRUNCATED_TABLES = ("sessions", "users")
+
+# Cheapest Argon2 parameters the module permits. Integration tests hash and
+# verify real passwords, so the shipped 64 MiB defaults would make the suite
+# slow for no added coverage — the defaults are exercised in
+# tests/test_security_password.py.
+_FAST_HASH_SETTINGS = {
+    "password_hash_memory_cost": 19456,
+    "password_hash_time_cost": 2,
+    "password_hash_parallelism": 1,
+}
 
 
 @pytest.fixture
@@ -171,3 +184,90 @@ async def db_session(migrated_database: str) -> AsyncIterator[AsyncSession]:
         await truncate()
     finally:
         await engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# HTTP integration against the real database
+#
+# The `app`/`client` fixtures above point at a deliberately unreachable
+# database, which is right for unit tests. Authentication tests need the real
+# thing, so these build a second app wired to the migrated test database.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def api_settings_factory(
+    migrated_database: str,
+) -> Callable[..., Settings]:
+    """Build integration settings, overriding individual fields.
+
+    A factory rather than a fixture value because tests need to vary the
+    configuration under test — a low rate limit, a short session lifetime,
+    production cookie flags — and each variation needs its own app.
+    """
+
+    def build(**overrides: object) -> Settings:
+        values: dict[str, object] = {
+            "environment": "test",
+            "database_url": migrated_database,
+            "log_level": "WARNING",
+            # Generous by default so that tests which are not about
+            # throttling never trip it. The throttling tests lower it.
+            "login_rate_limit_per_address": 1000,
+            "login_rate_limit_per_username": 1000,
+            # NullPool, so every connection is closed when its session closes
+            # — inside the test, while the event loop is still alive. With a
+            # QueuePool, idle connections are closed by `engine.dispose()`
+            # asynchronously at teardown, and pytest-asyncio tears the loop
+            # down first; the sockets were then finalised by the garbage
+            # collector, producing an intermittent "unclosed transport"
+            # unraisable warning that `filterwarnings = ["error"]` turned into
+            # a failure in an unrelated test.
+            "database_pool_class": "null",
+            **_FAST_HASH_SETTINGS,
+        }
+        values.update(overrides)
+        return Settings(**values)  # type: ignore[arg-type]
+
+    return build
+
+
+@pytest.fixture
+async def api_factory(
+    api_settings_factory: Callable[..., Settings],
+) -> AsyncIterator[Callable[..., AbstractAsyncContextManager[AsyncClient]]]:
+    """Yield a factory producing HTTP clients against the real database.
+
+    Each client runs the app's full stack — middleware, exception handlers,
+    lifespan — so cookie attributes and security headers are the real ones.
+    Tables are truncated after the fixture finishes, once per test.
+    """
+    truncate_url: str | None = None
+
+    @asynccontextmanager
+    async def build(**overrides: object) -> AsyncIterator[AsyncClient]:
+        nonlocal truncate_url
+        settings = api_settings_factory(**overrides)
+        truncate_url = settings.sqlalchemy_url()
+        app = create_app(settings)
+        transport = ASGITransport(app=app)
+        async with (
+            app.router.lifespan_context(app),
+            AsyncClient(transport=transport, base_url="http://testserver") as client,
+        ):
+            # Handy for tests that need to reach past HTTP, e.g. to seed a
+            # user or to age a session row.
+            client.app_state = app.state  # type: ignore[attr-defined]
+            yield client
+
+    try:
+        yield build
+    finally:
+        if truncate_url is not None:
+            engine = create_async_engine(truncate_url, poolclass=NullPool)
+            try:
+                async with engine.begin() as connection:
+                    for table in _TRUNCATED_TABLES:
+                        await connection.execute(text(f"TRUNCATE TABLE {table} CASCADE"))
+            finally:
+                await engine.dispose()

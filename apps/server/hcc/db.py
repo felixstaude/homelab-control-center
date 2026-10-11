@@ -20,11 +20,12 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.pool import NullPool
 
 from hcc.logging import get_logger
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncGenerator
 
     from hcc.config import Settings
 
@@ -91,9 +92,14 @@ class Database:
         engine_kwargs: dict[str, Any] = {
             "echo": self._settings.database_echo,
             "pool_pre_ping": True,  # recycle connections a restarted DB dropped
-            "pool_size": self._settings.database_pool_size,
-            "max_overflow": self._settings.database_max_overflow,
         }
+        if self._settings.database_pool_class == "null":
+            # NullPool holds nothing between checkouts, so the sizing
+            # arguments do not apply and passing them raises.
+            engine_kwargs["poolclass"] = NullPool
+        else:
+            engine_kwargs["pool_size"] = self._settings.database_pool_size
+            engine_kwargs["max_overflow"] = self._settings.database_max_overflow
 
         self._engine = create_async_engine(self._settings.sqlalchemy_url(), **engine_kwargs)
         self._session_factory = async_sessionmaker(
@@ -104,6 +110,7 @@ class Database:
         )
         logger.info(
             "database_engine_created",
+            pool_class=self._settings.database_pool_class,
             pool_size=self._settings.database_pool_size,
             max_overflow=self._settings.database_max_overflow,
         )
@@ -126,7 +133,7 @@ class Database:
         async with self.engine.connect() as connection:
             await connection.execute(text("SELECT 1"))
 
-    async def session(self) -> AsyncIterator[AsyncSession]:
+    async def session(self) -> AsyncGenerator[AsyncSession]:
         """Yield a session, rolling back on error and always closing.
 
         Commits are the caller's responsibility: a request handler knows
