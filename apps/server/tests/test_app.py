@@ -40,6 +40,10 @@ async def test_handlers_observe_injected_settings_not_the_environment() -> None:
             environment="production",
             database_url="postgresql://u:p@db:5432/hcc",
             log_level="WARNING",
+            # Production requires a declared public origin (or a trusted
+            # proxy) since milestone 1.5, so that the CSRF Origin check knows
+            # what browsers actually send. See hcc/config.py.
+            public_origin="https://hcc.example.test",
         )
     )
 
@@ -86,6 +90,7 @@ def test_cors_middleware_is_absent_when_no_origins_configured() -> None:
             environment="production",
             database_url="postgresql://u:p@db:5432/hcc",
             cors_origins=(),
+            public_origin="https://hcc.example.test",
         )
     )
     middleware_names = [
@@ -138,3 +143,87 @@ async def test_lifespan_creates_and_disposes_the_database(settings: Settings) ->
     # instead of handing out a disposed engine.
     with pytest.raises(RuntimeError, match="connect"):
         _ = database.engine
+
+
+# ---------------------------------------------------------------------------
+# Request-id handling (milestone 1.5)
+#
+# A client-supplied `X-Request-ID` is echoed into a response header and into
+# every log line for that request, so it is attacker-controlled data crossing
+# into two places other tools parse. The HTTP parser already rejects CR and LF
+# in a request header (verified against a real server), so log-line forgery is
+# not reachable; an allow-list bounds the rest.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "supplied",
+    [
+        "simple-id",
+        "0123456789abcdef",
+        "trace.id_with-separators",
+        "a" * 128,
+    ],
+)
+async def test_a_well_formed_request_id_is_propagated(client: AsyncClient, supplied: str) -> None:
+    # Correlation across a proxy and the API depends on propagation, so a
+    # legitimate value must survive unchanged.
+    response = await client.get("/healthz", headers={"X-Request-ID": supplied})
+
+    assert response.headers["X-Request-ID"] == supplied
+
+
+@pytest.mark.parametrize(
+    "supplied",
+    [
+        "",
+        "a" * 129,
+        "has spaces",
+        "<script>alert(1)</script>",
+        "tab\there",
+        "semi;colon",
+        "slash/es",
+    ],
+)
+async def test_an_invalid_request_id_is_replaced(client: AsyncClient, supplied: str) -> None:
+    # Replaced, not rejected: correlation is a diagnostic aid, and failing a
+    # request because its trace header was odd would turn an observability
+    # nicety into an outage.
+    response = await client.get("/healthz", headers={"X-Request-ID": supplied})
+
+    echoed = response.headers["X-Request-ID"]
+    assert echoed != supplied
+    # A generated id: 32 hex characters.
+    assert len(echoed) == 32
+    assert all(character in "0123456789abcdef" for character in echoed)
+
+
+async def test_a_request_id_is_generated_when_absent(client: AsyncClient) -> None:
+    response = await client.get("/healthz")
+
+    assert len(response.headers["X-Request-ID"]) == 32
+
+
+@pytest.mark.parametrize(
+    "supplied",
+    ["unicode-é", "null\x00byte", "newline\ninjected", "carriage\rreturn"],
+)
+def test_the_resolver_replaces_values_a_client_could_never_send(supplied: str) -> None:
+    # These cannot reach the middleware over HTTP — httpx refuses to encode a
+    # non-ASCII header value, and a compliant server rejects CR or LF in a
+    # request header with 400 (verified against uvicorn). The resolver is
+    # tested directly so the allow-list is pinned regardless of which client
+    # or server sits in front of it.
+    from hcc.middleware import _resolve_request_id
+
+    resolved = _resolve_request_id(supplied)
+
+    assert resolved != supplied
+    assert len(resolved) == 32
+
+
+def test_the_resolver_keeps_a_valid_value() -> None:
+    from hcc.middleware import _resolve_request_id
+
+    assert _resolve_request_id("valid-trace-id.1_2") == "valid-trace-id.1_2"
+    assert _resolve_request_id(None) != _resolve_request_id(None)

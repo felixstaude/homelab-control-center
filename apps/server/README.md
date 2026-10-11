@@ -22,10 +22,16 @@ hcc/
 ├── security/       # framework-free auth primitives
 │   ├── password.py       # Argon2id hashing, policy, concurrency cap
 │   ├── tokens.py         # token generation + SHA-256 storage hashing
-│   ├── ratelimit.py      # in-process login throttling
+│   ├── ratelimit.py      # three-budget login throttling
 │   ├── sessions.py       # session lifecycle (DB-aware, HTTP-free)
 │   ├── authentication.py # login: throttle, verify, issue
-│   └── authorization.py  # roles + the fail-closed capability interface
+│   ├── authorization.py  # roles + the fail-closed capability interface
+│   ├── bootstrap.py      # first-run: one administrator, exactly once
+│   ├── forwarded.py      # trusted-proxy client address and scheme
+│   └── origins.py        # origin parsing for CSRF and CORS
+├── cli/            # operator commands (`hcc`)
+│   ├── main.py           # argparse dispatch
+│   └── bootstrap.py      # `hcc bootstrap-admin`
 └── api/
     ├── deps.py     # dependencies: session, CSRF, Viewer/Operator/AdminDep
     ├── health.py   # /healthz, /readyz — public, minimal disclosure
@@ -51,6 +57,29 @@ Configuration comes from the environment; copy `.env.example` to `.env` first.
 
 ## Endpoints (Phase 0)
 
+## Creating the initial administrator
+
+A fresh installation has no accounts, and there is deliberately no HTTP
+endpoint that creates the first one (ADR-033). Run this on the controller host
+or inside its container, where the database credentials already are:
+
+```bash
+hcc bootstrap-admin --username admin
+```
+
+The password is prompted for twice with echo off, and is **never** accepted as
+an argument or an environment variable. For automation:
+
+```bash
+hcc bootstrap-admin --username admin --password-stdin < /run/secrets/admin-password
+```
+
+Bootstrap runs **once per installation** and does not reopen — not even if
+every account is later deleted. Exit codes: `0` created, `1` runtime failure,
+`2` usage or input error, `3` already initialized.
+
+## Endpoints
+
 Authentication is **default-deny**: every route requires a session unless it
 appears in the public list below. See
 [`docs/SECURITY.md`](../../docs/SECURITY.md#authentication-enforcement-implemented).
@@ -63,6 +92,9 @@ appears in the public list below. See
 | GET | `/readyz` | Readiness. Same reason. Returns an aggregate status; 503 when degraded. |
 | POST | `/api/v1/auth/login` | Authentication precedes any session. Throttled before password verification. |
 
+Outside production, FastAPI also serves `/docs`, `/docs/oauth2-redirect` and
+`/openapi.json` without a session. All three are **absent in production**.
+
 **Authenticated.**
 
 | Method | Path | Requires | Purpose |
@@ -71,8 +103,18 @@ appears in the public list below. See
 | POST | `/api/v1/auth/logout` | session + CSRF | Revoke the session server-side and clear its cookies. |
 | GET | `/api/v1/auth/me` | session | The authenticated identity, and the CSRF token. |
 
-`/docs` and `/openapi.json` are served unauthenticated outside production and
-are **disabled entirely** when `HCC_ENVIRONMENT=production`.
+### Behind a reverse proxy
+
+Set **`HCC_PUBLIC_ORIGIN`** to the origin browsers use
+(`https://hcc.example.com`), or `HCC_TRUSTED_PROXIES` to the proxy's address
+or network. A production deployment must set one, and startup fails with
+neither: the application otherwise compares a browser's `https://` origin
+against its own internal `http://` view and rejects every state-changing
+request with a misleading CSRF error.
+
+`HCC_TRUSTED_PROXIES` is also what makes per-address login throttling work —
+without it every client appears as the proxy and they share one budget. See
+[`docs/SECURITY.md`](../../docs/SECURITY.md#reverse-proxy-and-https-requirements).
 
 ### Authentication
 

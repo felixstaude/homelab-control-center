@@ -16,18 +16,20 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import text
+from sqlalchemy import make_url, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from hcc.app import create_app
 from hcc.config import Settings
+from hcc.security.password import Argon2Parameters, PasswordHasher
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Iterator, Sequence
@@ -45,7 +47,11 @@ _SERVER_DIR = Path(__file__).resolve().parent.parent
 # discovered from metadata, so adding a table is a deliberate decision about
 # test isolation instead of a silent change in behaviour. Order is irrelevant
 # because the truncation uses CASCADE.
-_TRUNCATED_TABLES = ("sessions", "users")
+#
+# `installation` is included because it is the bootstrap invariant: a leftover
+# row would make every later bootstrap test see an already-initialized
+# installation, and the suite would pass by refusing to do anything.
+_TRUNCATED_TABLES = ("installation", "sessions", "users")
 
 # Cheapest Argon2 parameters the module permits. Integration tests hash and
 # verify real passwords, so the shipped 64 MiB defaults would make the suite
@@ -186,6 +192,97 @@ async def db_session(migrated_database: str) -> AsyncIterator[AsyncSession]:
         await engine.dispose()
 
 
+@pytest.fixture
+async def scratch_database(test_database_url: str) -> AsyncIterator[str]:
+    """Create an empty database for one test, and drop it afterwards.
+
+    Shared by the migration tests, which are destructive and
+    revision-stamped and so must not touch the database the other
+    integration tests use, and by the bootstrap CLI tests, which need a
+    database with no schema in order to exercise the "migrations not applied"
+    path.
+    """
+    url = make_url(test_database_url)
+    scratch_name = f"hcc_migtest_{uuid.uuid4().hex[:12]}"
+
+    # CREATE DATABASE cannot run inside a transaction, hence AUTOCOMMIT.
+    admin_url = url.set(drivername="postgresql+asyncpg")
+    admin_engine = create_async_engine(admin_url, poolclass=NullPool, isolation_level="AUTOCOMMIT")
+    try:
+        async with admin_engine.connect() as connection:
+            await connection.execute(text(f'CREATE DATABASE "{scratch_name}"'))
+    finally:
+        await admin_engine.dispose()
+
+    scratch_url = url.set(database=scratch_name)
+    try:
+        # Yield the plain postgresql:// form; Settings applies the driver.
+        yield scratch_url.render_as_string(hide_password=False)
+    finally:
+        drop_engine = create_async_engine(
+            admin_url, poolclass=NullPool, isolation_level="AUTOCOMMIT"
+        )
+        try:
+            async with drop_engine.connect() as connection:
+                await connection.execute(
+                    text(f'DROP DATABASE IF EXISTS "{scratch_name}" WITH (FORCE)')
+                )
+        finally:
+            await drop_engine.dispose()
+
+
+@pytest.fixture
+async def db_session_factory(
+    migrated_database: str,
+) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
+    """A session *factory* against the migrated test database.
+
+    Distinct from :func:`db_session` because the bootstrap concurrency tests
+    need several genuinely independent sessions — separate connections,
+    separate transactions — in order to observe the database's own
+    serialisation. One shared session could not demonstrate that property, and
+    a mock could not demonstrate it at all.
+
+    Truncates before and after, like :func:`db_session`.
+    """
+    engine = create_async_engine(
+        Settings(
+            environment="test", database_url=migrated_database, log_level="WARNING"
+        ).sqlalchemy_url(),
+        poolclass=NullPool,
+    )
+    factory = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def truncate() -> None:
+        async with engine.begin() as connection:
+            for table in _TRUNCATED_TABLES:
+                await connection.execute(text(f"TRUNCATE TABLE {table} CASCADE"))
+
+    try:
+        await truncate()
+        yield factory
+        await truncate()
+    finally:
+        await engine.dispose()
+
+
+@pytest.fixture
+def fast_hasher() -> PasswordHasher:
+    """A hasher at the cheapest permitted parameters.
+
+    Bootstrap tests hash a real password; the shipped 64 MiB defaults would
+    make them slow for no added coverage, and the defaults are exercised in
+    tests/test_security_password.py.
+    """
+    return PasswordHasher(
+        Argon2Parameters(
+            memory_cost=_FAST_HASH_SETTINGS["password_hash_memory_cost"],
+            time_cost=_FAST_HASH_SETTINGS["password_hash_time_cost"],
+            parallelism=_FAST_HASH_SETTINGS["password_hash_parallelism"],
+        )
+    )
+
+
 # ---------------------------------------------------------------------------
 # HTTP integration against the real database
 #
@@ -213,8 +310,12 @@ def api_settings_factory(
             "log_level": "WARNING",
             # Generous by default so that tests which are not about
             # throttling never trip it. The throttling tests lower it.
+            # `per_username` stays above `per_address_username`, which
+            # configuration validation requires — see
+            # hcc/security/ratelimit.py for why that ordering is load-bearing.
             "login_rate_limit_per_address": 1000,
-            "login_rate_limit_per_username": 1000,
+            "login_rate_limit_per_address_username": 1000,
+            "login_rate_limit_per_username": 2000,
             # NullPool, so every connection is closed when its session closes
             # — inside the test, while the event loop is still alive. With a
             # QueuePool, idle connections are closed by `engine.dispose()`
@@ -246,7 +347,10 @@ async def api_factory(
 
     @asynccontextmanager
     async def build(
-        *, routers: Sequence[APIRouter] = (), **overrides: object
+        *,
+        routers: Sequence[APIRouter] = (),
+        client_address: str = "127.0.0.1",
+        **overrides: object,
     ) -> AsyncIterator[AsyncClient]:
         nonlocal truncate_url
         settings = api_settings_factory(**overrides)
@@ -259,7 +363,11 @@ async def api_factory(
         # lean on.
         for extra in routers:
             app.include_router(extra, prefix=f"{settings.api_prefix}/v1")
-        transport = ASGITransport(app=app)
+        # `client_address` is the transport-level peer — the one value a
+        # caller cannot forge. Varying it is how the proxy-trust tests
+        # distinguish "request arrived from the declared proxy" from "request
+        # arrived from somewhere else claiming to be forwarded".
+        transport = ASGITransport(app=app, client=(client_address, 51234))
         async with (
             app.router.lifespan_context(app),
             AsyncClient(transport=transport, base_url="http://testserver") as client,

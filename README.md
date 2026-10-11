@@ -122,7 +122,14 @@ make setup       # Python venv + npm install
 make env         # create .env files from the committed examples
 make db-up       # start PostgreSQL (Docker or Podman, auto-detected)
 make migrate     # apply migrations
+make bootstrap   # create the initial administrator (prompts for a password)
 ```
+
+`make bootstrap` runs once per installation. There is deliberately no HTTP
+endpoint that creates the first administrator — an endpoint that works while
+no user exists hands ownership of the deployment to whoever reaches the port
+first. See
+[ADR-033](docs/ARCHITECTURE.md#adr-033-the-initial-administrator-is-created-by-a-local-command-not-an-endpoint).
 
 Then, in separate terminals:
 

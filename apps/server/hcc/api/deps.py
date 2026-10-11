@@ -13,14 +13,25 @@ at runtime, not under ``TYPE_CHECKING``. FastAPI resolves endpoint annotations
 with ``get_type_hints`` against the *endpoint's* module namespace, so a string
 forward reference here would fail to resolve in whichever router module uses
 the alias.
+
+Note on ``HTTPConnection``: the dependencies below take
+:class:`starlette.requests.HTTPConnection`, the common base of ``Request`` and
+``WebSocket``, rather than ``Request``. That is deliberate and load-bearing.
+FastAPI injects ``Request`` only on HTTP routes, so a dependency annotated
+``Request`` raises ``TypeError`` when the same router is used for a WebSocket
+— which meant the router-level authentication dependency could not actually
+authenticate a WebSocket, and a protected WebSocket route would have been
+refused by an internal error rather than by an authentication decision.
+Depending on the base class makes one dependency correct on both.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Annotated, Final
 
-from fastapi import Depends, Request
+from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.requests import HTTPConnection
 
 from hcc.config import Settings
 from hcc.db import Database
@@ -39,6 +50,8 @@ from hcc.security.authorization import (
     CapabilityNotEnabledError,
     InsufficientRoleError,
 )
+from hcc.security.forwarded import forwarded_scheme
+from hcc.security.origins import InvalidOriginError, normalize_origin, origin_from_parts
 from hcc.security.password import PasswordHasher
 from hcc.security.sessions import AuthenticatedSession, SessionService
 from hcc.security.tokens import tokens_equal
@@ -49,15 +62,15 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
-def get_app_settings(request: Request) -> Settings:
+def get_app_settings(connection: HTTPConnection) -> Settings:
     """Return the settings the application was built with."""
-    settings: Settings = request.app.state.settings
+    settings: Settings = connection.app.state.settings
     return settings
 
 
-def get_database(request: Request) -> Database:
+def get_database(connection: HTTPConnection) -> Database:
     """Return the process-wide :class:`~hcc.db.Database`."""
-    database: Database = request.app.state.database
+    database: Database = connection.app.state.database
     return database
 
 
@@ -69,21 +82,21 @@ async def get_session(
         yield session
 
 
-def get_password_hasher(request: Request) -> PasswordHasher:
+def get_password_hasher(connection: HTTPConnection) -> PasswordHasher:
     """Return the process-wide password hasher."""
-    hasher: PasswordHasher = request.app.state.password_hasher
+    hasher: PasswordHasher = connection.app.state.password_hasher
     return hasher
 
 
-def get_session_service(request: Request) -> SessionService:
+def get_session_service(connection: HTTPConnection) -> SessionService:
     """Return the process-wide session service."""
-    service: SessionService = request.app.state.session_service
+    service: SessionService = connection.app.state.session_service
     return service
 
 
-def get_authentication_service(request: Request) -> AuthenticationService:
+def get_authentication_service(connection: HTTPConnection) -> AuthenticationService:
     """Return the process-wide authentication service."""
-    service: AuthenticationService = request.app.state.authentication_service
+    service: AuthenticationService = connection.app.state.authentication_service
     return service
 
 
@@ -98,40 +111,106 @@ def get_authentication_service(request: Request) -> AuthenticationService:
 _STATE_CHANGING_METHODS: Final = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 
-def _validate_origin(request: Request, settings: Settings) -> None:
-    """Reject a state-changing request from an unexpected origin.
+def expected_origins(connection: HTTPConnection, settings: Settings) -> set[str]:
+    """The canonical origins a legitimate browser request may carry.
 
-    A present ``Origin`` must match an allowed one. An absent ``Origin`` is
-    allowed through on the strength of the CSRF token alone: non-browser
-    clients do not send one, and browsers always do for the cross-site
-    requests this guards against. Documented as a deliberate gap in
-    ``hcc/api/v1/auth.py``.
+    Three sources, in order of authority:
 
-    Allowed origins are the configured CORS origins plus the request's own
-    host, so a same-origin deployment needs no extra configuration.
+    1. ``settings.public_origin`` — the origin an operator has declared this
+       deployment is reached on. When set it is **authoritative**, and the
+       request's own view is not consulted at all. This is the recommended
+       production setting, because it depends on nothing the client sends.
+
+    2. ``settings.cors_origins`` — explicitly allow-listed origins, for a
+       cross-origin development client. Already canonicalised and
+       wildcard-free by configuration validation.
+
+    3. The request's own origin, reconstructed from its scheme and host. This
+       is what makes a direct same-origin deployment work with no
+       configuration. The **scheme** comes from ``X-Forwarded-Proto`` when,
+       and only when, the peer is a configured trusted proxy; otherwise from
+       the transport.
+
+    Point 3 is the one that was wrong before this milestone. The old code took
+    the scheme straight from the ASGI scope, so behind a TLS-terminating proxy
+    it compared the browser's ``https://host`` against its own internal
+    ``http://host`` and rejected every state-changing request with a CSRF
+    error — naming the wrong cause and breaking the documented deployment.
     """
-    origin = request.headers.get("origin")
+    allowed = set(settings.cors_origins)
+
+    if settings.public_origin is not None:
+        # Authoritative. Deliberately does not add the derived origin: an
+        # operator who has stated the public origin has also stated that
+        # anything else is not it, and silently accepting the internal origin
+        # too would widen the check without being asked.
+        allowed.add(settings.public_origin)
+        return allowed
+
+    scheme = (
+        forwarded_scheme(
+            peer=connection.client.host if connection.client else None,
+            forwarded_proto=connection.headers.get("x-forwarded-proto"),
+            networks=settings.trusted_proxy_networks,
+        )
+        or connection.url.scheme
+    )
+    derived = origin_from_parts(scheme, connection.url.netloc)
+    if derived is not None:
+        allowed.add(derived)
+    return allowed
+
+
+def _validate_origin(
+    connection: HTTPConnection, settings: Settings, *, require_origin: bool
+) -> None:
+    """Reject a request whose ``Origin`` is absent or unexpected.
+
+    ``require_origin`` differs by protocol, and the difference is not
+    arbitrary:
+
+    * **HTTP: not required.** An absent ``Origin`` falls back to the CSRF
+      token alone. Non-browser clients — ``curl``, the test suite, a future
+      CLI — send none, and browsers always send one for the cross-site
+      requests this guards against. A documented, narrow gap.
+
+    * **WebSocket: required.** A WebSocket handshake is not subject to CORS,
+      so the browser will happily open a cross-origin connection and attach
+      cookies; ``Origin`` is the only signal distinguishing a legitimate
+      handshake from cross-site WebSocket hijacking. Browsers always send it
+      on a WebSocket handshake, so requiring it costs a legitimate browser
+      client nothing, and a non-browser client has no business on a
+      session-authenticated socket (see the module note on authentication
+      boundaries in ``hcc/api/v1/router.py``).
+    """
+    origin = connection.headers.get("origin")
     if not origin:
+        if require_origin:
+            logger.warning("csrf_origin_missing", path=connection.url.path)
+            raise CsrfValidationError
         return
 
-    allowed = set(settings.cors_origins)
-    # Same-origin requests carry an Origin matching the request's own host,
-    # which is always legitimate and must not require configuration.
-    allowed.add(f"{request.url.scheme}://{request.url.netloc}")
+    try:
+        presented = normalize_origin(origin)
+    except InvalidOriginError:
+        # A malformed Origin is never produced by a browser, so there is
+        # nothing to be permissive about.
+        logger.warning("csrf_origin_malformed", origin=origin, path=connection.url.path)
+        raise CsrfValidationError from None
 
-    if origin not in allowed:
+    if presented not in expected_origins(connection, settings):
         logger.warning(
             "csrf_origin_rejected",
             # The rejected origin is attacker-controlled, so it is recorded
             # for the operator but never echoed back to the client.
-            origin=origin,
-            path=request.url.path,
+            origin=presented,
+            path=connection.url.path,
         )
         raise CsrfValidationError
 
 
 def _validate_csrf_token(
-    request: Request, authenticated: AuthenticatedSession, settings: Settings
+    connection: HTTPConnection, authenticated: AuthenticatedSession, settings: Settings
 ) -> None:
     """Require the session's CSRF token in the configured header.
 
@@ -140,7 +219,7 @@ def _validate_csrf_token(
     cookies for a sibling subdomain still cannot forge a request. Compared in
     constant time via :func:`hcc.security.tokens.tokens_equal`.
     """
-    presented = request.headers.get(settings.csrf_header_name)
+    presented = connection.headers.get(settings.csrf_header_name)
     if not presented or not tokens_equal(presented, authenticated.csrf_token):
         logger.warning(
             "csrf_token_rejected",
@@ -149,18 +228,18 @@ def _validate_csrf_token(
             # misconfigured client from a forged request. The value itself is
             # never logged.
             presented=bool(presented),
-            path=request.url.path,
+            path=connection.url.path,
         )
         raise CsrfValidationError
 
 
 async def get_current_session(
-    request: Request,
+    connection: HTTPConnection,
     db: Annotated[AsyncSession, Depends(get_session)],
     sessions: Annotated[SessionService, Depends(get_session_service)],
     settings: Annotated[Settings, Depends(get_app_settings)],
 ) -> AuthenticatedSession:
-    """Resolve the caller's session, enforcing CSRF on state-changing requests.
+    """Resolve the caller's session, enforcing CSRF where it applies.
 
     CSRF validation lives in the same dependency as session resolution on
     purpose. Were it separate, an endpoint author could add an authenticated
@@ -168,20 +247,40 @@ async def get_current_session(
     someone exploited it. Here, asking for the current session necessarily
     gets the protection.
 
+    Three protocol cases, deliberately distinct:
+
+    * **Safe HTTP methods** (GET, HEAD, OPTIONS) — session only. Requiring a
+      CSRF header on GET would break ordinary navigation, and a GET that
+      mutates state is a bug rather than a case to support.
+    * **State-changing HTTP methods** — Origin (when present) and the
+      session-bound CSRF token.
+    * **WebSocket handshakes** — Origin, **mandatory**. A handshake carries no
+      custom headers a browser can set, so the double-submit token cannot be
+      presented here; the CORS-exempt nature of WebSockets makes ``Origin``
+      the load-bearing check instead. How a browser socket presents a CSRF
+      token after the handshake is a Phase 5 decision, recorded in
+      ``hcc/api/v1/router.py``.
+
     Raises:
         NotAuthenticatedError: no usable session. Identical for an absent,
             malformed, expired, revoked or unknown token, so a caller cannot
             probe whether a token is live.
-        CsrfValidationError: the request changes state and failed its Origin
-            or CSRF token check.
+        CsrfValidationError: the request changes state, or is a WebSocket
+            handshake, and failed its Origin or CSRF token check.
     """
-    authenticated = await sessions.resolve(db, request.cookies.get(settings.session_cookie_name))
+    authenticated = await sessions.resolve(db, connection.cookies.get(settings.session_cookie_name))
     if authenticated is None:
         raise NotAuthenticatedError
 
-    if request.method in _STATE_CHANGING_METHODS:
-        _validate_origin(request, settings)
-        _validate_csrf_token(request, authenticated, settings)
+    if connection.scope["type"] == "websocket":
+        _validate_origin(connection, settings, require_origin=True)
+        return authenticated
+
+    # `method` exists on an HTTP connection only, which the branch above has
+    # already excluded.
+    if connection.scope["method"] in _STATE_CHANGING_METHODS:
+        _validate_origin(connection, settings, require_origin=False)
+        _validate_csrf_token(connection, authenticated, settings)
 
     return authenticated
 
@@ -195,9 +294,9 @@ async def get_current_session(
 # ---------------------------------------------------------------------------
 
 
-def get_authorizer(request: Request) -> Authorizer:
+def get_authorizer(connection: HTTPConnection) -> Authorizer:
     """Return the process-wide authorizer."""
-    authorizer: Authorizer = request.app.state.authorizer
+    authorizer: Authorizer = connection.app.state.authorizer
     return authorizer
 
 

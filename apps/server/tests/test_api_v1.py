@@ -59,6 +59,7 @@ def test_openapi_docs_are_disabled_in_production() -> None:
         Settings(
             environment="production",
             database_url="postgresql://u:p@db:5432/hcc",
+            public_origin="https://hcc.example.test",
         )
     )
 

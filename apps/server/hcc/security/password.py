@@ -184,10 +184,32 @@ limiter bounds attempts over time, the semaphore bounds peak memory at an
 instant. Ten attempts per second is survivable spread out and is not
 survivable all at once.
 
-A ``threading`` semaphore rather than an ``asyncio`` one, because the work
-happens in a worker thread either way, and a threading primitive bounds the
-sync and async paths with one mechanism and no event-loop affinity. See
-ADR-029.
+The threading semaphore is the authoritative bound, because it is the one both
+the sync and async paths pass through and it has no event-loop affinity.
+
+### Admission happens before dispatch, not inside the worker
+
+The async methods additionally acquire an **asyncio** semaphore of the same
+size *before* handing work to ``asyncio.to_thread``. Without it, a request
+waiting for permission to hash would sit blocked on the threading semaphore
+*inside* a worker thread, occupying one of the default executor's threads
+(``min(32, cpu_count + 4)``) while doing nothing. Enough concurrent login
+attempts would then exhaust the shared executor and starve every other
+``to_thread`` caller in the process.
+
+Acquiring asynchronously first means a waiting request costs one suspended
+coroutine instead of one blocked OS thread, and that a cancelled request
+(client disconnect, timeout) releases its place immediately rather than after
+the hash it never needed completes. The threading semaphore remains in place
+behind it and is uncontended in the pure-async case, so the memory bound is
+unchanged and mixed sync/async use is still bounded correctly.
+
+The asyncio semaphore is created lazily **per event loop**. An asyncio
+primitive binds to the loop that first awaits it, and one ``PasswordHasher``
+instance can legitimately be used from more than one loop over its lifetime —
+most obviously in a test suite, which creates a loop per test. Keying by the
+running loop in a ``WeakKeyDictionary`` keeps the instance reusable and lets
+the entry disappear with the loop. See ADR-029.
 """
 
 from __future__ import annotations
@@ -197,6 +219,7 @@ import threading
 import unicodedata
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
+from weakref import WeakKeyDictionary
 
 from argon2 import PasswordHasher as _Argon2Hasher
 from argon2.exceptions import (
@@ -407,7 +430,13 @@ class PasswordHasher:
     need specific parameters.
     """
 
-    __slots__ = ("_hasher", "_max_concurrency", "_parameters", "_semaphore")
+    __slots__ = (
+        "_async_gates",
+        "_hasher",
+        "_max_concurrency",
+        "_parameters",
+        "_semaphore",
+    )
 
     def __init__(
         self,
@@ -428,6 +457,12 @@ class PasswordHasher:
         # thread for async callers and inline for sync ones, and this bounds
         # both with no event-loop affinity.
         self._semaphore = threading.BoundedSemaphore(max_concurrency)
+        # Admission gates for the async paths, one per event loop. See
+        # "Admission happens before dispatch" in the module docstring for why
+        # these exist and why they are keyed by loop.
+        self._async_gates: WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = (
+            WeakKeyDictionary()
+        )
         self._hasher = _Argon2Hasher(
             time_cost=self._parameters.time_cost,
             memory_cost=self._parameters.memory_cost,
@@ -479,14 +514,33 @@ class PasswordHasher:
             # cause is preserved for the server-side traceback.
             raise PasswordError("failed to hash password") from exc
 
+    def _async_gate(self) -> asyncio.Semaphore:
+        """Return this event loop's admission gate, creating it on first use.
+
+        Lazy and per-loop because an asyncio primitive binds to the loop that
+        first awaits it, while a ``PasswordHasher`` instance may outlive a
+        loop or be shared across several.
+        """
+        loop = asyncio.get_running_loop()
+        gate = self._async_gates.get(loop)
+        if gate is None:
+            gate = asyncio.Semaphore(self._max_concurrency)
+            self._async_gates[loop] = gate
+        return gate
+
     async def hash_async(self, password: str) -> str:
         """Hash a password in a worker thread.
 
         Use this from request handlers: hashing takes tens of milliseconds,
         which would otherwise block the event loop and stall every concurrent
         request.
+
+        Waits for a concurrency slot **before** occupying a worker thread, so
+        a queue of attempts costs suspended coroutines rather than blocked
+        threads from the shared executor.
         """
-        return await asyncio.to_thread(self.hash, password)
+        async with self._async_gate():
+            return await asyncio.to_thread(self.hash, password)
 
     # --- Verification -----------------------------------------------------
 
@@ -547,8 +601,14 @@ class PasswordHasher:
         return True
 
     async def verify_async(self, encoded_hash: str, password: str) -> bool:
-        """Verify a password in a worker thread. Use this from handlers."""
-        return await asyncio.to_thread(self.verify, encoded_hash, password)
+        """Verify a password in a worker thread. Use this from handlers.
+
+        Admission is acquired before dispatch, as in :meth:`hash_async`. This
+        is the method on the unauthenticated login path, so it is the one
+        where a queue of attempts must not consume the shared thread pool.
+        """
+        async with self._async_gate():
+            return await asyncio.to_thread(self.verify, encoded_hash, password)
 
     # --- Parameter upgrades -----------------------------------------------
 

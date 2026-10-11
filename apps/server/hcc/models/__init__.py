@@ -8,6 +8,7 @@ tables it believes have been removed.
 """
 
 from hcc.db import Base
+from hcc.models.installation import Installation
 from hcc.models.session import Session
 from hcc.models.user import (
     PASSWORD_HASH_MAX_LENGTH,
@@ -25,6 +26,7 @@ __all__ = [
     "USERNAME_MIN_LENGTH",
     "USER_ROLE_ENUM_NAME",
     "Base",
+    "Installation",
     "Session",
     "User",
     "UserRole",

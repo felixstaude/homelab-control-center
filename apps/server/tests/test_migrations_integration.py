@@ -20,17 +20,12 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import pytest
 from sqlalchemy import make_url, text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
-
-if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
 
 pytestmark = pytest.mark.integration
 
@@ -39,7 +34,12 @@ _SERVER_DIR = Path(__file__).resolve().parent.parent
 # Revisions in order, oldest first. Asserted against `alembic history` so that
 # adding a migration without updating this list is caught rather than silently
 # untested.
-EXPECTED_REVISIONS = ("0001_baseline", "0002_users", "0003_sessions")
+EXPECTED_REVISIONS = (
+    "0001_baseline",
+    "0002_users",
+    "0003_sessions",
+    "0004_installation",
+)
 
 
 def run_alembic(database_url: str, *args: str) -> subprocess.CompletedProcess[str]:
@@ -70,42 +70,6 @@ def alembic_ok(database_url: str, *args: str) -> str:
             f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
         )
     return result.stdout + result.stderr
-
-
-@pytest.fixture
-async def scratch_database(test_database_url: str) -> AsyncIterator[str]:
-    """Create an empty database for one test, and drop it afterwards.
-
-    Migrations are destructive and revision-stamped, so they must not run
-    against the database the other integration tests share.
-    """
-    url = make_url(test_database_url)
-    scratch_name = f"hcc_migtest_{uuid.uuid4().hex[:12]}"
-
-    # CREATE DATABASE cannot run inside a transaction, hence AUTOCOMMIT.
-    admin_url = url.set(drivername="postgresql+asyncpg")
-    admin_engine = create_async_engine(admin_url, poolclass=NullPool, isolation_level="AUTOCOMMIT")
-    try:
-        async with admin_engine.connect() as connection:
-            await connection.execute(text(f'CREATE DATABASE "{scratch_name}"'))
-    finally:
-        await admin_engine.dispose()
-
-    scratch_url = url.set(database=scratch_name)
-    try:
-        # Yield the plain postgresql:// form; Settings applies the driver.
-        yield scratch_url.render_as_string(hide_password=False)
-    finally:
-        drop_engine = create_async_engine(
-            admin_url, poolclass=NullPool, isolation_level="AUTOCOMMIT"
-        )
-        try:
-            async with drop_engine.connect() as connection:
-                await connection.execute(
-                    text(f'DROP DATABASE IF EXISTS "{scratch_name}" WITH (FORCE)')
-                )
-        finally:
-            await drop_engine.dispose()
 
 
 async def table_exists(database_url: str, table: str) -> bool:
@@ -147,7 +111,7 @@ async def test_upgrade_applies_to_an_empty_database(scratch_database: str) -> No
     alembic_ok(scratch_database, "upgrade", "head")
 
     assert await table_exists(scratch_database, "users")
-    assert "0003_sessions (head)" in alembic_ok(scratch_database, "current")
+    assert f"{EXPECTED_REVISIONS[-1]} (head)" in alembic_ok(scratch_database, "current")
 
 
 async def test_upgrade_creates_the_enum_type_and_trigger(scratch_database: str) -> None:
@@ -182,9 +146,14 @@ async def test_upgrade_creates_the_enum_type_and_trigger(scratch_database: str) 
 
 async def test_downgrade_removes_the_table(scratch_database: str) -> None:
     alembic_ok(scratch_database, "upgrade", "head")
+    assert await table_exists(scratch_database, "installation")
     assert await table_exists(scratch_database, "sessions")
 
-    # One step back drops `sessions`; `users` belongs to the revision before.
+    # One step back drops `installation`.
+    alembic_ok(scratch_database, "downgrade", "-1")
+    assert not await table_exists(scratch_database, "installation")
+
+    # The next drops `sessions`; `users` belongs to the revision before that.
     alembic_ok(scratch_database, "downgrade", "-1")
 
     assert not await table_exists(scratch_database, "sessions")
@@ -199,9 +168,9 @@ async def test_downgrade_removes_the_enum_type_and_function(scratch_database: st
     # them behind is what breaks a subsequent upgrade.
     alembic_ok(scratch_database, "upgrade", "head")
 
-    # Two steps: `sessions` first, then `users`, which owns the enum type and
-    # the trigger function.
-    alembic_ok(scratch_database, "downgrade", "-2")
+    # Three steps: `installation`, then `sessions`, then `users` — which owns
+    # the enum type and the trigger function.
+    alembic_ok(scratch_database, "downgrade", "-3")
 
     assert not await type_exists(scratch_database, "user_role")
 
@@ -340,4 +309,4 @@ async def test_migrations_leave_no_unexpected_tables(scratch_database: str) -> N
     finally:
         await engine.dispose()
 
-    assert tables == {"alembic_version", "sessions", "users"}
+    assert tables == {"alembic_version", "installation", "sessions", "users"}

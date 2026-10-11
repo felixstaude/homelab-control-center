@@ -47,9 +47,51 @@ make setup       # Python venv + npm install
 make env         # create .env files from the committed examples
 make db-up       # start PostgreSQL and wait for readiness
 make migrate     # apply migrations
+make bootstrap   # create the initial administrator (prompts)
 ```
 
 `make setup` takes a few minutes on a first run. Everything after it is fast.
+
+### Creating the initial administrator
+
+A fresh installation has no accounts, and there is deliberately **no HTTP
+endpoint** that creates the first one — see
+[ADR-033](ARCHITECTURE.md#adr-033-the-initial-administrator-is-created-by-a-local-command-not-an-endpoint).
+It is created by a local command, which proves access to the database:
+
+```bash
+make bootstrap
+# or, directly:
+cd apps/server && .venv/bin/hcc bootstrap-admin --username admin
+```
+
+The password is prompted for twice with echo off. The minimum is 8 characters
+and there are no composition rules (ADR-026).
+
+For automation, read it from standard input so it never appears in a process
+listing or in shell history:
+
+```bash
+hcc bootstrap-admin --username admin --password-stdin < /run/secrets/admin-password
+```
+
+The password is **never** accepted as a command-line argument or an
+environment variable. Exit codes: `0` created, `1` runtime failure, `2` usage
+or input error, `3` already initialized — so a provisioning script can treat
+`3` as success.
+
+**Bootstrap runs once per installation and does not reopen.** Initialization is
+recorded as a row in the `installation` table, so deleting or deactivating
+every account does *not* let it run again. In development, to start over:
+
+```bash
+make db-reset    # destroys the volume and re-applies migrations
+```
+
+There is no password-reset flow yet, so a forgotten development password means
+`make db-reset`. In a real deployment it means issuing SQL — the same
+authority bootstrap required. Recorded as a known gap in
+[`SECURITY.md`](SECURITY.md#known-gaps).
 
 ## Running it
 

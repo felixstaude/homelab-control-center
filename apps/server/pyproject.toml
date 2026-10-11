@@ -40,6 +40,12 @@ dev = [
 [project.urls]
 Homepage = "https://github.com/felixstaude/homelab-control-center"
 
+# Operator commands. `hcc bootstrap-admin` creates the initial administrator;
+# see hcc/cli/bootstrap.py for why that is a local command rather than an HTTP
+# endpoint.
+[project.scripts]
+hcc = "hcc.cli.main:run"
+
 [tool.hatch.build.targets.wheel]
 packages = ["hcc"]
 

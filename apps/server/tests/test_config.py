@@ -71,5 +71,11 @@ def test_settings_are_immutable() -> None:
 
 
 def test_is_production_reflects_environment() -> None:
-    assert _settings(environment="production").is_production is True
+    # Production additionally requires a declared public origin, so that the
+    # CSRF Origin check knows what a browser will send behind a reverse proxy
+    # (milestone 1.5). Covered on its own in test_config_origins.py.
+    assert (
+        _settings(environment="production", public_origin="https://hcc.example.test").is_production
+        is True
+    )
     assert _settings(environment="development").is_production is False

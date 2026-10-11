@@ -34,18 +34,65 @@ inside the look-back period. Memory is two integers per key, and the boundary
 burst is gone. The estimate is slightly conservative near a boundary, which is
 the right direction to err for a login endpoint.
 
-## Keys: both address and username
+## Keys: three budgets, not two
 
-Attempts are limited per **client address** and per **username**, with
-separate budgets, and both must allow an attempt.
+| Budget | Key | Bounds |
+| --- | --- | --- |
+| ``per_address`` | source address | one source, against any account |
+| ``per_address_username`` | source address **and** username | one source, against one account |
+| ``per_username`` | username | every source, against one account |
 
-Either alone is insufficient:
+All three must allow an attempt, and they are consulted in that order.
 
-* Per-address only lets a botnet spread a password-spray attack across many
-  addresses, each under the limit, all targeting one account.
-* Per-username only lets one host enumerate many usernames freely, and lets an
-  attacker lock a known user out of their own account by burning their budget
-  from elsewhere.
+### Why three, and why the order matters
+
+The obvious two-budget design — per address and per username — has a defect
+that was found by audit rather than by reasoning, and it is worth recording
+precisely.
+
+With a per-username budget *lower than* the per-address budget, one attacker
+exhausts a known account's username budget without exhausting their own
+address budget, and can sustain it indefinitely. The victim is then refused
+before password verification, from any address, for as long as the attacker
+keeps going. That is a remote, unauthenticated, permanent denial of service
+against a named administrator — reachable with ten requests every five
+minutes from a single host.
+
+The shape here removes it:
+
+* **A single source cannot exhaust the global username budget.** It is cut off
+  by ``per_address_username`` first, and because the budgets are consulted in
+  order and refusal returns immediately, a source that has hit its per-account
+  limit stops contributing to the global one. One source can therefore spend
+  at most ``per_address_username`` of ``per_username``.
+* **Reaching the global ceiling takes many distinct sources.** At the defaults
+  (10 and 100) it takes ten, which is the distributed credential-stuffing case
+  the global budget exists to catch.
+* ``hcc.config`` enforces ``per_username > per_address_username`` at startup,
+  so the unsafe relationship cannot be reintroduced by configuration.
+
+### What is kept
+
+* **Password guessing** is bounded per source by ``per_address``.
+* **Targeted guessing** is bounded per source per account by
+  ``per_address_username``.
+* **Credential stuffing** across many accounts from one source is bounded by
+  ``per_address``.
+* **Distributed attacks** on one account are bounded by ``per_username``.
+* **Argon2 cost** is bounded because every budget is consulted before
+  verification.
+* **No permanent lockout.** Every budget is a sliding window that refills; no
+  state marks an account as locked.
+
+### The residual limitation, stated plainly
+
+A genuinely distributed attacker controlling enough sources can still exhaust
+one account's global budget and degrade availability for that account, in
+windows. That is inherent to any per-account limit: the alternative is no
+global username budget, which permits unlimited distributed guessing against
+a known administrator. The trade is bounded degradation over unbounded
+guessing, and the ratio between the budgets is what sets how much
+distribution an attacker must actually achieve.
 
 Usernames are keyed by their **canonical** form, so ``Admin`` and ``admin``
 share a budget rather than offering two.
@@ -224,36 +271,79 @@ class RateLimiter:
             del self._counters[key]
 
 
+#: Separator for the composite (address, username) key. A character that
+#: cannot appear in a canonical username — `normalize_username` rejects
+#: control characters and whitespace, and this is a control character — so two
+#: distinct pairs can never collide into one key.
+_COMPOSITE_KEY_SEPARATOR: Final = "\x00"
+
+
+def composite_key(address: str, username_canonical: str) -> str:
+    """Build the key for the per-source-per-account budget.
+
+    Exposed so tests can assert on the exact key rather than reconstructing
+    the format and drifting from it.
+    """
+    return f"{address}{_COMPOSITE_KEY_SEPARATOR}{username_canonical}"
+
+
 @dataclass(frozen=True, slots=True)
 class LoginThrottle:
-    """The pair of budgets guarding the login endpoint.
+    """The three budgets guarding the login endpoint.
 
-    Both must allow an attempt. See the module docstring for why one alone is
-    insufficient.
+    All must allow an attempt. See the module docstring for why there are
+    three, and for the lockout defect this shape exists to prevent.
     """
 
     per_address: RateLimiter
+    per_address_username: RateLimiter
     per_username: RateLimiter
 
     def check(self, *, address: str, username_canonical: str) -> RateLimitDecision:
-        """Consult both budgets. Must be called **before** password verification.
+        """Consult every budget. Must be called **before** password verification.
 
-        The address budget is checked first, so a distributed attack on one
-        username cannot be used to exhaust that username's budget while each
-        individual address is already over its own.
+        Order is load-bearing, not stylistic. Each budget counts the attempt
+        it is asked about, and a refusal returns immediately without
+        consulting the ones after it. So:
+
+        * The per-source budget is first, so a source that is over its overall
+          limit stops contributing to anything else.
+        * The per-source-per-account budget is second, so a source that is
+          over its limit against *this* account stops contributing to that
+          account's global budget.
+        * The global per-account budget is last, and therefore only ever
+          accumulates from sources that are still within both of their own
+          limits. That is what makes it unreachable by a single source.
+
+        Reordering these would reintroduce the single-source lockout.
         """
         address_decision = self.per_address.check(address, scope="address")
         if not address_decision.allowed:
             return address_decision
 
+        pair_decision = self.per_address_username.check(
+            composite_key(address, username_canonical), scope="address_username"
+        )
+        if not pair_decision.allowed:
+            return pair_decision
+
         return self.per_username.check(username_canonical, scope="username")
 
     def reset(self, *, address: str, username_canonical: str) -> None:
-        """Clear both budgets after a successful login."""
+        """Clear this source's budgets after a successful login.
+
+        The **global** per-username budget is deliberately *not* cleared. A
+        successful login from one source says nothing about the failed
+        attempts other sources are making against the same account, and
+        clearing it would hand an attacker a budget reset for the price of one
+        valid credential — which is exactly the position a credential-stuffing
+        attacker who has found one working password is in.
+        """
         self.per_address.reset(address)
-        self.per_username.reset(username_canonical)
+        self.per_address_username.reset(composite_key(address, username_canonical))
 
     def clear(self) -> None:
         """Forget everything. For tests and administrative reset."""
         self.per_address.clear()
+        self.per_address_username.clear()
         self.per_username.clear()

@@ -2,15 +2,14 @@
 
 The security model for Homelab Control Center.
 
-> **Current status (Phase 1, milestone 1.3).** **Login, logout and
-> server-side sessions are now implemented**, with CSRF protection, rate
-> limiting and security headers. Authorization (role enforcement), agent
-> communication, monitoring and management are still design only.
+> **Current status (Phase 1, milestone 1.5).** An operator can now
+> **initialize a fresh installation and log in**. The initial administrator is
+> created by a local command, `hcc bootstrap-admin`
+> ([first-run bootstrap](#first-run-bootstrap-implemented)); login, logout,
+> server-side sessions, CSRF protection, login throttling, default-deny
+> authentication and role authorization are implemented and tested. Agent
+> communication, monitoring and remote management remain design only.
 >
-> There is deliberately **no way to create a user** yet — no registration, no
-> setup wizard — so the endpoints are reachable but no account exists to log
-> into until milestone 1.5. See "Known gaps" below for what is still missing
-> before this should face an untrusted network.
 > Sections marked **(design)** describe what later milestones will build; they
 > are documented now because they constrain the architecture that *is* built.
 > Sections marked **(implemented)** are in the code today and covered by
@@ -153,8 +152,10 @@ Concretely:
 
 ## Authentication
 
-The password hashing component is **implemented** (milestone 1.2); everything
-that would use it — login, sessions, registration — is still design.
+Password hashing, login and server-side sessions are all **implemented**, and
+the initial administrator is created by the local command described in
+[first-run bootstrap](#first-run-bootstrap-implemented). There is deliberately
+no self-service registration and no password-reset flow yet.
 
 Two distinct identity types, deliberately not conflated:
 
@@ -222,23 +223,184 @@ Properties that hold today, each covered by tests:
   absent from log events, error bodies and `repr`, asserted by capturing
   structured events and checking every key and value.
 
+### First-run bootstrap (implemented)
+
+A fresh installation has no accounts. Creating the first administrator is
+therefore the one operation that cannot be authorized by an existing
+credential, and how it *is* authorized is a security decision in its own
+right.
+
+**It is authorized by local access to the controller's database**, proved by
+running a command on the controller host or inside its container:
+
+```
+hcc bootstrap-admin --username admin
+```
+
+The password is prompted for twice with echo off. For automation it is read
+from standard input instead, so it never appears in a process listing:
+
+```
+hcc bootstrap-admin --username admin --password-stdin < /run/secrets/admin-password
+```
+
+#### Why there is no public initial-admin endpoint
+
+The obvious alternative is to expose `POST /api/v1/setup` while the `users`
+table is empty. That hands ownership of the deployment to whoever reaches the
+port first, and on a homelab the race is real: the control plane is frequently
+reachable on the LAN before the operator has finished configuring it, and the
+window is as long as the gap between "container started" and "operator opened
+the browser". Losing that race is also invisible — the installation simply
+looks as though it was already set up.
+
+An empty table is a statement about the current user list, not proof of
+anything. Bootstrap is therefore gated on something a network attacker does
+not have: the database credentials. That is the same authority needed to read
+every password hash and session token anyway, so requiring it grants nothing
+new.
+
+#### The durable invariant
+
+Initialization is recorded as a single row in an `installation` table, and
+bootstrap is refused while that row exists.
+
+The row — not the user count — is the invariant, so **bootstrap does not
+reopen** when the administrator is deactivated, renamed or deleted. Deriving
+it from `SELECT count(*) FROM users` would hand ownership to whoever noticed
+that the last account had been removed. The row is written once and nothing in
+the application updates or deletes it, and it deliberately carries **no
+foreign key** to `users`: a cascade would delete it along with the
+administrator and silently reopen the door.
+
+#### Concurrency and replay protection
+
+Two mechanisms, and only the second is load-bearing:
+
+1. A **transaction-scoped advisory lock** (`pg_advisory_xact_lock`) serialises
+   attempts across processes and connections, so the loser gets a readable
+   "already initialized" error rather than an integrity error. Being
+   transaction-scoped, it is released on commit, rollback or crash — an
+   interrupted attempt leaves no lock to clean up.
+2. The **singleton primary key** on `installation`: `id` is a boolean with
+   `CHECK (id)`, so `true` is the only storable value and a second insert
+   violates the primary key. This holds even if a writer never takes the lock,
+   so correctness does not depend on cooperation.
+
+The administrator row and the installation row are written in **one
+transaction**, so there is no state in which an administrator exists but the
+installation is unmarked, or vice versa. Ten simultaneous attempts against a
+real PostgreSQL produce exactly one administrator, asserted by an integration
+test.
+
+#### What the command does and does not expose
+
+| Property | Behaviour |
+| --- | --- |
+| Password as an argument | **Never.** Command lines are world-readable through `/proc` and land in shell history. |
+| Password in the environment | **Never.** `/proc/<pid>/environ` is readable by the same user and is inherited by children. A better option exists, so this one is not offered. |
+| Password policy | The existing one (ADR-026), reported in full with every violation at once. |
+| Username normalization | The existing one (ADR-014), so `Admin` and `admin` are the same account here as everywhere. |
+| Output | Username, canonical username, role, timestamp. No password, no hash, no token. |
+| Exit codes | `0` created · `1` runtime failure · `2` usage or input error · `3` already initialized — so an idempotent provisioning script can treat `3` as success. |
+| Pre-flight | Database connectivity and the presence of the required tables, so "migrations not applied" is reported as that rather than as a driver error. |
+
 ### Reverse proxy and HTTPS requirements
 
 This is not optional. The application speaks plain HTTP and expects a
-TLS-terminating reverse proxy in front of it (ADR, `Transport security`
-below).
+TLS-terminating reverse proxy in front of it (see
+[Transport security](#transport-security) below).
 
 **Without HTTPS, session cookies travel in clear and the session mechanism is
 fully compromised** — anyone on the path can read the cookie and impersonate
-the user. Concretely:
+the user.
+
+#### Required settings
 
 | Requirement | Why |
 | --- | --- |
 | Terminate TLS at the proxy | `Secure` cookies are only meaningful over HTTPS, and in production the application refuses to disable the flag. |
-| Send HSTS from the proxy | The application deliberately does not: only the proxy knows whether HTTPS is actually in use (see `Application hardening`). |
+| Send HSTS from the proxy | The application deliberately does not: only the proxy knows whether HTTPS is actually in use. |
 | Serve the client same-origin | Removes CORS from the production path entirely and makes `SameSite=Lax` and the `Origin` check straightforward. |
-| Set `HCC_TRUSTED_PROXY_HEADERS` **only** if the proxy overwrites them | Proxy headers are client-supplied. Trusting `X-Forwarded-For` without a proxy that rewrites it lets any caller forge its address and bypass the per-address rate-limit budget. Empty by default for that reason. |
+| Set **`HCC_PUBLIC_ORIGIN`** to the origin browsers use, e.g. `https://hcc.example.com` | The application sees plain HTTP internally. Without this it compares a browser's `https://` origin against its own `http://` view and **rejects every state-changing request** — see below. |
+| …**or** set `HCC_TRUSTED_PROXIES` to the proxy's address or network | The alternative: the application then believes `X-Forwarded-Proto` from that proxy and derives the origin per request. |
+| Set `HCC_TRUSTED_PROXIES` anyway, for client attribution | Without it every client appears as the proxy and they **share one login-throttle budget**, so one attacker can deny login to everyone. |
 | Do not expose the port directly | The authentication endpoints are reachable without a session by design. |
+
+A production deployment must set `HCC_PUBLIC_ORIGIN` or `HCC_TRUSTED_PROXIES`.
+**Startup fails with neither**, because the application cannot otherwise tell
+which origin browsers use, and the failure it would produce at runtime names
+the wrong cause.
+
+#### The Origin check, and the defect it had
+
+For state-changing requests, a present `Origin` must match an allowed one.
+Allowed origins are, in order of authority:
+
+1. `HCC_PUBLIC_ORIGIN`, when set. **Authoritative** — the request's own view
+   is not consulted at all, and no forwarded header can override it. This is
+   the recommended production setting precisely because it depends on nothing
+   the client sends.
+2. `HCC_CORS_ORIGINS`, for a cross-origin development client.
+3. The request's own origin, reconstructed from its scheme and host. The
+   scheme comes from `X-Forwarded-Proto` **only** when the peer is listed in
+   `HCC_TRUSTED_PROXIES`; otherwise from the transport.
+
+Point 3 is what was wrong before milestone 1.5: the scheme was taken straight
+from the ASGI scope, so behind a TLS-terminating proxy the comparison was
+`https://host` against `http://host` and **every** state-changing request
+failed with `csrf_validation_failed` — in the one topology this document
+recommends. Logout was the only such endpoint at the time, which is why it
+went unnoticed. The regression suite in
+`tests/test_origin_csrf_integration.py` now covers each topology explicitly.
+
+Origins are canonicalised on both sides — scheme and host lower-cased, a
+default port dropped — so equivalent spellings compare equal rather than
+failing a literal string match. A malformed `Origin`, and the opaque origin
+`null` sent by sandboxed and `file://` contexts, are refused.
+
+**An absent `Origin` falls back to the CSRF token alone.** Non-browser clients
+send none, and browsers always send one for the cross-site requests this
+guards against. A deliberate, documented gap — narrow, but a gap.
+
+#### Client attribution behind a proxy
+
+`X-Forwarded-For` is a request header, so any client can set it. Both naive
+readings are unsafe:
+
+* trusting it unconditionally lets a caller rotate its apparent address per
+  request and bypass per-address throttling entirely;
+* ignoring it behind a real proxy makes every client look like the proxy, so
+  all users share one budget and one attacker can exhaust it for everyone.
+
+So it is believed **only when the immediate peer is listed in
+`HCC_TRUSTED_PROXIES`**, and the chain is then walked from the **right**,
+discarding trusted hops, taking the first untrusted address as the client.
+Taking the left-most entry — the common mistake — would attribute the request
+to whatever the client wrote.
+
+On single-host Compose the proxy is usually a sibling container on the bridge
+network, **not loopback**, which is the case most easily got wrong. The
+address actually in use is logged at startup as
+`request_attribution_configured`, and a production deployment with no trusted
+proxy configured logs a warning naming the consequence.
+
+### CORS (implemented)
+
+Same-origin deployment is the preferred shape and needs **no** CORS
+configuration: the control plane serves the web client itself, so there is no
+cross-origin request to permit.
+
+`HCC_CORS_ORIGINS` exists for the cross-origin development client, and
+`allow_credentials` is on because this API authenticates with cookies. That
+combination makes **`*` unsafe**: Starlette answers a wildcard with
+credentials by echoing whichever origin asked, so any website could read
+authenticated responses. A wildcard is therefore **refused at startup** rather
+than silently narrowed — an operator who wrote `*` wants something the
+application must not provide. `null` is refused for the same reason.
+
+Entries are validated and canonicalised at startup, so a typo'd origin fails
+immediately instead of producing a check that silently never matches.
 
 ### Password hashing (implemented)
 
@@ -288,6 +450,68 @@ Two consequences, both now addressed:
 2. **Handlers use `hash_async` / `verify_async`.** The synchronous methods are
    for CLI and test use.
 
+### Login throttling (implemented)
+
+Each login attempt costs ~64 MiB and ~50 ms by design, and the endpoint is
+reachable without a session, so throttling is consulted **before** password
+verification. Three budgets, all of which must allow an attempt:
+
+| Budget | Key | Bounds | Default |
+| --- | --- | --- | --- |
+| `per_address` | source address | one source, against any account | 20 / 5 min |
+| `per_address_username` | source **and** account | one source, against one account | 10 / 5 min |
+| `per_username` | account | every source, against one account | 100 / 5 min |
+
+#### Why three, and why the proportions are enforced
+
+The previous two-budget design had a verified defect. With a per-username
+budget *lower* than the per-address budget, one attacker exhausted a known
+account's budget without exhausting their own, and could sustain it
+indefinitely — a remote, unauthenticated, permanent denial of service against
+a named administrator, reachable with ten requests every five minutes from a
+single host.
+
+The shape above removes it:
+
+* **A single source cannot exhaust the global account budget.** It is cut off
+  by `per_address_username` first, and because the budgets are consulted in
+  order and a refusal returns immediately, a source that has hit its
+  per-account limit stops contributing to the global one. One source can
+  therefore spend at most `per_address_username` of `per_username`.
+* **Reaching the global ceiling takes many distinct sources** — ten, at the
+  defaults, which is the distributed credential-stuffing case the global
+  budget exists to catch.
+* `hcc/config.py` **enforces `per_username > per_address_username` at
+  startup**, so the unsafe relationship cannot be reintroduced by
+  configuration.
+
+A successful login clears that source's budgets but **not** the global account
+budget: one source succeeding says nothing about what other sources are
+attempting against the same account, and clearing it would hand a
+credential-stuffing attacker a free reset for the price of one working
+password.
+
+#### What is kept, and what is not
+
+Kept: bounded password guessing per source, bounded targeted guessing per
+source per account, bounded credential stuffing, a bound on distributed
+attacks, bounded Argon2 cost, generic failure responses, and **no permanent
+lockout** — every budget is a sliding window that refills, and no state marks
+an account as locked.
+
+**Stated plainly, two limitations remain:**
+
+1. **A sufficiently distributed attacker can still degrade availability for
+   one account**, in windows, by reaching the global ceiling from many
+   sources. That is inherent to any per-account limit; the alternative is no
+   global budget, which permits unlimited distributed guessing against a
+   known administrator. The ratio between the budgets sets how much
+   distribution an attacker must actually achieve.
+2. **Counters live in one process's memory.** Several uvicorn workers each
+   keep their own, multiplying the effective limit, and a restart clears
+   them. Redis was rejected as a second stateful service for one feature
+   (ADR-001, ADR-003). **Deploy with one worker** until this is addressed.
+
 ### Agent enrolment
 
 1. An admin creates a host and receives a **one-time** enrolment token.
@@ -322,10 +546,12 @@ takes an explicit move.
 
 ### The complete public surface
 
-Three paths, and only three. Each is listed with its reason in
-`hcc.app.PUBLIC_PATHS`, and a test asserts the running application's behaviour
-matches that list **in both directions** — nothing unlisted is reachable, and
-nothing listed is unreachable.
+Each path is listed with its reason in `hcc.app.PUBLIC_PATHS`, and a test
+asserts the running application's behaviour matches that list **in both
+directions** — nothing unlisted is reachable, and nothing listed is
+unreachable.
+
+**In production, three paths:**
 
 | Path | Why it has to be public |
 | --- | --- |
@@ -333,27 +559,96 @@ nothing listed is unreachable.
 | `GET /readyz` | Readiness. Same reason. |
 | `POST /api/v1/auth/login` | Authentication must be reachable before a session exists. |
 
+**Outside production, three more** — FastAPI's own documentation endpoints,
+which are **absent in production** because `create_app` passes `docs_url=None`
+and `openapi_url=None` there:
+
+| Path | Note |
+| --- | --- |
+| `GET /openapi.json` | The schema. Needed by the interactive docs and by client generation. |
+| `GET /docs` | Swagger UI. |
+| `GET /docs/oauth2-redirect` | Mounted by FastAPI alongside `/docs`. |
+
+> These three were **missing from this inventory until milestone 1.5**. The
+> regression scan read the OpenAPI schema, and the schema does not describe
+> the endpoints that serve the schema — so they were public outside
+> production, unlisted and untested. The scan now walks the real routing
+> table, and a test asserts both that they are public outside production and
+> that they do not exist inside it.
+
 What protects each of them instead of a session:
 
 - The probes do no work beyond a trivial query and **disclose almost nothing**
   (ADR-032): a status and nothing else. No version, no environment, no
   dependency names. Those moved to `GET /api/v1/info`, which needs a session,
   and to the structured log.
-- Login is protected by credentials, by per-address and per-username
-  throttling applied **before** any password verification, by a cap on
-  concurrent Argon2 operations, and by a bounded request body.
+- Login is protected by credentials, by three throttling budgets applied
+  **before** any password verification, by a cap on concurrent Argon2
+  operations, and by a bounded request body.
+- The documentation endpoints are absent in production, which is the only
+  protection that matters for them.
 
 Everything else — including `GET /api/v1/info`, which used to be public —
 returns `401 not_authenticated` without a valid session.
 
 ### The regression test
 
-`tests/test_api_authorization.py` walks every path the application advertises,
-calls it without credentials, and requires a 401 unless it is allow-listed.
-It is behavioural rather than introspective on purpose, so it catches a route
-mounted anywhere in the application, and it includes a self-check that mounts
-a deliberately unprotected route and asserts the scan detects it — so the scan
-cannot pass by doing nothing.
+`tests/test_api_authorization.py` enumerates every operation the application
+will actually route, calls each without credentials, and requires a 401 unless
+the path is allow-listed.
+
+It is **behavioural rather than introspective** on purpose, so it catches a
+route mounted anywhere in the application. Since milestone 1.5 it enumerates
+from the **routing table** rather than from the OpenAPI schema, because the
+schema has two blind spots that an audit demonstrated:
+
+* a route declared `include_in_schema=False` does not appear in it;
+* a **WebSocket** route never appears in it, since `paths` describes only HTTP
+  operations.
+
+Both would therefore have been exempt from the guarantee while looking
+covered — including the agent, log-tail and terminal sockets of Phases 7, 5
+and 11. Three self-checks mount deliberately unprotected routes — a plain one,
+a hidden one and a WebSocket — and assert the scan detects each, so it cannot
+pass by doing nothing.
+
+### Authentication boundaries for WebSockets
+
+No WebSocket endpoint exists yet. The boundary is specified now because two
+are coming, they are **not the same**, and conflating them would be a serious
+mistake.
+
+| | Browser socket (Phase 5 log tail, Phase 11 terminal) | Agent socket (Phase 7) |
+| --- | --- | --- |
+| Identity | A **user**, via the session cookie | A **host**, via its bearer credential |
+| Credential | `hcc_session` cookie | `Authorization: Bearer` |
+| Scope | Fleet-wide, role-limited | One host only |
+| `Origin` check | **Required** | Not applicable — not a browser |
+| May issue commands | Yes, if authorized | No. Agents *receive* commands |
+
+An agent credential must never be accepted where a user session is expected,
+or a compromised host could act as a user; and a user session must never be
+accepted on the agent channel, or a browser could impersonate a host. They are
+separate authentication domains, as
+[Authentication](#authentication) already says for the HTTP surface.
+
+**Browser sockets are session-authenticated, and `Origin` is mandatory.** A
+WebSocket handshake is not subject to CORS, so a browser will open a
+cross-origin socket and attach cookies; `Origin` is the only signal that
+distinguishes a legitimate handshake from cross-site WebSocket hijacking.
+Browsers always send it on a handshake, so requiring it costs a real client
+nothing. The double-submit CSRF header **cannot** be sent on a handshake at
+all, which is why `Origin` carries the weight here rather than supplementing
+a token; how a browser socket presents a CSRF token *after* the handshake is a
+Phase 5 decision.
+
+This is already enforced rather than merely planned: the shared session
+dependency accepts both HTTP and WebSocket connections, and a test mounts a
+WebSocket on the real protected router and asserts that an anonymous
+handshake, a handshake with no `Origin`, and a handshake from a foreign origin
+are all refused before `accept` — while a legitimate authenticated handshake
+succeeds. A companion test mounts a deliberately unprotected socket and
+asserts the scan detects it.
 
 ## Authorization
 
@@ -492,14 +787,14 @@ configuration time. Tested by `TestRunWarnsWhenTLSVerificationIsDisabled`.
 | --- | --- | --- |
 | API docs disabled in production | `hcc/app.py` | Widens attack surface for no operator benefit |
 | CORS default-deny | `hcc/config.py` | Production is same-origin; empty origin list adds no middleware |
-| Strict settings validation | `hcc/config.py` | `extra="forbid"` turns a typo'd variable into a startup failure, not a silently ignored setting |
+| Strict settings validation | `hcc/config.py` | `extra="forbid"` rejects an unknown constructor argument. That alone was **not** enough: pydantic-settings silently *ignores* an environment variable matching no field, so a typo'd `HCC_SESSION_LIFETIME_SECOND` left the default in force while the operator believed otherwise — and the environment is the only configuration channel this deployment uses. `unknown_environment_variables` now refuses to start on any unrecognised `HCC_` variable, naming it |
 | Immutable settings | `frozen=True` | No runtime mutation of security-relevant configuration |
 | Fail-fast startup | `load_settings_or_exit` | Invalid configuration exits with code 2 and a readable diagnostic |
 | Uniform error envelope | `hcc/errors.py` | No endpoint leaks a differently shaped error with more detail |
 | Request correlation | `hcc/middleware.py` | Every log line carries a request ID; opaque 500s remain traceable |
 | `pool_pre_ping` | `hcc/db.py` | Recycles connections a restarted database dropped |
 | Bandit lint rules (`S`) | `pyproject.toml` | Flags common insecure patterns in CI |
-| Security headers | `hcc/middleware.py` | `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`, `Cross-Origin-Opener-Policy` on every response, including error responses |
+| Security headers | `hcc/middleware.py` | `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`, `Cross-Origin-Opener-Policy` on every response, including error responses. An unhandled 500 is produced outside the middleware stack, so `hcc/errors.py` applies the same set there explicitly — asserted by a test against the real ASGI stack |
 | Content-Security-Policy | `hcc/middleware.py` | Production only. A policy strict enough to be worth having breaks the Vite dev server, and one weakened for development is one nobody trusts. `script-src 'self'` with no `unsafe-inline`; `frame-ancestors 'none'`; `object-src 'none'` |
 | No HSTS from the application | deliberate | Only the TLS-terminating proxy knows whether HTTPS is in use. Sending it from behind a plain-HTTP proxy would either do nothing or lock a development host out of HTTP |
 | No `WWW-Authenticate: Basic` | `hcc/errors.py` | A bare Basic challenge makes browsers pop a native credential dialog over the SPA |
@@ -643,7 +938,7 @@ worth treating as a surface in its own right.
 | Component | Dependencies | Mitigation |
 | --- | --- | --- |
 | Agent | **Zero** third-party (ADR-011) | Entire supply chain is the Go standard library — the strongest guarantee in the system, and it is the component running on monitored hosts |
-| Backend | 8 direct | Pinned ranges; grouped Dependabot PRs; `pip-audit` planned |
+| Backend | 9 direct | Pinned ranges; grouped Dependabot PRs; `pip-audit` planned |
 | Frontend | ~16 direct | Exact pins + lockfile; `npm ci` in CI; `npm audit` reports 0 vulnerabilities |
 | CI actions | Pinned by major | Dependabot-updated |
 
@@ -659,14 +954,16 @@ them.
 Stated plainly rather than implied. Several of these must close before the
 authentication endpoints face an untrusted network.
 
-1. **No user can be created.** There is no registration, no setup wizard and
-   no CLI. The endpoints work but no account exists to log into until
-   milestone 1.5. This is the main reason the current state is not deployable.
+1. **No self-service registration, and no user management.** The initial
+   administrator is created by `hcc bootstrap-admin`
+   ([first-run bootstrap](#first-run-bootstrap-implemented)); there is no way
+   to create a *second* account yet, and no API for listing, editing or
+   deactivating accounts. Milestone 1.7.
 2. **Role authorization has no production call site yet.** The dependencies
    are implemented and tested, and every product route requires
    authentication — but no current endpoint needs more than "logged in",
-   because user and host management do not exist. The first real use is
-   milestone 1.5.
+   because user and host management do not exist. The first real use arrives
+   with user management.
 3. **The capability axis is not implemented.** Its interface exists and fails
    closed, so nothing can accidentally rely on it. Per-host capability
    configuration lands with host management.
@@ -674,33 +971,43 @@ authentication endpoints face an untrusted network.
    own counters, multiplying the effective limit by the worker count, and a
    restart clears them. **Deploy with one worker until this is addressed**
    (ADR-029).
-5. **Timing-based user enumeration is narrowed, not eliminated.** An unknown
+5. **A distributed attacker can still degrade login availability for one
+   account.** Reaching the global per-account budget requires many distinct
+   sources — ten at the defaults — and no single source can do it
+   ([login throttling](#login-throttling-implemented)). The residual exposure
+   is inherent to having a per-account limit at all; the alternative permits
+   unlimited distributed guessing. There is no permanent lockout.
+6. **Timing-based user enumeration is narrowed, not eliminated.** An unknown
    username is verified against a dummy hash so the Argon2 cost is paid
    either way, but one database query versus none remains measurable in
    principle. The rate limiter bounds how many samples an attacker can
    collect. Closing it fully would require constant-time work across the whole
    request, which is not achievable in a Python web application and is not
    claimed.
-6. **`Origin` is only checked when present.** Absent `Origin` falls back to
-   the CSRF token alone, because non-browser clients send none. Browsers
-   always send it for the cross-site requests this guards against, so the gap
-   is narrow — but it is a gap.
-7. **No audit log.** Login, logout and revocation are logged as structured
-   events, but there is no append-only audit table yet. Milestone 1.14.
-8. **No account lockout.** Throttling slows an attacker but never locks an
-   account, deliberately: lockout is itself a denial-of-service vector against
-   a known username. Revisit if it proves insufficient.
+7. **`Origin` is only checked when present, on HTTP.** Absent `Origin` falls
+   back to the CSRF token alone, because non-browser clients send none.
+   Browsers always send it for the cross-site requests this guards against, so
+   the gap is narrow — but it is a gap. It does **not** apply to WebSocket
+   handshakes, where `Origin` is required.
+8. **No audit log.** Login, logout, revocation and bootstrap are logged as
+   structured events, but there is no append-only audit table yet.
+   Milestone 1.14.
 9. **Sessions are not listed or revocable in the UI.**
    `SessionService.revoke_all_for_user` exists and is tested, but nothing calls
    it. Milestone 10.1.
 10. **No password change or reset flow**, so a compromised password cannot be
-   rotated by its owner. `rehash_if_needed` exists for parameter upgrades but
-   is not yet wired into login.
+    rotated by its owner — and the bootstrap command cannot be used a second
+    time to replace it. Recovery today means issuing SQL against the database,
+    which is the same authority bootstrap required. `rehash_if_needed` exists
+    for parameter upgrades but is not yet wired into login.
 11. **Session pruning is not scheduled.** `prune_expired` exists and is
     tested; the scheduler arrives with the other periodic jobs. Until then the
     table grows with expired rows.
 12. **`pip-audit` and `npm audit` are not yet CI-blocking.**
-13. **Nothing in the agent, monitoring, capability or terminal sections
+13. **The end-to-end smoke test is not run in CI.** It is the only gate that
+    exercises a real uvicorn server, which is where the reverse-proxy origin
+    defect would have been visible.
+14. **Nothing in the agent, monitoring, capability or terminal sections
     exists.** They are specified because they constrain what is being built,
     not because any of it is live.
 

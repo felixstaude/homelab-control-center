@@ -223,6 +223,81 @@ SERVER_PID=""
 ok "Control plane shut down"
 
 # --------------------------------------------------------------------------
+info "== Configuration validation (milestone 1.5) =="
+
+# These run the real entrypoint and assert it refuses to start. Each guards a
+# misconfiguration that is silent at runtime, so a startup failure is the
+# protection — and that is only true if the process actually exits.
+
+# assert_refuses_to_start <description> <env assignments...>
+assert_refuses_to_start() {
+  local description="$1"; shift
+  local output code
+  set +e
+  output=$(cd "$SERVER_DIR" && env HCC_DATABASE_URL="$DATABASE_URL" HCC_PORT=8098 "$@" \
+    .venv/bin/python -m hcc.main 2>&1)
+  code=$?
+  set -e
+  if [[ "$code" -eq 2 ]]; then
+    ok "$description (exit 2)"
+  else
+    bad "$description — expected exit 2, got $code: $(echo "$output" | head -2)"
+  fi
+}
+
+assert_refuses_to_start "Production without a public origin or trusted proxy" \
+  HCC_ENVIRONMENT=production
+assert_refuses_to_start "Wildcard CORS origin with credentials enabled" \
+  HCC_CORS_ORIGINS='["*"]'
+assert_refuses_to_start "Per-username budget at or below the per-source budget" \
+  HCC_LOGIN_RATE_LIMIT_PER_ADDRESS_USERNAME=10 HCC_LOGIN_RATE_LIMIT_PER_USERNAME=10
+assert_refuses_to_start "Unparseable trusted-proxy entry" \
+  HCC_TRUSTED_PROXIES='["10.0.0.300"]'
+assert_refuses_to_start "Removed HCC_TRUSTED_PROXY_HEADERS still set" \
+  HCC_TRUSTED_PROXY_HEADERS='["x-forwarded-for"]'
+
+# A production deployment that IS configured must start, or the checks above
+# would pass by refusing everything.
+if (cd "$SERVER_DIR" && env HCC_DATABASE_URL="$DATABASE_URL" HCC_PORT=8098 \
+      HCC_ENVIRONMENT=production HCC_PUBLIC_ORIGIN="https://hcc.example.com" \
+      timeout 5 .venv/bin/python -c "
+from hcc.app import create_app
+from hcc.config import load_settings_or_exit
+create_app(load_settings_or_exit())
+print('built')
+" >/dev/null 2>&1); then
+  ok "Production with a public origin builds"
+else
+  bad "A correctly configured production app failed to build"
+fi
+
+# --------------------------------------------------------------------------
+info "== Operator CLI (milestone 1.5) =="
+
+if "$SERVER_DIR/.venv/bin/hcc" --version 2>/dev/null | grep -q "hcc "; then
+  ok "hcc CLI reports its version"
+else
+  bad "hcc CLI did not report a version"
+fi
+
+if "$SERVER_DIR/.venv/bin/hcc" bootstrap-admin --help 2>&1 | grep -q -- "--password-stdin"; then
+  ok "bootstrap-admin documents --password-stdin"
+else
+  bad "bootstrap-admin does not document --password-stdin"
+fi
+
+# The contract that keeps the secret out of /proc and shell history.
+set +e
+"$SERVER_DIR/.venv/bin/hcc" bootstrap-admin --username admin --password secret >/dev/null 2>&1
+code=$?
+set -e
+if [[ "$code" -ne 0 ]]; then
+  ok "bootstrap-admin refuses a --password argument"
+else
+  bad "bootstrap-admin accepted a password as a command-line argument"
+fi
+
+# --------------------------------------------------------------------------
 info "== Agent =="
 
 if ! command -v go >/dev/null 2>&1; then

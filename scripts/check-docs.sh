@@ -173,6 +173,30 @@ if dangling:
 else:
     ok("every referenced ADR is defined in ARCHITECTURE.md")
 
+# ADRs must live under the section that claims to contain them. Checked
+# because they silently did not: ADR-025..032 were appended after the
+# "Open design questions" heading and nested under it for three milestones,
+# while every other check passed.
+sections = [
+    (m.start(), m.group(1))
+    for m in re.finditer(r"^## (\d+)\. ", arch_text, re.MULTILINE)
+]
+adr_section = next((num for _, num in sections if "13" == num), None)
+misplaced = []
+for match in re.finditer(r"^### ADR-(\d{3}):", arch_text, re.MULTILINE):
+    enclosing = None
+    for offset, num in sections:
+        if offset < match.start():
+            enclosing = num
+        else:
+            break
+    if enclosing != adr_section:
+        misplaced.append(f"ADR-{match.group(1)} (under section {enclosing})")
+if misplaced:
+    bad(f"ADRs outside section {adr_section}: {misplaced}")
+else:
+    ok(f"every ADR is under section {adr_section}")
+
 # ---------------------------------------------------------------------------
 section("Roadmap structure")
 

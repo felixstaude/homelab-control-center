@@ -19,21 +19,23 @@ Two halves:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 import pytest
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, WebSocket
+from fastapi.routing import APIWebSocketRoute
 from sqlalchemy import text
+from starlette.routing import WebSocketRoute
 
 # Runtime imports, not TYPE_CHECKING: these annotate FastAPI route
 # handlers below, and FastAPI resolves endpoint annotations at runtime to
 # build its dependency graph. Same constraint as hcc/api/deps.py.
-from hcc.api.deps import AdminDep, OperatorDep, ViewerDep  # noqa: TC001
+from hcc.api.deps import AdminDep, OperatorDep, ViewerDep, get_current_session
 from hcc.app import PUBLIC_PATHS
 from hcc.models import User, UserRole
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable
+    from collections.abc import AsyncIterator, Callable, Iterable, Iterator
     from contextlib import AbstractAsyncContextManager
 
     from httpx import AsyncClient
@@ -45,6 +47,10 @@ pytestmark = pytest.mark.integration
 PASSWORD = "correct horse battery staple"
 LOGIN = "/api/v1/auth/login"
 
+#: Pseudo-method marking a WebSocket route in the enumeration, so one walk
+#: describes both protocols.
+WEBSOCKET: Final = "WEBSOCKET"
+
 #: The expected public surface, written out literally.
 #:
 #: Duplicating `hcc.app.PUBLIC_PATHS` is the point: widening the allow-list in
@@ -54,6 +60,13 @@ EXPECTED_PUBLIC_PATHS = {
     "/healthz",
     "/readyz",
     "/api/v1/auth/login",
+    # FastAPI's own documentation endpoints. Public outside production and
+    # absent inside it. They were missing from this list until milestone 1.5,
+    # because the schema-based scan could not see them —
+    # `TestDocumentationEndpoints` covers both halves.
+    "/openapi.json",
+    "/docs",
+    "/docs/oauth2-redirect",
 }
 
 
@@ -88,6 +101,25 @@ async def probe_admin(current: AdminDep) -> dict[str, str]:
 async def probe_admin_action(current: AdminDep) -> dict[str, str]:
     """A state-changing, role-gated route, for the CSRF interaction."""
     return {"role": current.user.role.value}
+
+
+protected_socket_router = APIRouter(dependencies=[Depends(get_current_session)])
+"""A WebSocket mounted the way a real one will be.
+
+Carries the **same** router-level dependency object as
+``hcc.api.v1.router._protected``, so this exercises the production
+arrangement rather than an approximation of it;
+``test_the_probe_socket_uses_the_production_dependency`` asserts the two
+cannot drift apart.
+
+**Not part of the product.** Mounted only by these tests.
+"""
+
+
+@protected_socket_router.websocket("/_ws-protected")
+async def probe_protected_socket(socket: WebSocket) -> None:
+    await socket.accept()
+    await socket.close()
 
 
 # ---------------------------------------------------------------------------
@@ -131,24 +163,158 @@ async def login_as(client: AsyncClient, username: str) -> str:
     return token
 
 
-def iter_operations(client: AsyncClient) -> list[tuple[str, str]]:
-    """Every (method, path) the running application advertises.
+def _walk_routes(routes: Iterable[Any]) -> Iterator[tuple[str, Any]]:
+    """Yield ``(effective path, route)`` for everything the app will route.
 
-    Read from the OpenAPI schema rather than by walking ``app.routes``: this
-    FastAPI version nests included routers behind private internals, and the
-    schema is both stable and the thing clients actually see.
+    Three shapes appear in a FastAPI routing table:
+
+    * a plain Starlette ``Route`` — the framework's own ``/docs`` and
+      ``/openapi.json``, which carry their full path directly;
+    * an ``_IncludedRouter`` — the wrapper this FastAPI version creates for
+      ``include_router``, which does not flatten. Its ``effective_candidates()``
+      expands one level, and nests further for each inner ``include_router``;
+    * an ``_EffectiveRouteContext`` — the expansion of one route, carrying the
+      prefix-resolved ``path`` and the ``original_route`` that says whether it
+      is HTTP or WebSocket.
+
+    This does reach into FastAPI's arrangement, which ADR-031 deliberately
+    avoided when the scan was schema-based. The trade changed: the schema
+    cannot see hidden or WebSocket routes at all, so a scan built on it was
+    structurally unable to cover the surfaces of Phases 5, 7 and 11. The
+    coupling is made safe by
+    ``test_the_scan_covers_every_routed_operation``, which asserts the known
+    production routes are present — so a FastAPI change that breaks this
+    traversal fails loudly rather than silently reducing the scan to nothing.
+    """
+    for route in routes:
+        candidates = getattr(route, "effective_candidates", None)
+        if callable(candidates):
+            yield from _walk_routes(candidates())
+            # Routes deliberately matched last (path-parameter routes) live in
+            # a separate list and are just as routable.
+            yield from _walk_routes(route.effective_low_priority_routes())
+            continue
+
+        original = getattr(route, "original_route", None)
+        if original is not None:
+            # `path` is the prefix-resolved path for an HTTP route, but is
+            # left empty for a WebSocket one; there, the already-prefixed
+            # `starlette_route` carries it. Falling back rather than trusting
+            # one field matters — an empty path would silently drop the route
+            # from the scan, which is the failure mode this test exists to
+            # prevent.
+            effective = route.path or getattr(route.starlette_route, "path", "")
+            if effective:
+                yield effective, original
+            continue
+
+        path = getattr(route, "path", None)
+        if path:
+            yield path, route
+
+
+def iter_operations(client: AsyncClient) -> list[tuple[str, str]]:
+    """Every (method, path) the running application will actually route.
+
+    Enumerated from ``app.routes`` rather than from the OpenAPI schema. The
+    schema was the milestone 1.4 source and it has two blind spots that an
+    audit demonstrated:
+
+    * a route declared ``include_in_schema=False`` does not appear in it;
+    * a **WebSocket** route never appears in it, because FastAPI's
+      ``paths`` only describes HTTP operations.
+
+    Both would therefore have been exempt from the default-deny guarantee
+    while looking covered. Walking the real routing table closes that, and
+    ``TestHiddenAndWebSocketRoutes`` below proves the detection works by
+    mounting deliberately unprotected routes of each kind.
+
+    WebSocket routes are reported with the pseudo-method ``WEBSOCKET`` so one
+    enumeration can describe both protocols; callers dispatch on it.
     """
     app = client.app_state.app  # type: ignore[attr-defined]
-    return sorted(
-        (method.upper(), path)
-        for path, methods in app.openapi()["paths"].items()
-        for method in methods
-    )
+    operations: set[tuple[str, str]] = set()
+
+    for path, route in _walk_routes(app.routes):
+        if isinstance(route, APIWebSocketRoute | WebSocketRoute):
+            operations.add((WEBSOCKET, path))
+            continue
+        for method in getattr(route, "methods", None) or ():
+            if method in ("HEAD", "OPTIONS"):
+                # HEAD is generated alongside GET and carries no separate
+                # authorization story; OPTIONS is CORS preflight, which must
+                # stay reachable without a session or no browser could ever
+                # make a cross-origin request.
+                continue
+            operations.add((method.upper(), path))
+
+    return sorted(operations)
 
 
 # ---------------------------------------------------------------------------
 # Default-deny
 # ---------------------------------------------------------------------------
+
+
+async def attempt_websocket(
+    client: AsyncClient, path: str, *, headers: dict[str, str] | None = None
+) -> list[dict[str, Any]]:
+    """Drive a WebSocket handshake against the app and return what it sent.
+
+    ``httpx`` has no WebSocket client, so the ASGI application is called
+    directly with a ``websocket`` scope. That is not a shortcut around the
+    stack — it *is* the interface a real server uses, so dependencies,
+    exception handlers and the router-level authentication dependency all run
+    exactly as they would in production.
+
+    A handshake that was **accepted** sends ``websocket.accept``. One that was
+    refused sends either ``websocket.close`` or a *denial response*
+    (``websocket.http.response.start``), which is how Starlette reports an
+    exception raised before the upgrade.
+    """
+    app = client.app_state.app  # type: ignore[attr-defined]
+    cookie_header = "; ".join(f"{name}={value}" for name, value in client.cookies.items())
+
+    raw_headers: list[tuple[bytes, bytes]] = [(b"host", b"testserver")]
+    if cookie_header:
+        raw_headers.append((b"cookie", cookie_header.encode()))
+    for name, value in (headers or {}).items():
+        raw_headers.append((name.lower().encode(), value.encode()))
+
+    inbound: list[dict[str, Any]] = [{"type": "websocket.connect"}]
+    sent: list[dict[str, Any]] = []
+
+    async def receive() -> dict[str, Any]:
+        if inbound:
+            return inbound.pop(0)
+        return {"type": "websocket.disconnect", "code": 1000}
+
+    async def send(message: dict[str, Any]) -> None:
+        sent.append(message)
+
+    scope: dict[str, Any] = {
+        "type": "websocket",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "scheme": "ws",
+        "http_version": "1.1",
+        "server": ("testserver", 80),
+        "client": ("127.0.0.1", 51234),
+        "path": path,
+        "raw_path": path.encode(),
+        "root_path": "",
+        "query_string": b"",
+        "headers": raw_headers,
+        "subprotocols": [],
+        "state": {},
+    }
+
+    await app(scope, receive, send)
+    return sent
+
+
+def was_accepted(messages: list[dict[str, Any]]) -> bool:
+    """Whether a handshake reached ``accept`` — i.e. the socket was open."""
+    return any(message["type"] == "websocket.accept" for message in messages)
 
 
 class TestDefaultDeny:
@@ -174,6 +340,19 @@ class TestDefaultDeny:
                 "these operations are neither authenticated nor in the public "
                 f"allow-list: {unprotected}"
             )
+
+    async def test_the_scan_covers_every_routed_operation(self, api_factory: ApiFactory) -> None:
+        # The enumeration is the foundation of the guarantee, so assert it is
+        # reading the routing table rather than the schema: the probe router
+        # is mounted and must appear, and so must the unversioned probes.
+        async with api_factory(routers=[probe_router]) as client:
+            operations = iter_operations(client)
+            paths = {path for _, path in operations}
+
+            assert "/healthz" in paths
+            assert "/api/v1/auth/login" in paths
+            assert "/api/v1/_probe/viewer" in paths
+            assert ("POST", "/api/v1/_probe/admin-action") in operations
 
     async def test_every_public_operation_is_reachable_without_a_session(
         self, api_factory: ApiFactory
@@ -228,6 +407,255 @@ class TestDefaultDeny:
                 and (await client.request(method, path)).status_code != 401
             ]
             assert "GET /api/v1/_leaky/oops" in offenders
+
+
+class TestHiddenAndWebSocketRoutes:
+    """The two blind spots the milestone 1.4 scan had.
+
+    A route declared ``include_in_schema=False`` and **any** WebSocket route
+    are both absent from the OpenAPI schema, so the schema-based scan treated
+    them as covered while never testing them. These assert that the
+    routing-table scan sees them, that the router-level dependency protects
+    them, and — critically — that the detection actually fails on a
+    deliberately unprotected one.
+    """
+
+    async def test_a_hidden_route_is_enumerated(self, api_factory: ApiFactory) -> None:
+        hidden = APIRouter()
+
+        @hidden.get("/_hidden", include_in_schema=False)
+        async def hidden_endpoint(current: ViewerDep) -> dict[str, str]:
+            return {"role": current.user.role.value}
+
+        async with api_factory(routers=[hidden]) as client:
+            operations = iter_operations(client)
+
+            assert ("GET", "/api/v1/_hidden") in operations, (
+                "a route hidden from the OpenAPI schema was not enumerated, so "
+                "it would be exempt from the default-deny scan"
+            )
+            # And it is absent from the schema, which is the point.
+            assert "/api/v1/_hidden" not in client.app_state.app.openapi()["paths"]  # type: ignore[attr-defined]
+
+    async def test_a_hidden_route_still_requires_authentication(
+        self, api_factory: ApiFactory
+    ) -> None:
+        hidden = APIRouter()
+
+        @hidden.get("/_hidden", include_in_schema=False)
+        async def hidden_endpoint(current: ViewerDep) -> dict[str, str]:
+            return {"role": current.user.role.value}
+
+        async with api_factory(routers=[hidden]) as client:
+            assert (await client.get("/api/v1/_hidden")).status_code == 401
+
+    async def test_a_websocket_route_is_enumerated(self, api_factory: ApiFactory) -> None:
+        sockets = APIRouter()
+
+        @sockets.websocket("/_ws")
+        async def socket_endpoint(socket: WebSocket) -> None:
+            await socket.accept()  # pragma: no cover - never reached unauthenticated
+
+        async with api_factory(routers=[sockets]) as client:
+            operations = iter_operations(client)
+
+            assert (WEBSOCKET, "/api/v1/_ws") in operations, (
+                "a WebSocket route was not enumerated; WebSocket routes never "
+                "appear in the OpenAPI schema, so the schema-based scan could "
+                "not have covered the agent and log-tail sockets of later phases"
+            )
+            assert "/api/v1/_ws" not in client.app_state.app.openapi()["paths"]  # type: ignore[attr-defined]
+
+    async def test_a_websocket_on_the_protected_router_refuses_an_anonymous_handshake(
+        self, api_factory: ApiFactory
+    ) -> None:
+        """A browser socket mounted the normal way is session-authenticated.
+
+        This is the forward-looking half of the milestone: the log-tail socket
+        of Phase 5 and the terminal socket of Phase 11 will be mounted exactly
+        like this, and must not be open to an anonymous caller.
+        """
+        async with api_factory(routers=[protected_socket_router]) as client:
+            messages = await attempt_websocket(client, "/api/v1/_ws-protected")
+
+            assert not was_accepted(messages), (
+                f"an anonymous WebSocket handshake was accepted: {messages}"
+            )
+            # Refused by an authentication decision, not by an internal error.
+            # Starlette reports a pre-upgrade exception as a denial response.
+            start = next(
+                message
+                for message in messages
+                if message["type"] == "websocket.http.response.start"
+            )
+            assert start["status"] == 401
+
+    async def test_an_authenticated_handshake_is_accepted(self, api_factory: ApiFactory) -> None:
+        # The other direction: the protection must not make a legitimate
+        # socket unusable. Without this, "refuses everything" would pass.
+        async with api_factory(routers=[protected_socket_router]) as client:
+            await seed_user(client, username="viewer", role=UserRole.VIEWER)
+            await login_as(client, "viewer")
+
+            messages = await attempt_websocket(
+                client, "/api/v1/_ws-protected", headers={"Origin": "http://testserver"}
+            )
+
+            assert was_accepted(messages), messages
+
+    async def test_a_websocket_handshake_requires_an_origin(self, api_factory: ApiFactory) -> None:
+        """``Origin`` is mandatory on a WebSocket, unlike on HTTP.
+
+        A handshake is not subject to CORS, so a browser will open a
+        cross-origin socket and attach cookies; ``Origin`` is the only signal
+        distinguishing a legitimate handshake from cross-site WebSocket
+        hijacking. Browsers always send it, so requiring it costs a real
+        client nothing — and the double-submit CSRF header cannot be sent on a
+        handshake at all, so there is nothing else to check.
+        """
+        async with api_factory(routers=[protected_socket_router]) as client:
+            await seed_user(client, username="viewer", role=UserRole.VIEWER)
+            await login_as(client, "viewer")
+
+            messages = await attempt_websocket(client, "/api/v1/_ws-protected")
+
+            assert not was_accepted(messages), messages
+
+    async def test_a_websocket_handshake_from_a_foreign_origin_is_refused(
+        self, api_factory: ApiFactory
+    ) -> None:
+        async with api_factory(routers=[protected_socket_router]) as client:
+            await seed_user(client, username="viewer", role=UserRole.VIEWER)
+            await login_as(client, "viewer")
+
+            messages = await attempt_websocket(
+                client,
+                "/api/v1/_ws-protected",
+                headers={"Origin": "https://evil.example.com"},
+            )
+
+            assert not was_accepted(messages), messages
+
+    async def test_an_unprotected_websocket_is_detected(self, api_factory: ApiFactory) -> None:
+        """Proves the detection can fail.
+
+        A WebSocket mounted outside the protected router — the mistake being
+        guarded against — must be visible as an accepted anonymous handshake.
+        Without this, "no unprotected sockets found" could mean the scan does
+        nothing.
+        """
+        leaky = APIRouter()
+
+        @leaky.websocket("/_ws-leaky")
+        async def leaky_socket(socket: WebSocket) -> None:
+            await socket.accept()
+            await socket.close()
+
+        async with api_factory(routers=[leaky]) as client:
+            operations = iter_operations(client)
+            assert (WEBSOCKET, "/api/v1/_ws-leaky") in operations
+
+            messages = await attempt_websocket(client, "/api/v1/_ws-leaky")
+
+            assert was_accepted(messages), (
+                "a deliberately unprotected WebSocket was not accepted, so "
+                "this check cannot distinguish protected from unprotected"
+            )
+            assert "/api/v1/_ws-leaky" not in PUBLIC_PATHS
+
+    def test_the_probe_socket_uses_the_production_dependency(self) -> None:
+        """The probe router must not drift from the real protected router.
+
+        If the production router's authentication dependency were ever
+        changed, a probe carrying the old one would keep passing while the
+        real sockets went unprotected. Comparing the callables ties them
+        together.
+        """
+        # importlib, not `import hcc.api.v1.router`: the package's __init__
+        # re-exports the router *object* under the same name, which would
+        # shadow the module.
+        import importlib
+
+        v1_router_module = importlib.import_module("hcc.api.v1.router")
+
+        production = [
+            dependency.dependency
+            for dependency in v1_router_module._protected.dependencies  # noqa: SLF001
+        ]
+        probe = [dependency.dependency for dependency in protected_socket_router.dependencies]
+
+        assert probe == production == [get_current_session]
+
+    async def test_an_unprotected_hidden_route_is_detected(self, api_factory: ApiFactory) -> None:
+        # The same self-check for the hidden-HTTP-route case.
+        leaky = APIRouter()
+
+        @leaky.get("/_hidden-leaky", include_in_schema=False)
+        async def leaky_endpoint() -> dict[str, str]:
+            return {"secret": "should have required a session"}
+
+        async with api_factory(routers=[leaky]) as client:
+            assert (await client.get("/api/v1/_hidden-leaky")).status_code == 200
+
+            offenders = [
+                f"{method} {path}"
+                for method, path in iter_operations(client)
+                if path not in PUBLIC_PATHS
+                and method != WEBSOCKET
+                and (await client.request(method, path)).status_code != 401
+            ]
+            assert "GET /api/v1/_hidden-leaky" in offenders
+
+
+class TestDocumentationEndpoints:
+    """FastAPI's own ``/docs`` and ``/openapi.json``.
+
+    Public outside production, absent inside it. They were missing from the
+    public inventory until milestone 1.5 because the schema-based scan could
+    not see them — the schema does not describe the endpoints that serve the
+    schema.
+    """
+
+    async def test_they_are_public_outside_production(self, api_factory: ApiFactory) -> None:
+        async with api_factory(environment="test") as client:
+            for path in ("/docs", "/openapi.json"):
+                assert (await client.get(path)).status_code == 200, path
+
+    async def test_they_are_in_the_public_inventory_with_a_reason(self) -> None:
+        for path in ("/docs", "/openapi.json", "/docs/oauth2-redirect"):
+            assert path in PUBLIC_PATHS
+            assert "production" in PUBLIC_PATHS[path]
+
+    async def test_they_do_not_exist_in_production(self, api_factory: ApiFactory) -> None:
+        # The routes are not registered at all, so there is nothing to
+        # authenticate — which is why they may be public elsewhere.
+        async with api_factory(
+            environment="production",
+            public_origin="https://hcc.example.test",
+        ) as client:
+            paths = {path for _, path in iter_operations(client)}
+
+            assert "/docs" not in paths
+            assert "/openapi.json" not in paths
+            assert (await client.get("/docs")).status_code == 404
+            assert (await client.get("/openapi.json")).status_code == 404
+
+    async def test_the_production_public_surface_is_only_the_three_product_paths(
+        self, api_factory: ApiFactory
+    ) -> None:
+        # The claim docs/SECURITY.md makes, asserted where it is true.
+        async with api_factory(
+            environment="production",
+            public_origin="https://hcc.example.test",
+        ) as client:
+            reachable = set()
+            for method, path in iter_operations(client):
+                if method == WEBSOCKET:
+                    continue
+                if (await client.request(method, path)).status_code != 401:
+                    reachable.add(path)
+
+            assert reachable == {"/healthz", "/readyz", "/api/v1/auth/login"}
 
 
 class TestPublicEndpointDisclosure:

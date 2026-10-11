@@ -12,6 +12,7 @@ Two middlewares:
 
 from __future__ import annotations
 
+import re
 import time
 import uuid
 from typing import TYPE_CHECKING, Final
@@ -33,6 +34,35 @@ logger = get_logger(__name__)
 # a trace spans the proxy and the API.
 REQUEST_ID_HEADER = "X-Request-ID"
 
+#: Maximum length of a client-supplied request id.
+REQUEST_ID_MAX_LENGTH: Final = 128
+
+#: Characters permitted in a client-supplied request id.
+#:
+#: An allow-list rather than a deny-list. The value is echoed into a response
+#: header and into every log line for the request, so it is attacker-controlled
+#: data crossing into two places that are parsed by other tools. An allow-list
+#: of the characters correlation ids actually use — the alphabet of UUIDs,
+#: ULIDs and W3C trace ids — cannot be wrong by omission, whereas a deny-list
+#: of "characters we thought of" can.
+#:
+#: The HTTP parser already rejects CR and LF in a request header (verified), so
+#: log-line forgery is not reachable; this bounds the rest — tabs, markup and
+#: separators that a downstream log consumer or a UI might interpret.
+_REQUEST_ID_PATTERN: Final = re.compile(r"\A[A-Za-z0-9._\-]{1,128}\Z")
+
+
+def _resolve_request_id(incoming: str | None) -> str:
+    """Return a safe request id, propagating the client's when it is usable.
+
+    An invalid value is **replaced**, not rejected: correlation is a
+    diagnostic aid, and failing a request because its trace header was odd
+    would turn an observability nicety into an outage.
+    """
+    if incoming is not None and _REQUEST_ID_PATTERN.match(incoming):
+        return incoming
+    return uuid.uuid4().hex
+
 
 class RequestContextMiddleware(BaseHTTPMiddleware):
     """Assign a request id, bind logging context, and log the access line."""
@@ -44,8 +74,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         self._exclude_paths = exclude_paths
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-        incoming = request.headers.get(REQUEST_ID_HEADER)
-        request_id = incoming if incoming and len(incoming) <= 128 else uuid.uuid4().hex
+        request_id = _resolve_request_id(request.headers.get(REQUEST_ID_HEADER))
         request.state.request_id = request_id
 
         structlog.contextvars.clear_contextvars()
@@ -132,6 +161,30 @@ _CONTENT_SECURITY_POLICY: Final = (
 )
 
 
+def apply_security_headers(response: Response, *, enable_csp: bool) -> None:
+    """Attach the hardening headers to one response.
+
+    Extracted from the middleware so that the catch-all exception handler can
+    apply the identical set. It has to, and cannot reuse the middleware:
+    Starlette binds the ``Exception`` handler to ``ServerErrorMiddleware``,
+    which is the **outermost** layer, so a response produced there never
+    travels back through the middleware stack. Before this milestone an
+    unhandled 500 was therefore the one response class with no security
+    headers and no ``X-Request-ID``, while the documentation claimed every
+    response carried them.
+
+    One function, two call sites, so the two can no longer disagree about
+    what the header set is.
+    """
+    for header, value in _STATIC_SECURITY_HEADERS.items():
+        # setdefault, not assignment: a handler that deliberately set its own
+        # value for a specific response should win.
+        response.headers.setdefault(header, value)
+
+    if enable_csp:
+        response.headers.setdefault("Content-Security-Policy", _CONTENT_SECURITY_POLICY)
+
+
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Add hardening headers to every response.
 
@@ -149,13 +202,5 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         response = await call_next(request)
-
-        for header, value in _STATIC_SECURITY_HEADERS.items():
-            # setdefault, not assignment: a handler that deliberately set its
-            # own value for a specific response should win.
-            response.headers.setdefault(header, value)
-
-        if self._enable_csp:
-            response.headers.setdefault("Content-Security-Policy", _CONTENT_SECURITY_POLICY)
-
+        apply_security_headers(response, enable_csp=self._enable_csp)
         return response

@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from hcc.logging import get_logger
+from hcc.middleware import REQUEST_ID_HEADER, apply_security_headers
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -184,6 +185,23 @@ def _request_id(request: Request) -> str | None:
     return str(value) if value else None
 
 
+def _harden_bypassed_response(request: Request, response: JSONResponse) -> None:
+    """Apply middleware-provided headers to a response that bypassed it.
+
+    Only the catch-all ``Exception`` handler needs this — see its comment.
+    Reads configuration from ``app.state`` rather than closing over settings,
+    and tolerates their absence: this runs while handling an unexpected error,
+    so it must not be able to raise a second one and mask the first.
+    """
+    settings = getattr(request.app.state, "settings", None)
+    if settings is not None and settings.security_headers_enabled:
+        apply_security_headers(response, enable_csp=settings.effective_csp_enabled)
+
+    request_id = _request_id(request)
+    if request_id is not None:
+        response.headers.setdefault(REQUEST_ID_HEADER, request_id)
+
+
 def _error_response(
     *,
     status_code: int,
@@ -311,9 +329,16 @@ def register_exception_handlers(app: FastAPI) -> None:
             exception_type=type(exc).__name__,
             request_id=_request_id(request),
         )
-        return _error_response(
+        response = _error_response(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             code="internal_error",
             message="An internal error occurred.",
             request=request,
         )
+        # This handler is bound to `ServerErrorMiddleware`, the outermost
+        # layer, so its response never travels back through the middleware
+        # stack. The headers every other response gets from middleware must
+        # therefore be applied here, or a 500 becomes the one response class
+        # without them.
+        _harden_bypassed_response(request, response)
+        return response

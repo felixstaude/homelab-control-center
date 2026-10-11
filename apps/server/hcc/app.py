@@ -24,6 +24,7 @@ from hcc.logging import configure_logging, get_logger
 from hcc.middleware import RequestContextMiddleware, SecurityHeadersMiddleware
 from hcc.security.authentication import AuthenticationService
 from hcc.security.authorization import Authorizer
+from hcc.security.forwarded import describe
 from hcc.security.password import build_password_hasher
 from hcc.security.ratelimit import LoginThrottle, RateLimiter
 from hcc.security.sessions import SessionService
@@ -43,6 +44,32 @@ to operational endpoints and version metadata.
 
 # Paths excluded from per-request access logging (polled continuously).
 _UNLOGGED_PATHS = frozenset({"/healthz", "/readyz"})
+
+#: Interactive API documentation, served by FastAPI itself.
+#:
+#: Public, and **disabled entirely in production**: `create_app` passes
+#: `docs_url=None` and `openapi_url=None` when the environment is production,
+#: so these routes do not exist there at all.
+#:
+#: Listed because this mapping is meant to be the complete answer to "what can
+#: an anonymous caller reach", and until milestone 1.5 the route scan read the
+#: OpenAPI schema — which does not describe the documentation endpoints
+#: themselves, so they were unlisted and untested while still being public
+#: outside production.
+DOCUMENTATION_PATHS: Final[dict[str, str]] = {
+    "/openapi.json": (
+        "The OpenAPI schema, needed by the interactive documentation and by "
+        "client generation. Absent in production."
+    ),
+    "/docs": (
+        "Swagger UI. A development convenience that widens the attack surface "
+        "for no operator benefit, so it is absent in production."
+    ),
+    "/docs/oauth2-redirect": (
+        "Swagger UI's OAuth redirect helper, mounted by FastAPI alongside "
+        "/docs. Absent in production."
+    ),
+}
 
 #: Every path reachable without a session, with the reason it has to be.
 #:
@@ -64,6 +91,7 @@ PUBLIC_PATHS: Final[dict[str, str]] = {
         "failed goes to the log, not to an anonymous caller."
     ),
     **PUBLIC_V1_PATHS,
+    **DOCUMENTATION_PATHS,
 }
 
 
@@ -90,6 +118,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             max_concurrency=app.state.password_hasher.max_concurrency,
             peak_memory_mib=app.state.password_hasher.peak_memory_mib,
         )
+        # The request-attribution configuration decides whether per-address
+        # throttling works at all, and it is silent when wrong: behind an
+        # undeclared proxy every client shares one budget. Logged at startup
+        # so the state is visible without reading the environment.
+        logger.info(
+            "request_attribution_configured",
+            trusted_proxies=describe(settings.trusted_proxy_networks),
+            public_origin=settings.public_origin or "derived from request",
+        )
+        if settings.is_production and not settings.trusted_proxies:
+            logger.warning(
+                "client_addresses_not_distinguished",
+                detail=(
+                    "HCC_TRUSTED_PROXIES is empty, so X-Forwarded-For is "
+                    "ignored. Behind a reverse proxy every client appears as "
+                    "the proxy and shares one login throttle budget. Set it "
+                    "to the proxy's address or network."
+                ),
+            )
         try:
             yield
         finally:
@@ -136,6 +183,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.login_throttle = LoginThrottle(
         per_address=RateLimiter(
             limit=settings.login_rate_limit_per_address,
+            window_seconds=settings.login_rate_limit_window_seconds,
+        ),
+        per_address_username=RateLimiter(
+            limit=settings.login_rate_limit_per_address_username,
             window_seconds=settings.login_rate_limit_window_seconds,
         ),
         per_username=RateLimiter(

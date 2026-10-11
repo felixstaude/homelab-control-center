@@ -96,10 +96,15 @@ See [`AGENT_ARCHITECTURE.md §6`](AGENT_ARCHITECTURE.md#6-configuration-synchron
 | --- | --- |
 | Monorepo, build system, CI | Implemented |
 | FastAPI app, settings, logging, error envelope | Implemented |
-| `/healthz`, `/readyz`, `/api/v1/info` | Implemented |
+| `/healthz`, `/readyz` (public), `/api/v1/info` (authenticated) | Implemented |
 | PostgreSQL connectivity, Alembic chain | Implemented |
-| `users` table (milestone 1.1) | Implemented — schema only, no auth |
-| React shell, design system, 7 nav sections | Implemented |
+| `users`, `sessions`, `installation` tables | Implemented |
+| Argon2id password hashing (1.2) | Implemented |
+| Login, logout, server-side sessions, CSRF, throttling (1.3) | Implemented |
+| Default-deny authentication, role authorization (1.4) | Implemented |
+| First-run bootstrap (`hcc bootstrap-admin`), reverse-proxy origin handling (1.5) | Implemented |
+| Per-host capability authorization | **Interface only**, fails closed |
+| React shell, design system, 7 nav sections | Implemented — no API integration yet |
 | Go agent lifecycle, config, logging, shutdown | Implemented |
 | Controller protocol | **Interface only**, no implementation |
 | Monitoring modules, scheduling, retention | **Design, not code** |
@@ -229,11 +234,22 @@ Two distinct uses, not to be conflated:
 **Browser ↔ control plane.** Live log tailing and dashboard updates.
 Read-only: ordinary mutations go through REST, so that authorization and audit
 logging live on one path instead of two. Authenticated by the same session
-cookie as REST.
+cookie as REST — and, unlike REST, with a **mandatory** `Origin` check,
+because a handshake is not subject to CORS and the double-submit CSRF header
+cannot be sent on one. See
+[ADR-035](#adr-035-browser-websockets-are-session-authenticated-with-a-mandatory-origin-check).
 
 **Agent → control plane.** Opened outbound by the agent and held open. Carries
 pending-command delivery, event-driven module output (Docker lifecycle and
 logs), and terminal session frames.
+
+These two are **separate authentication domains** and must never be
+interchangeable: the browser socket authenticates a *user* by session cookie,
+the agent socket authenticates a *host* by bearer credential. Accepting an
+agent credential where a user session is expected would let a compromised host
+act as a user; the reverse would let a browser impersonate a host. The
+boundary is tabulated in
+[`SECURITY.md`](SECURITY.md#authentication-boundaries-for-websockets).
 
 #### The one exception to "WebSockets are read-only"
 
@@ -258,8 +274,11 @@ mutating WebSocket path should be treated as a design smell.
 
 ## 4. Authentication and authorization
 
-**None of this is implemented in Phase 0.** It is the design that Phase 1
-builds, documented now because it constrains everything else.
+**Substantially implemented as of milestone 1.5.** User authentication,
+server-side sessions, CSRF, default-deny routing and the role axis are in the
+code and tested; the **capability axis** is an interface that fails closed,
+and **agent** authentication is still design. `docs/SECURITY.md` marks each
+section as implemented or design.
 
 ### 4.1 Two distinct identity types
 
@@ -400,8 +419,10 @@ See ADR-003 and
 - Sessions are request-scoped, rolled back on error, always closed. Commits are
   the handler's responsibility — only the handler knows whether its unit of
   work succeeded.
-- No ORM models in Phase 0. Schema arrives with the features that need it;
-  speculative tables are harder to remove than to add.
+- Schema arrives with the features that need it; speculative tables are
+  harder to remove than to add. Phase 0 therefore shipped no ORM models at
+  all, and the three tables that exist today each arrived with the milestone
+  that uses them.
 
 ### 6.2 Migrations
 
@@ -418,11 +439,13 @@ migration.
 
 ### 6.3 Schema shape
 
-`users` is implemented (milestone 1.1); the rest is indicative:
+`users`, `sessions` and `installation` are implemented; the rest is
+indicative:
 
 ```
-users                       IMPLEMENTED
-sessions, roles
+users                       IMPLEMENTED (1.1)
+sessions                    IMPLEMENTED (1.3)
+installation                IMPLEMENTED (1.5) — one row; first-run invariant
 hosts ── agent_credentials
       ├─ host_metrics       (time-series, partitioned by time)
       ├─ containers ── container_metrics
@@ -1400,22 +1423,6 @@ modules without arbitrary execution at all.
 
 ---
 
-## 14. Open design questions
-
-Recorded rather than silently deferred. Each needs an answer before the
-milestone that depends on it, not before the next commit.
-
-| # | Question | Blocks | Current leaning |
-| --- | --- | --- | --- |
-| 1 | Does storage volume at realistic fleet size hold up? The figures in [`DATA_RETENTION.md §7`](DATA_RETENTION.md#7-expected-volume) are arithmetic, not measurements. | Phase 3 schema freeze | Benchmark first ([§8 there](DATA_RETENTION.md#8-benchmarks-required-before-metric-storage-ships)); PostgreSQL expected to hold, TimescaleDB as first escalation |
-| 2 | Per-host role assignment — should a user be an Operator on some hosts and a Viewer on others? | Multi-user milestones | Likely yes, as a third authorization dimension composing with ADR-023; not in the first delivery |
-| 3 | Host groups as a configuration layer. [`AGENT_ARCHITECTURE.md §6.1`](AGENT_ARCHITECTURE.md#61-layering) reserves the slot but defers it. | Fleet-scale configuration | Defer until someone runs enough hosts to need it; two layers cover the homelab case |
-| 4 | Metric identity across config changes: if an operator changes a module's labels, is that the same series or a new one? | Phase 3 schema | Probably a new series, with the UI stitching them for display — but it affects the schema and must be settled before it lands |
-| 5 | Whether `sessions.control` is worth shipping at all. Attaching to an existing session inherits that session's privileges, including root. | Session management milestone | Possibly read-only only; the control half may be more risk than value |
-| 6 | Agent self-update distribution. Phase 10 lists it as opt-in and signature-verified, but it makes the controller a code-distribution channel — the same concern as plugin question 10. | Phase 10 | Keep opt-in and signed; prefer OS packages over self-update |
-| 7 | Rollup computation location: controller-side job, or PostgreSQL-side with Timescale continuous aggregates. | Phase 3 | Controller-side first (portable, testable); revisit with benchmarks |
-| 8 | Whether the terminal needs a break-glass path when the controller is down. Today it does not work offline, by design. | Terminal milestone | Leave it unavailable; a break-glass path is an unaudited backdoor by another name |
-
 ### ADR-025: Argon2id via argon2-cffi, with RFC 9106 low-memory parameters
 
 **Decision.** Passwords are hashed with **Argon2id** through
@@ -1588,8 +1595,32 @@ whole point, and it is asserted by a test.
 
 **Why both keys.** Per-address alone lets a botnet spray one account from many
 addresses, each under the limit. Per-username alone lets one host enumerate
-usernames freely, and lets an attacker lock a user out by burning their budget.
-Usernames are keyed canonically, so casing variants share a budget.
+usernames freely. Usernames are keyed canonically, so casing variants share a
+budget.
+
+**Amended (milestone 1.5): three budgets, not two.** The two-budget form had a
+defect found by audit. With a per-username budget *lower* than the per-address
+budget — the shipped defaults were 10 and 20 — one attacker could exhaust a
+known administrator's budget without exhausting their own, and sustain it
+indefinitely: a remote, unauthenticated, permanent denial of service against
+a named account, reachable with ten requests every five minutes from a single
+host. The original wording above even noted that risk and shipped it anyway.
+
+The budgets are now per source, per source-and-account, and per account
+(defaults 20 / 10 / 100), consulted in that order with a refusal returning
+immediately. A source cut off by its per-account budget therefore stops
+contributing to the global one, so one source can spend at most
+`per_address_username` of `per_username` and cannot exhaust it. Configuration
+enforces `per_username > per_address_username` at startup, so the unsafe
+relationship cannot return. A successful login clears that source's budgets
+but not the global one, which would otherwise be a free reset for an attacker
+holding one working password.
+
+What remains, stated in
+[`SECURITY.md`](SECURITY.md#login-throttling-implemented): a sufficiently
+distributed attacker can still degrade availability for one account. That is
+inherent to any per-account limit, and the alternative — no global budget —
+permits unlimited distributed guessing.
 
 **Why in-process, and not Redis.** Redis would be a second stateful service
 for one feature, which ADR-001 and ADR-003 exist to avoid.
@@ -1708,3 +1739,154 @@ failure it found.
 `curl /readyz` no longer says which dependency is down. Accepted: both are one
 authenticated request or one log line away, and neither is worth handing to an
 anonymous caller.
+
+### ADR-033: The initial administrator is created by a local command, not an endpoint
+
+**Decision.** A fresh installation is initialized by running
+`hcc bootstrap-admin` on the controller host or inside its container. There is
+**no** HTTP endpoint that creates the first administrator, not even one gated
+on "no users exist". Initialization is recorded as a single row in an
+`installation` table, and bootstrap is refused while that row exists.
+
+**Why not an endpoint.** The obvious design — expose `POST /api/v1/setup`
+while `users` is empty — gives ownership of the deployment to whoever reaches
+the port first. On a homelab that race is real: the control plane is commonly
+reachable on the LAN before the operator has finished configuring it, and the
+window is the gap between "container started" and "operator opened the
+browser". Losing it is also silent, because the installation then simply looks
+already set up.
+
+An empty table is a statement about the current user list, not proof of
+anything. So bootstrap is authorized by something a network attacker does not
+have — the database credentials, demonstrated by running a local command.
+That is the same authority needed to read every password hash and session
+token anyway, so requiring it grants nothing new.
+
+**Why the invariant is a row and not a count.** Bootstrap must not reopen when
+the administrator is later deactivated or deleted; deriving the condition from
+`count(*)` would hand ownership to whoever noticed an emptied table. The row
+is written once, never updated or deleted by the application, and carries
+**no foreign key** to `users` — a cascade would delete it with the
+administrator and silently reopen the door.
+
+**Why it is atomic.** The administrator row and the installation row are
+written in one transaction, so no half-initialized state exists. A
+transaction-scoped advisory lock serialises concurrent attempts so the loser
+gets a readable error, and the **singleton primary key** on `installation`
+(`id boolean` with `CHECK (id)`) means a second insert is refused by the
+database whether or not the lock was taken. Correctness does not depend on
+cooperation; the lock only improves the error message.
+
+**Cost.** Initialization cannot be completed from a browser, so the first-run
+experience is a terminal command — documented in `docs/DEVELOPMENT.md` and in
+the server README. A future HTTP flow for the setup wizard would additionally
+require a one-time bootstrap secret printed to the server's log or console,
+which is deliberately **not** built now: the CLI is sufficient and has no
+equivalent race. Recovering a lost administrator password also requires
+database access, which is recorded as a known gap rather than solved with a
+second privileged path.
+
+### ADR-034: Request origin and client address come from declared configuration, not from headers
+
+**Decision.** Two settings govern how the application interprets a request
+that arrived through a proxy:
+
+* `HCC_PUBLIC_ORIGIN` — the origin browsers use. When set it is
+  **authoritative** for the CSRF `Origin` check; nothing the client sends can
+  override it.
+* `HCC_TRUSTED_PROXIES` — addresses or CIDR networks whose
+  `X-Forwarded-For` and `X-Forwarded-Proto` headers may be believed. Empty by
+  default. The `X-Forwarded-For` chain is walked from the **right**,
+  discarding trusted hops.
+
+A production deployment must set one of them, or startup fails. The previous
+`HCC_TRUSTED_PROXY_HEADERS`, which trusted a named header unconditionally, is
+removed.
+
+**Why.** Forwarding headers are request headers: any client can set them.
+Trusting them unconditionally lets a caller forge its address and bypass
+per-address throttling; ignoring them behind a real proxy makes every client
+look like the proxy, so all users share one budget and one attacker can deny
+login to everyone. Neither failure is acceptable, and the application cannot
+tell which situation it is in — but the operator can. So it is configuration,
+and the default is the safe-but-degraded one rather than the unsafe one.
+
+The same information decides the CSRF `Origin` comparison. Deriving the
+expected origin from the raw ASGI scheme — what the code did before milestone
+1.5 — meant that behind a TLS-terminating proxy the application compared a
+browser's `https://host` against its own internal `http://host` and **rejected
+every state-changing request** with a CSRF error naming the wrong cause. That
+was a verified defect in the one topology [§12.1](#121-target-single-host-compose)
+recommends.
+
+**Why startup fails rather than warns.** The runtime symptom is a 403 on every
+mutation, attributed to CSRF. An operator debugging that looks at cookies and
+tokens, not at scheme derivation. A startup failure naming the two variables
+is strictly more useful than a deployment where login works and logout does
+not.
+
+**Why a wildcard CORS origin is refused.** `allow_credentials` is on because
+this API authenticates with cookies, and Starlette answers a wildcard in that
+configuration by echoing whichever origin asked — so any website could read
+authenticated responses. An operator who writes `*` wants something the
+application must not provide, so it is refused rather than silently narrowed.
+
+**Cost.** One more required setting for a production deployment, and an
+operator who changes their proxy topology must remember to update it. Accepted:
+the alternative is a security property that depends on a guess.
+
+### ADR-035: Browser WebSockets are session-authenticated with a mandatory Origin check
+
+**Decision.** The shared session dependency accepts both HTTP requests and
+WebSocket handshakes. On a handshake, a valid session is required **and**
+`Origin` must be present and match — absent is refused, unlike on HTTP. Agent
+WebSockets (Phase 7) are a separate authentication domain using a bearer host
+credential, and the two must never be interchangeable.
+
+**Why `Origin` is mandatory here but optional on HTTP.** A WebSocket handshake
+is not subject to CORS, so a browser will open a cross-origin socket and
+attach cookies — this is cross-site WebSocket hijacking, and `Origin` is the
+only signal that distinguishes it from a legitimate handshake. The
+double-submit CSRF header **cannot** be sent on a handshake at all, so there is
+no token to fall back on. Browsers always send `Origin` on a handshake, so
+requiring it costs a legitimate client nothing, and a non-browser client has
+no business on a session-authenticated socket.
+
+**Why this is decided now, with no WebSocket in the product.** Two are coming
+and they are not the same: a browser log tail and terminal authenticate a
+*user*; the agent channel authenticates a *host*. Accepting an agent
+credential where a user session is expected would let a compromised host act
+as a user, and the reverse would let a browser impersonate a host. Deciding
+the boundary after the first socket exists means deciding it under pressure
+from whatever that socket happened to need.
+
+It also required a concrete fix. The shared dependencies were annotated
+`Request`, which FastAPI injects only on HTTP routes, so a WebSocket mounted
+on the protected router failed with a `TypeError` — refused, but by an
+internal error rather than an authentication decision. They now take
+`HTTPConnection`, the common base of `Request` and `WebSocket`, so one
+dependency is correct on both.
+
+**Cost.** How a browser socket presents a CSRF token *after* the handshake is
+left to Phase 5. The `ws`/`wss` schemes also have to be mapped onto `http`/
+`https` when reconstructing an origin, because a browser opening
+`wss://host/x` sends `Origin: https://host` — a small translation, and one
+whose absence made every authenticated handshake fail until a test caught it.
+
+---
+
+## 14. Open design questions
+
+Recorded rather than silently deferred. Each needs an answer before the
+milestone that depends on it, not before the next commit.
+
+| # | Question | Blocks | Current leaning |
+| --- | --- | --- | --- |
+| 1 | Does storage volume at realistic fleet size hold up? The figures in [`DATA_RETENTION.md §7`](DATA_RETENTION.md#7-expected-volume) are arithmetic, not measurements. | Phase 3 schema freeze | Benchmark first ([§8 there](DATA_RETENTION.md#8-benchmarks-required-before-metric-storage-ships)); PostgreSQL expected to hold, TimescaleDB as first escalation |
+| 2 | Per-host role assignment — should a user be an Operator on some hosts and a Viewer on others? | Multi-user milestones | Likely yes, as a third authorization dimension composing with ADR-023; not in the first delivery |
+| 3 | Host groups as a configuration layer. [`AGENT_ARCHITECTURE.md §6.1`](AGENT_ARCHITECTURE.md#61-layering) reserves the slot but defers it. | Fleet-scale configuration | Defer until someone runs enough hosts to need it; two layers cover the homelab case |
+| 4 | Metric identity across config changes: if an operator changes a module's labels, is that the same series or a new one? | Phase 3 schema | Probably a new series, with the UI stitching them for display — but it affects the schema and must be settled before it lands |
+| 5 | Whether `sessions.control` is worth shipping at all. Attaching to an existing session inherits that session's privileges, including root. | Session management milestone | Possibly read-only only; the control half may be more risk than value |
+| 6 | Agent self-update distribution. Phase 10 lists it as opt-in and signature-verified, but it makes the controller a code-distribution channel — the same concern as plugin question 10. | Phase 10 | Keep opt-in and signed; prefer OS packages over self-update |
+| 7 | Rollup computation location: controller-side job, or PostgreSQL-side with Timescale continuous aggregates. | Phase 3 | Controller-side first (portable, testable); revisit with benchmarks |
+| 8 | Whether the terminal needs a break-glass path when the controller is down. Today it does not work offline, by design. | Terminal milestone | Leave it unavailable; a break-glass path is an unaudited backdoor by another name |

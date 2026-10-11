@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -36,6 +37,12 @@ pytestmark = pytest.mark.integration
 
 PASSWORD = "correct horse battery staple"
 LOGIN = "/api/v1/auth/login"
+
+#: Production settings require a declared public origin since milestone 1.5,
+#: so that the CSRF Origin check compares against the origin browsers really
+#: use rather than the app's internal view of its own scheme. See
+#: tests/test_origin_csrf_integration.py for the behaviour itself.
+PRODUCTION_ORIGIN = "https://hcc.example.test"
 LOGOUT = "/api/v1/auth/logout"
 ME = "/api/v1/auth/me"
 
@@ -95,8 +102,17 @@ async def run_sql(client: AsyncClient, statement: str, **params: Any) -> Any:
         return buffered() if buffered is not None else result
 
 
-async def login(client: AsyncClient, *, username: str = "Felix", password: str = PASSWORD) -> Any:
-    return await client.post(LOGIN, json={"username": username, "password": password})
+async def login(
+    client: AsyncClient,
+    *,
+    username: str = "Felix",
+    password: str = PASSWORD,
+    headers: dict[str, str] | None = None,
+) -> Any:
+    """Post credentials. ``headers`` lets a test present forwarding headers."""
+    return await client.post(
+        LOGIN, json={"username": username, "password": password}, headers=headers
+    )
 
 
 def set_cookie_header(response: Any, name: str) -> str:
@@ -316,7 +332,7 @@ class TestCookies:
             assert "Secure" not in set_cookie_header(response, "hcc_session")
 
     async def test_cookies_are_secure_in_production(self, api_factory: ApiFactory) -> None:
-        async with api_factory(environment="production") as client:
+        async with api_factory(environment="production", public_origin=PRODUCTION_ORIGIN) as client:
             await seed_user(client)
             response = await login(client)
 
@@ -882,10 +898,128 @@ class TestOriginValidation:
 # ---------------------------------------------------------------------------
 
 
+class TestLastLoginAt:
+    """``last_login_at`` is recorded, and only on success.
+
+    The column existed, was migrated and was documented from milestone 1.1,
+    but nothing ever wrote it — so every account read "never logged in"
+    forever. Found by audit.
+    """
+
+    async def test_a_successful_login_records_the_timestamp(self, api_factory: ApiFactory) -> None:
+        async with api_factory() as client:
+            user = await seed_user(client)
+            assert user.last_login_at is None
+
+            before = datetime.now(UTC)
+            assert (await login(client)).status_code == 200
+            after = datetime.now(UTC)
+
+            # Read back from the database, not from the response: the point is
+            # that it was committed.
+            async with client.app_state.database.session_factory() as db:  # type: ignore[attr-defined]
+                recorded = (
+                    await db.execute(
+                        text("SELECT last_login_at FROM users WHERE id = :id").bindparams(
+                            id=user.id
+                        )
+                    )
+                ).scalar_one()
+
+            assert recorded is not None
+            assert before <= recorded <= after
+
+    async def test_a_failed_login_does_not_record_it(self, api_factory: ApiFactory) -> None:
+        async with api_factory() as client:
+            user = await seed_user(client)
+
+            assert (await login(client, password="wrong")).status_code == 401
+
+            async with client.app_state.database.session_factory() as db:  # type: ignore[attr-defined]
+                recorded = (
+                    await db.execute(
+                        text("SELECT last_login_at FROM users WHERE id = :id").bindparams(
+                            id=user.id
+                        )
+                    )
+                ).scalar_one()
+
+            assert recorded is None
+
+    async def test_an_inactive_account_does_not_record_it(self, api_factory: ApiFactory) -> None:
+        # The account-state check runs after verification, so this exercises
+        # the path where the password was correct but the login was refused.
+        async with api_factory() as client:
+            user = await seed_user(client, is_active=False)
+
+            assert (await login(client)).status_code == 401
+
+            async with client.app_state.database.session_factory() as db:  # type: ignore[attr-defined]
+                recorded = (
+                    await db.execute(
+                        text("SELECT last_login_at FROM users WHERE id = :id").bindparams(
+                            id=user.id
+                        )
+                    )
+                ).scalar_one()
+
+            assert recorded is None
+
+    async def test_a_later_login_advances_it(self, api_factory: ApiFactory) -> None:
+        async with api_factory() as client:
+            user = await seed_user(client)
+            await login(client)
+
+            async with client.app_state.database.session_factory() as db:  # type: ignore[attr-defined]
+                first = (
+                    await db.execute(
+                        text("SELECT last_login_at FROM users WHERE id = :id").bindparams(
+                            id=user.id
+                        )
+                    )
+                ).scalar_one()
+
+            client.cookies.clear()
+            await login(client)
+
+            async with client.app_state.database.session_factory() as db:  # type: ignore[attr-defined]
+                second = (
+                    await db.execute(
+                        text("SELECT last_login_at FROM users WHERE id = :id").bindparams(
+                            id=user.id
+                        )
+                    )
+                ).scalar_one()
+
+            assert second >= first
+
+    async def test_the_session_is_still_issued_correctly(self, api_factory: ApiFactory) -> None:
+        # The write shares the login transaction, so a bug there could roll
+        # the session back. Both must land.
+        async with api_factory() as client:
+            await seed_user(client)
+
+            assert (await login(client)).status_code == 200
+
+            assert (await client.get("/api/v1/auth/me")).status_code == 200
+            async with client.app_state.database.session_factory() as db:  # type: ignore[attr-defined]
+                sessions = (await db.execute(text("SELECT count(*) FROM sessions"))).scalar_one()
+            assert sessions == 1
+
+
 class TestRateLimiting:
+    """Throttling at the HTTP level, in the three-budget model of 1.5.
+
+    The budgets and their interaction are unit-tested in
+    tests/test_security_ratelimit.py; these assert the wiring and the
+    behaviour an attacker or a legitimate user actually sees.
+    """
+
     async def test_repeated_failures_are_throttled(self, api_factory: ApiFactory) -> None:
         async with api_factory(
-            login_rate_limit_per_address=3, login_rate_limit_per_username=1000
+            login_rate_limit_per_address=3,
+            login_rate_limit_per_address_username=3,
+            login_rate_limit_per_username=1000,
         ) as client:
             await seed_user(client)
 
@@ -895,7 +1029,11 @@ class TestRateLimiting:
             assert statuses[3:] == [429, 429]
 
     async def test_throttled_response_carries_retry_after(self, api_factory: ApiFactory) -> None:
-        async with api_factory(login_rate_limit_per_address=1) as client:
+        async with api_factory(
+            login_rate_limit_per_address=1,
+            login_rate_limit_per_address_username=1,
+            login_rate_limit_per_username=1000,
+        ) as client:
             await seed_user(client)
             await login(client, password="wrong")
 
@@ -910,8 +1048,12 @@ class TestRateLimiting:
         # 64 MiB Argon2 verification would still let an attacker exhaust
         # memory. Checked by confirming a throttled request is refused even
         # when the username does not exist, so no verification could have been
-        # needed — and that the hasher's semaphore was never contended.
-        async with api_factory(login_rate_limit_per_address=2) as client:
+        # needed.
+        async with api_factory(
+            login_rate_limit_per_address=2,
+            login_rate_limit_per_address_username=2,
+            login_rate_limit_per_username=1000,
+        ) as client:
             await seed_user(client)
 
             for _ in range(2):
@@ -923,9 +1065,14 @@ class TestRateLimiting:
             # Correct credentials are refused too: the budget is spent.
             assert (await login(client)).status_code == 429
 
-    async def test_throttling_is_per_username(self, api_factory: ApiFactory) -> None:
+    async def test_one_source_is_bounded_per_account(self, api_factory: ApiFactory) -> None:
+        # The per-source-per-account budget is what bounds password guessing.
+        # It applies to one account only: another account from the same source
+        # is unaffected, because the budget is not a penalty on the source.
         async with api_factory(
-            login_rate_limit_per_address=1000, login_rate_limit_per_username=2
+            login_rate_limit_per_address=1000,
+            login_rate_limit_per_address_username=2,
+            login_rate_limit_per_username=1000,
         ) as client:
             await seed_user(client, username="target")
             await seed_user(client, username="bystander")
@@ -934,13 +1081,14 @@ class TestRateLimiting:
                 await login(client, username="target", password="wrong")
 
             assert (await login(client, username="target")).status_code == 429
-            # A different account is unaffected.
             assert (await login(client, username="bystander")).status_code == 200
 
-    async def test_username_budget_is_case_insensitive(self, api_factory: ApiFactory) -> None:
+    async def test_account_budget_is_case_insensitive(self, api_factory: ApiFactory) -> None:
         # Otherwise an attacker gets a fresh budget per casing variant.
         async with api_factory(
-            login_rate_limit_per_address=1000, login_rate_limit_per_username=2
+            login_rate_limit_per_address=1000,
+            login_rate_limit_per_address_username=2,
+            login_rate_limit_per_username=1000,
         ) as client:
             await seed_user(client, username="target")
 
@@ -949,10 +1097,16 @@ class TestRateLimiting:
 
             assert (await login(client, username="TaRgEt")).status_code == 429
 
-    async def test_successful_login_clears_the_budget(self, api_factory: ApiFactory) -> None:
+    async def test_successful_login_clears_this_sources_budget(
+        self, api_factory: ApiFactory
+    ) -> None:
         # A user who mistyped a few times must not be left throttled once they
         # get it right.
-        async with api_factory(login_rate_limit_per_address=5) as client:
+        async with api_factory(
+            login_rate_limit_per_address=5,
+            login_rate_limit_per_address_username=5,
+            login_rate_limit_per_username=1000,
+        ) as client:
             await seed_user(client)
 
             for _ in range(3):
@@ -967,13 +1121,164 @@ class TestRateLimiting:
     async def test_malformed_username_is_still_throttled(self, api_factory: ApiFactory) -> None:
         # Input that fails normalisation must not be a free path around the
         # limiter.
-        async with api_factory(login_rate_limit_per_address=2) as client:
+        async with api_factory(
+            login_rate_limit_per_address=2,
+            login_rate_limit_per_address_username=2,
+            login_rate_limit_per_username=1000,
+        ) as client:
             await seed_user(client)
 
             for _ in range(2):
                 await login(client, username="ab")  # too short to normalise
 
             assert (await login(client, username="ab")).status_code == 429
+
+
+class TestRateLimitingIsolation:
+    """One source must not be able to deny login to anyone else.
+
+    These are the regression tests for the two verified availability defects:
+    a single source exhausting a known account's global budget, and every
+    client sharing one budget because the proxy's address was used for all of
+    them.
+    """
+
+    async def test_one_source_cannot_lock_out_a_known_account(
+        self, api_factory: ApiFactory
+    ) -> None:
+        """The shipped defaults must not permit a single-source lockout.
+
+        Before milestone 1.5 the per-username budget was *lower* than the
+        per-address budget, so one host could exhaust a known administrator's
+        budget with ten requests per window and keep them locked out
+        indefinitely.
+        """
+        async with api_factory(
+            trusted_proxies=("127.0.0.1",),
+            # The shipped defaults, stated explicitly so this test fails if
+            # they are ever changed to an unsafe ratio.
+            login_rate_limit_per_address=20,
+            login_rate_limit_per_address_username=10,
+            login_rate_limit_per_username=100,
+        ) as client:
+            await seed_user(client, username="admin")
+
+            attacker = {"X-Forwarded-For": "203.0.113.9"}
+            statuses = [
+                (
+                    await login(client, username="admin", password="wrong", headers=attacker)
+                ).status_code
+                for _ in range(40)
+            ]
+            assert 429 in statuses, "the attacker was never throttled"
+
+            # The legitimate owner, from their own address, with the right
+            # password.
+            victim = {"X-Forwarded-For": "192.168.1.50"}
+            response = await login(client, username="admin", headers=victim)
+
+            assert response.status_code == 200, (
+                f"a single source locked the account out: {response.status_code} {response.text}"
+            )
+
+    async def test_clients_behind_a_trusted_proxy_have_separate_budgets(
+        self, api_factory: ApiFactory
+    ) -> None:
+        # Without forwarded-header handling every client appears as the proxy
+        # and shares one budget, so one attacker denies login to everyone.
+        async with api_factory(
+            trusted_proxies=("127.0.0.1",),
+            login_rate_limit_per_address=2,
+            login_rate_limit_per_address_username=2,
+            login_rate_limit_per_username=1000,
+        ) as client:
+            await seed_user(client)
+
+            noisy = {"X-Forwarded-For": "203.0.113.9"}
+            for _ in range(2):
+                await login(client, password="wrong", headers=noisy)
+            assert (await login(client, password="wrong", headers=noisy)).status_code == 429
+
+            # A different client behind the same proxy still has its budget.
+            quiet = {"X-Forwarded-For": "198.51.100.4"}
+            assert (await login(client, headers=quiet)).status_code == 200
+
+    async def test_forwarded_header_is_ignored_without_a_trusted_proxy(
+        self, api_factory: ApiFactory
+    ) -> None:
+        # The other half of the trade-off: with no proxy declared, the header
+        # must not let a caller rotate its apparent address and escape the
+        # budget.
+        async with api_factory(
+            trusted_proxies=(),
+            login_rate_limit_per_address=2,
+            login_rate_limit_per_address_username=2,
+            login_rate_limit_per_username=1000,
+        ) as client:
+            await seed_user(client)
+
+            for index in range(2):
+                await login(
+                    client, password="wrong", headers={"X-Forwarded-For": f"10.0.0.{index}"}
+                )
+
+            # A fresh forged address does not buy a fresh budget.
+            response = await login(
+                client, password="wrong", headers={"X-Forwarded-For": "10.0.0.99"}
+            )
+            assert response.status_code == 429
+
+    async def test_forwarded_header_from_an_untrusted_peer_is_ignored(
+        self, api_factory: ApiFactory
+    ) -> None:
+        # A proxy is declared, but this request did not come from it. The
+        # header is therefore not evidence of anything.
+        async with api_factory(
+            client_address="203.0.113.77",
+            trusted_proxies=("127.0.0.1",),
+            login_rate_limit_per_address=2,
+            login_rate_limit_per_address_username=2,
+            login_rate_limit_per_username=1000,
+        ) as client:
+            await seed_user(client)
+
+            for index in range(2):
+                await login(
+                    client, password="wrong", headers={"X-Forwarded-For": f"10.0.0.{index}"}
+                )
+
+            response = await login(
+                client, password="wrong", headers={"X-Forwarded-For": "10.0.0.99"}
+            )
+            assert response.status_code == 429
+
+    async def test_distributed_attempts_hit_the_global_account_budget(
+        self, api_factory: ApiFactory
+    ) -> None:
+        # The budget that remains: many sources against one account. This is
+        # what the global per-username ceiling is for, and the reason it is not
+        # simply removed.
+        async with api_factory(
+            trusted_proxies=("127.0.0.1",),
+            login_rate_limit_per_address=1000,
+            login_rate_limit_per_address_username=1,
+            login_rate_limit_per_username=2,
+        ) as client:
+            await seed_user(client, username="admin")
+
+            for index in (1, 2):
+                response = await login(
+                    client,
+                    username="admin",
+                    password="wrong",
+                    headers={"X-Forwarded-For": f"10.0.0.{index}"},
+                )
+                assert response.status_code == 401
+
+            response = await login(
+                client, username="admin", password="wrong", headers={"X-Forwarded-For": "10.0.0.3"}
+            )
+            assert response.status_code == 429
 
 
 # ---------------------------------------------------------------------------
@@ -1067,7 +1372,7 @@ class TestSecurityHeaders:
             assert "content-security-policy" not in response.headers
 
     async def test_csp_is_present_in_production(self, api_factory: ApiFactory) -> None:
-        async with api_factory(environment="production") as client:
+        async with api_factory(environment="production", public_origin=PRODUCTION_ORIGIN) as client:
             response = await client.get("/healthz")
 
             policy = response.headers["content-security-policy"]
@@ -1081,7 +1386,7 @@ class TestSecurityHeaders:
     async def test_hsts_is_not_set_by_the_application(self, api_factory: ApiFactory) -> None:
         # HSTS belongs to the TLS-terminating proxy, which knows whether HTTPS
         # is actually in use.
-        async with api_factory(environment="production") as client:
+        async with api_factory(environment="production", public_origin=PRODUCTION_ORIGIN) as client:
             response = await client.get("/healthz")
             assert "strict-transport-security" not in response.headers
 

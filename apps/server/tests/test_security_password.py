@@ -16,6 +16,7 @@ separately in :class:`TestDefaultParameters`.
 
 from __future__ import annotations
 
+import asyncio
 import subprocess
 import sys
 import unicodedata
@@ -862,3 +863,115 @@ def test_security_package_does_not_import_fastapi() -> None:
     assert result.stdout.strip() == "", (
         f"hcc.security pulled in HTTP modules: {result.stdout.strip()}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Async admission (milestone 1.5)
+#
+# The threading semaphore remains the authoritative memory bound. The async
+# methods additionally acquire an asyncio semaphore of the same size *before*
+# dispatching to `asyncio.to_thread`, so a request waiting for permission
+# costs a suspended coroutine rather than a blocked thread from the shared
+# default executor.
+# ---------------------------------------------------------------------------
+
+
+class TestAsyncAdmission:
+    @staticmethod
+    def cheap(max_concurrency: int = 2) -> PasswordHasher:
+        return PasswordHasher(
+            Argon2Parameters(memory_cost=19456, time_cost=2, parallelism=1),
+            max_concurrency=max_concurrency,
+        )
+
+    async def test_concurrent_hashes_all_complete(self) -> None:
+        # The gate must bound concurrency without losing work.
+        hasher = self.cheap(max_concurrency=2)
+
+        results = await asyncio.gather(
+            *(hasher.hash_async(f"password-number-{index}") for index in range(8))
+        )
+
+        assert len(results) == 8
+        assert len(set(results)) == 8, "each hash must have its own random salt"
+        for index, encoded in enumerate(results):
+            assert hasher.verify(encoded, f"password-number-{index}") is True
+
+    async def test_admission_is_bounded(self) -> None:
+        # Observed through the gate itself: with a cap of 1 and two tasks in
+        # flight, the semaphore must be exhausted while the first runs.
+        hasher = self.cheap(max_concurrency=1)
+        gate = hasher._async_gate()  # noqa: SLF001 - the property under test
+
+        async def hash_one() -> str:
+            return await hasher.hash_async("correct horse battery staple")
+
+        first = asyncio.create_task(hash_one())
+        second = asyncio.create_task(hash_one())
+        # Let both reach the gate.
+        for _ in range(50):
+            await asyncio.sleep(0)
+            if gate.locked():
+                break
+
+        assert gate.locked(), "the admission gate was never acquired"
+        assert await first
+        assert await second
+
+    async def test_a_cancelled_waiter_releases_its_place(self) -> None:
+        # Cancellation (client disconnect, timeout) must free the slot
+        # immediately rather than after a hash nobody needs completes.
+        hasher = self.cheap(max_concurrency=1)
+
+        async def hash_one() -> str:
+            return await hasher.hash_async("correct horse battery staple")
+
+        holder = asyncio.create_task(hash_one())
+        waiter = asyncio.create_task(hash_one())
+        await asyncio.sleep(0)
+
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+
+        # The hasher is still usable, and the cap is intact.
+        assert await holder
+        assert await hasher.hash_async("another valid password")
+
+    async def test_verify_async_is_also_admitted(self) -> None:
+        hasher = self.cheap(max_concurrency=2)
+        encoded = hasher.hash("correct horse battery staple")
+
+        outcomes = await asyncio.gather(
+            *(hasher.verify_async(encoded, "correct horse battery staple") for _ in range(6))
+        )
+
+        assert all(outcomes)
+
+    async def test_the_gate_is_per_event_loop(self) -> None:
+        # One hasher instance can legitimately outlive a loop — a test suite
+        # creates one per test. An asyncio primitive binds to the loop that
+        # first awaits it, so a single shared semaphore would break on the
+        # second loop.
+        hasher = self.cheap()
+        first_gate = hasher._async_gate()  # noqa: SLF001
+
+        assert await hasher.hash_async("correct horse battery staple")
+
+        def in_another_loop() -> bool:
+            async def body() -> bool:
+                second_gate = hasher._async_gate()  # noqa: SLF001
+                assert second_gate is not first_gate
+                return bool(await hasher.hash_async("correct horse battery staple"))
+
+            return asyncio.run(body())
+
+        assert await asyncio.to_thread(in_another_loop)
+
+    async def test_the_memory_bound_is_unchanged(self) -> None:
+        # The threading semaphore is still the authoritative bound, so the
+        # documented peak-memory figure still holds.
+        hasher = self.cheap(max_concurrency=3)
+
+        assert hasher.max_concurrency == 3
+        assert hasher.peak_memory_mib == pytest.approx(19456 / 1024 * 3)

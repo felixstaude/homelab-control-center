@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from hcc.security.ratelimit import LoginThrottle, RateLimiter
+from hcc.security.ratelimit import LoginThrottle, RateLimiter, composite_key
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -257,29 +257,38 @@ class TestThreadSafety:
 
 
 class TestLoginThrottle:
+    """The three budgets, and the lockout defect they exist to prevent."""
+
     @staticmethod
-    def build(*, address_limit: int = 10, username_limit: int = 5) -> LoginThrottle:
+    def build(
+        *,
+        address_limit: int = 10,
+        pair_limit: int = 5,
+        username_limit: int = 50,
+    ) -> LoginThrottle:
         return LoginThrottle(
             per_address=RateLimiter(limit=address_limit, window_seconds=300),
+            per_address_username=RateLimiter(limit=pair_limit, window_seconds=300),
             per_username=RateLimiter(limit=username_limit, window_seconds=300),
         )
 
-    def test_both_budgets_must_allow(self, clock: Callable[[float], None]) -> None:
-        throttle = self.build(address_limit=100, username_limit=2)
+    def test_all_budgets_must_allow(self, clock: Callable[[float], None]) -> None:
+        throttle = self.build(address_limit=100, pair_limit=2, username_limit=100)
 
         for _ in range(2):
             assert throttle.check(address="1.2.3.4", username_canonical="alice").allowed
 
         decision = throttle.check(address="1.2.3.4", username_canonical="alice")
         assert decision.allowed is False
-        assert decision.scope == "username"
+        assert decision.scope == "address_username"
 
     def test_address_budget_bounds_a_spray_across_usernames(
         self, clock: Callable[[float], None]
     ) -> None:
-        # One host trying many usernames: the per-username budget never fires,
-        # so only the per-address budget stops enumeration.
-        throttle = self.build(address_limit=3, username_limit=100)
+        # One host trying many usernames: neither per-account budget fires,
+        # because each account is tried once. Only the per-address budget
+        # stops enumeration.
+        throttle = self.build(address_limit=3, pair_limit=100, username_limit=100)
 
         for index in range(3):
             assert throttle.check(address="1.2.3.4", username_canonical=f"user{index}").allowed
@@ -288,12 +297,31 @@ class TestLoginThrottle:
         assert decision.allowed is False
         assert decision.scope == "address"
 
+    def test_pair_budget_bounds_one_source_against_one_account(
+        self, clock: Callable[[float], None]
+    ) -> None:
+        # The budget that does the real work against password guessing: one
+        # source, one account, while that source is still well within its
+        # overall address budget.
+        throttle = self.build(address_limit=100, pair_limit=3, username_limit=100)
+
+        for _ in range(3):
+            assert throttle.check(address="1.2.3.4", username_canonical="admin").allowed
+
+        decision = throttle.check(address="1.2.3.4", username_canonical="admin")
+        assert decision.allowed is False
+        assert decision.scope == "address_username"
+
+        # Other accounts from the same source are unaffected: the pair budget
+        # is per account, not a penalty on the source.
+        assert throttle.check(address="1.2.3.4", username_canonical="bob").allowed
+
     def test_username_budget_bounds_a_distributed_attack(
         self, clock: Callable[[float], None]
     ) -> None:
-        # Many hosts targeting one account: each address stays under its own
-        # budget, so only the per-username budget stops it.
-        throttle = self.build(address_limit=100, username_limit=3)
+        # Many hosts against one account, each within its own budgets, so
+        # only the global per-username budget stops it.
+        throttle = self.build(address_limit=100, pair_limit=100, username_limit=3)
 
         for index in range(3):
             assert throttle.check(address=f"10.0.0.{index}", username_canonical="admin").allowed
@@ -302,22 +330,65 @@ class TestLoginThrottle:
         assert decision.allowed is False
         assert decision.scope == "username"
 
-    def test_address_is_checked_before_username(self, clock: Callable[[float], None]) -> None:
-        # Ordering matters: a distributed attack must not be able to burn a
-        # victim's username budget from addresses that are already over their
-        # own limit.
-        throttle = self.build(address_limit=1, username_limit=10)
+    def test_a_single_source_cannot_lock_an_account_out(
+        self, clock: Callable[[float], None]
+    ) -> None:
+        """The regression test for the verified lockout defect.
+
+        Before this milestone the per-username budget was *lower* than the
+        per-address budget, so one attacker could exhaust a known
+        administrator's budget without exhausting their own and deny that
+        account access indefinitely. These are the shipped default
+        proportions.
+        """
+        throttle = self.build(address_limit=20, pair_limit=10, username_limit=100)
+        attacker, victim = "203.0.113.9", "192.168.1.50"
+
+        # The attacker hammers one account from one address until refused, and
+        # keeps going well past that point.
+        refusals = 0
+        for _ in range(200):
+            if not throttle.check(address=attacker, username_canonical="admin").allowed:
+                refusals += 1
+        assert refusals > 0, "the attacker was never throttled"
+
+        # The victim, from their own address, is still allowed to try.
+        decision = throttle.check(address=victim, username_canonical="admin")
+        assert decision.allowed is True, (
+            "a single source exhausted the global username budget and locked "
+            f"the account out (scope={decision.scope!r})"
+        )
+
+    def test_one_source_contributes_at_most_its_pair_budget(
+        self, clock: Callable[[float], None]
+    ) -> None:
+        # The mechanism behind the test above: ordering means a source cut off
+        # by the pair budget stops feeding the global username budget. With a
+        # pair limit of 2 and a global limit of 5, one source can consume no
+        # more than 2 of the 5 however many times it tries.
+        throttle = self.build(address_limit=1000, pair_limit=2, username_limit=5)
+
+        for _ in range(100):
+            throttle.check(address="203.0.113.9", username_canonical="admin")
+
+        # Two further sources each get their 2, and the global budget has not
+        # been exhausted by the first source's 100 attempts.
+        assert throttle.check(address="198.51.100.1", username_canonical="admin").allowed
+        assert throttle.check(address="198.51.100.2", username_canonical="admin").allowed
+
+    def test_address_is_checked_before_the_pair(self, clock: Callable[[float], None]) -> None:
+        throttle = self.build(address_limit=1, pair_limit=10, username_limit=100)
         throttle.check(address="1.2.3.4", username_canonical="victim")
 
         decision = throttle.check(address="1.2.3.4", username_canonical="victim")
         assert decision.scope == "address"
 
-        # The victim's username budget was not consumed by the refused
-        # attempts, so a legitimate login from elsewhere still works.
+        # The victim's budgets were not consumed by the refused attempts, so a
+        # legitimate login from elsewhere still works.
         assert throttle.check(address="5.6.7.8", username_canonical="victim").allowed
 
-    def test_reset_clears_both_budgets(self, clock: Callable[[float], None]) -> None:
-        throttle = self.build(address_limit=1, username_limit=1)
+    def test_reset_clears_this_sources_budgets(self, clock: Callable[[float], None]) -> None:
+        throttle = self.build(address_limit=1, pair_limit=1, username_limit=100)
         throttle.check(address="1.2.3.4", username_canonical="alice")
         assert throttle.check(address="1.2.3.4", username_canonical="alice").allowed is False
 
@@ -325,8 +396,32 @@ class TestLoginThrottle:
 
         assert throttle.check(address="1.2.3.4", username_canonical="alice").allowed is True
 
+    def test_reset_does_not_clear_the_global_username_budget(
+        self, clock: Callable[[float], None]
+    ) -> None:
+        # One source succeeding says nothing about the failed attempts other
+        # sources are making against the same account. Clearing the global
+        # budget on success would hand a credential-stuffing attacker who has
+        # found one working password a free budget reset.
+        throttle = self.build(address_limit=100, pair_limit=100, username_limit=2)
+        throttle.check(address="10.0.0.1", username_canonical="admin")
+        throttle.check(address="10.0.0.2", username_canonical="admin")
+
+        throttle.reset(address="10.0.0.1", username_canonical="admin")
+
+        decision = throttle.check(address="10.0.0.3", username_canonical="admin")
+        assert decision.allowed is False
+        assert decision.scope == "username"
+
+    def test_the_pair_key_cannot_be_collided(self, clock: Callable[[float], None]) -> None:
+        # The composite key joins address and username with a character
+        # `normalize_username` forbids, so no pair of distinct inputs can
+        # produce one key and share a budget.
+        assert composite_key("1.2.3.4", "alice") != composite_key("1.2.3.4|alice", "")
+        assert "\x00" in composite_key("a", "b")
+
     def test_clear_forgets_everything(self, clock: Callable[[float], None]) -> None:
-        throttle = self.build(address_limit=1, username_limit=1)
+        throttle = self.build(address_limit=1, pair_limit=1, username_limit=1)
         throttle.check(address="1.2.3.4", username_canonical="alice")
 
         throttle.clear()

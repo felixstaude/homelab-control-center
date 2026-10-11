@@ -91,6 +91,7 @@ from hcc.security.authentication import (
     LoginRateLimitedError,
     LoginRequest,
 )
+from hcc.security.forwarded import FORWARDED_FOR_HEADER, client_address
 
 if TYPE_CHECKING:
     from hcc.config import Settings
@@ -159,25 +160,26 @@ class LogoutResponse(BaseModel):
 def _client_ip(request: Request, settings: Settings) -> str:
     """Determine the client address for throttling.
 
-    Proxy headers are consulted **only** when the operator has named them in
-    ``trusted_proxy_headers``. They are client-supplied and trivially forged,
-    so trusting them by default would let any caller rotate its apparent
-    address and bypass the per-address budget entirely — which is the one
-    budget that bounds a distributed attack.
+    Delegates to :func:`hcc.security.forwarded.client_address`, which trusts
+    ``X-Forwarded-For`` only when the immediate peer is a configured trusted
+    proxy, and then walks the chain from the right.
 
-    Falls back to a sentinel rather than an empty key when the address is
-    unknown, so such requests share one budget instead of bypassing it.
+    Both failure modes matter here, and only one of them was handled before
+    this milestone:
+
+    * Trusting the header unconditionally lets any caller rotate its apparent
+      address per request and bypass the per-address budget entirely.
+    * *Ignoring* it behind a real proxy makes every client look like the
+      proxy, so all users share one budget — which means one attacker can
+      exhaust it and deny login to everyone.
+
+    Neither is acceptable, so the operator declares where the proxy is.
     """
-    for header in settings.trusted_proxy_headers:
-        value = request.headers.get(header)
-        if value:
-            # X-Forwarded-For is a chain; the left-most entry is the original
-            # client as recorded by the first proxy.
-            return value.split(",")[0].strip()[:64]
-
-    if request.client is not None and request.client.host:
-        return request.client.host
-    return "unknown"
+    return client_address(
+        peer=request.client.host if request.client else None,
+        forwarded_for=request.headers.get(FORWARDED_FOR_HEADER),
+        networks=settings.trusted_proxy_networks,
+    )
 
 
 def _set_session_cookies(response: Response, issued: IssuedSession, settings: Settings) -> None:

@@ -25,6 +25,20 @@ split by risk, with the terminal last.
 > separate housekeeping commit; the `milestone` prop on `NotImplemented` in
 > `apps/web/src/routes/*.tsx` now matches the phases below.
 
+> **Scope adjustment recorded in milestone 1.5.** This roadmap previously
+> described 1.5 as "Fresh install prompts for an admin account", which implied
+> a browser flow. It shipped as a **local command** instead, for the reason in
+> [ADR-033](ARCHITECTURE.md#adr-033-the-initial-administrator-is-created-by-a-local-command-not-an-endpoint):
+> an HTTP endpoint that works while no user exists hands ownership of the
+> deployment to whoever reaches the port first, and on a homelab that race is
+> real. The browser-facing first-run experience moves to 1.6 alongside the
+> login UI, where it can be built against an API that already has an
+> administrator. 1.5 also absorbed the security defects an architecture audit
+> verified between 1.4 and 1.5 — the reverse-proxy origin failure, the
+> single-source login lockout, wildcard credentialed CORS, and the
+> route-inventory blind spots — because each of them affects the
+> authentication surface this milestone made usable.
+
 ---
 
 ## Phase 0 — Foundation ✅
@@ -58,9 +72,9 @@ unauthenticated endpoint or reworking attribution later.
 | 1.2 | Password hashing | ✅ Argon2id via `argon2-cffi` at RFC 9106 low-memory parameters; configurable with enforced floors; rehash detection; fails closed on malformed hashes; NFC-normalized policy that never truncates. Hashing only — the login endpoint moved to 1.3, since it needs sessions and rate limiting. |
 | 1.3 | Login, logout and sessions | ✅ `POST/GET /api/v1/auth/{login,logout,me}`; server-side sessions (ADR-028) with only token hashes stored (ADR-027); `HttpOnly`/`Secure`/`SameSite=Lax` cookies; session-bound CSRF plus `Origin` check (ADR-030); per-address and per-username throttling before verification, and a cap on concurrent Argon2 operations (ADR-029); security headers; migration `0003_sessions` |
 | 1.4 | Default-deny authentication and role authorization | ✅ Router-level authentication boundary so a route cannot be unprotected by omission (ADR-031); public surface reduced to three paths, each documented with its reason; `/api/v1/info` moved behind a session; health probes stripped of version, environment and dependency detail (ADR-032); `require_min_role` with `ViewerDep`/`OperatorDep`/`AdminDep`; capability axis defined as a fail-closed interface; behavioural default-deny regression test with a self-check |
-| 1.5 | First-run admin setup | Fresh install prompts for an admin account; no default credentials exist |
-| 1.6 | Login UI | Login page, session persistence, logout; protected routes redirect |
-| 1.7 | Role enforcement | Viewer is refused a write endpoint with a 403 in the standard envelope |
+| 1.5 | Secure first-run bootstrap and security hardening | ✅ `hcc bootstrap-admin` creates the initial administrator from a local command; no default credentials exist and no public setup endpoint does either (ADR-033); initialization recorded as a one-way `installation` row so bootstrap cannot reopen when accounts are removed; concurrent attempts create exactly one administrator; reverse-proxy origin handling via `HCC_PUBLIC_ORIGIN`/`HCC_TRUSTED_PROXIES` (ADR-034); three-budget login throttling with no single-source lockout (ADR-029 amended); wildcard credentialed CORS refused at startup; route-inventory scan extended to hidden and WebSocket routes with WebSocket session authentication (ADR-035); `last_login_at` recorded; security headers on unhandled 500s; migration `0004_installation` |
+| 1.6 | Login UI | Login page, session persistence, logout; protected routes redirect; the browser-facing first-run experience, which milestone 1.5 deliberately left to a local command |
+| 1.7 | User management and role enforcement | A second account can be created; Viewer is refused a write endpoint with a 403 in the standard envelope. The first production call site for `AdminDep` |
 | 1.8 | Host registration | Create a host in the UI; `hosts` table populated |
 | 1.9 | Enrolment tokens | One-time token issued, hashed at rest, single-use, expiring |
 | 1.10 | Agent enrolment endpoint | `POST /api/v1/agents/enroll` exchanges a one-time token for a credential |

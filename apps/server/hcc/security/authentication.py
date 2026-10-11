@@ -17,7 +17,9 @@ codes, the CSRF header — belong to :mod:`hcc.api.v1.auth`.
    fixed dummy hash. See below.
 4. **Then check whether the account is active.** Deliberately after
    verification, so an inactive account costs the same time as an active one.
-5. **Issue a session** only if everything held.
+5. **Record ``last_login_at``** — only here, so no failed or refused attempt
+   can advance it.
+6. **Issue a session** only if everything held.
 
 ## Every failure looks identical
 
@@ -49,6 +51,7 @@ and is not claimed here. Recorded as a known limitation in ``docs/SECURITY.md``.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Final
 
 from sqlalchemy import select
@@ -190,7 +193,17 @@ class AuthenticationService:
             logger.warning("login_failed", reason="user_inactive", user_id=str(user.id))
             raise AuthenticationFailedError("user_inactive")
 
-        # --- 5. Issue the session --------------------------------------
+        # --- 5. Record the successful authentication -------------------
+        # Only on success, and only after the account-state check, so a failed
+        # or refused attempt never advances it. `last_login_at` therefore
+        # means "last time these credentials were accepted", which is what an
+        # operator reviewing an account assumes.
+        #
+        # Part of the login unit of work: the caller commits, so the timestamp
+        # and the session row land together or not at all.
+        user.last_login_at = datetime.now(UTC)
+
+        # --- 6. Issue the session --------------------------------------
         issued = await self._sessions.create(
             db,
             user,

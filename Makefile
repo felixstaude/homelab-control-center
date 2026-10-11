@@ -135,6 +135,13 @@ migration: ## Autogenerate a migration: make migration m="add hosts table"
 	@cd $(SERVER_DIR) && HCC_DATABASE_URL="$(DEV_DATABASE_URL)" \
 		.venv/bin/alembic revision --autogenerate -m "$(m)"
 
+.PHONY: bootstrap
+bootstrap: ## Create the initial administrator (prompts for a password)
+# Runs once per installation and does not reopen — see ADR-033. Use
+# `make db-reset` to start over in development.
+	@cd $(SERVER_DIR) && HCC_DATABASE_URL="$(DEV_DATABASE_URL)" \
+		.venv/bin/hcc bootstrap-admin $(if $(u),--username $(u),)
+
 # ============================================================================
 # Development servers
 # ============================================================================
