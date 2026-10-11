@@ -86,6 +86,7 @@ difference would surface as a production-only bug.
 
 ```bash
 make check            # everything CI runs
+make check-docs       # doc links, anchors, ADR numbering, roadmap structure
 make check-server     # ruff format + ruff check + mypy + pytest
 make check-web        # tsc + eslint + vitest
 make check-agent      # gofmt + go vet + go test -race
@@ -156,6 +157,47 @@ they never cause false drift, so `alembic check` stays clean.
 CI enforces that migrations apply to an empty database, are reversible, and
 that no model change is missing a migration.
 
+## Documentation
+
+The docs carry the architecture and the security model, and they cross-link
+heavily, so they are checked mechanically:
+
+```bash
+make check-docs
+```
+
+This validates that every relative link resolves, every `#anchor` matches a
+real heading, every referenced `ADR-NNN` is defined in `ARCHITECTURE.md`, ADR
+numbering is contiguous, and roadmap phases and milestone ids are consistent.
+It runs in CI's hygiene job. A broken link silently turns a documented
+decision into an undocumented one, which is why this is automated rather than
+left to review.
+
+### Where things are documented
+
+| Topic | Document |
+| --- | --- |
+| System design, ADRs, open questions | [`ARCHITECTURE.md`](ARCHITECTURE.md) — the hub |
+| Agent transport, enrollment, config sync | [`AGENT_ARCHITECTURE.md`](AGENT_ARCHITECTURE.md) |
+| Module catalogue and hardware caveats | [`MONITORING_MODULES.md`](MONITORING_MODULES.md) |
+| Scheduling, DST, drift | [`SCHEDULING.md`](SCHEDULING.md) |
+| Retention, downsampling, storage limits | [`DATA_RETENTION.md`](DATA_RETENTION.md) |
+| Capabilities, terminal, audit | [`REMOTE_MANAGEMENT.md`](REMOTE_MANAGEMENT.md) |
+| Future extension points | [`PLUGINS.md`](PLUGINS.md) |
+
+### Writing an ADR
+
+Architectural decisions go in
+[`ARCHITECTURE.md §13`](ARCHITECTURE.md#13-architecture-decision-records), with
+the next sequential number, and state the decision, the reasoning, and the
+cost.
+
+**If a decision contradicts an existing ADR, say so explicitly.** Amend the
+old ADR with an "Amended" or "Reaffirmed" note, or add a new one that names
+what it supersedes — ADR-022 superseding the blanket shell-execution exclusion
+is the worked example. Silently contradicting an earlier decision leaves the
+codebase with two documented answers and no way to tell which is current.
+
 ## Project layout
 
 ```
@@ -181,7 +223,8 @@ apps/
         └── lib/
 agents/linux/            Go agent
 deploy/compose.yaml      PostgreSQL for development
-docs/                    architecture, vision, roadmap, security
+docs/                    architecture, vision, roadmap, security, subsystems
+scripts/check-docs.sh    documentation link and ADR consistency checks
 ```
 
 ## Conventions

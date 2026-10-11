@@ -159,8 +159,12 @@ agent-run: ## Run the agent against the local control plane
 # ============================================================================
 
 .PHONY: check
-check: check-server check-web check-agent ## Run every quality gate (what CI runs)
+check: check-docs check-server check-web check-agent ## Run every quality gate (what CI runs)
 	@echo "✓ All checks passed"
+
+.PHONY: check-docs
+check-docs: ## Validate documentation links, anchors, ADR numbering and roadmap
+	@./scripts/check-docs.sh
 
 # --- Backend ---
 

@@ -3,10 +3,15 @@
 The agent runs on each monitored host, dials out to the control plane, and
 reports what you configure it to report.
 
-**Phase 0 scope:** lifecycle only. The agent loads and validates its
+**Current scope:** lifecycle only. The agent loads and validates its
 configuration, logs its identity, runs its reporting loop, and shuts down
-cleanly. It collects no metrics and does not touch Docker. See
-[`docs/ROADMAP.md`](../../docs/ROADMAP.md).
+cleanly. It collects no metrics, runs no monitoring modules, executes no
+commands and does not touch Docker.
+
+The designed architecture — transport, enrollment, credential rotation,
+configuration synchronisation and offline behaviour — is in
+[`docs/AGENT_ARCHITECTURE.md`](../../docs/AGENT_ARCHITECTURE.md). Delivery
+order is in [`docs/ROADMAP.md`](../../docs/ROADMAP.md).
 
 ## Security properties
 
@@ -14,14 +19,33 @@ These are structural, not configuration options:
 
 - **No listening socket.** The agent is always the client. It needs no inbound
   firewall rule and works behind NAT.
-- **The Docker socket is never exposed on the network.** In Phase 4 the agent
+- **The Docker socket is never exposed on the network.** In Phase 6 the agent
   reads its own host's `/var/run/docker.sock` locally and sends results
   outward. The socket is not proxied, forwarded or bound to a port.
-- **No arbitrary command execution.** Management commands are drawn from a
-  closed set (`internal/controller.CommandType`). There is no "run this"
-  command and no shell access.
+- **No general-purpose command execution.** Management commands are drawn from
+  an enumerated set (`internal/controller.CommandType`). No command type
+  accepts a caller-supplied command line.
+- **Default deny.** Every management capability is off until explicitly
+  enabled for this host, and the agent enforces that from its own applied
+  configuration rather than trusting the controller to have checked.
+- **Never root.** The agent runs unprivileged and is not in `sudoers`.
 - **The enrolment token is not a flag.** Command lines are world-readable via
   `/proc`, so the token comes from the environment or, preferably, a file.
+
+Two designed capabilities deliberately sit close to these lines, and are
+documented rather than glossed over:
+
+- Collectors with no kernel interface (SMART, some RAID controllers) invoke
+  external binaries from a **compiled-in allow-list with fixed argument
+  vectors and no shell** — there is no input path by which a caller chooses
+  what runs. See
+  [ADR-021](../../docs/ARCHITECTURE.md#adr-021-external-collector-binaries-on-a-fixed-allow-list).
+- An **interactive terminal** is a planned opt-in capability: off by default,
+  per host, Administrator-only, re-authenticated, unprivileged, time-bounded
+  and fully recorded. See
+  [`docs/REMOTE_MANAGEMENT.md`](../../docs/REMOTE_MANAGEMENT.md#5-remote-terminal)
+  and
+  [ADR-022](../../docs/ARCHITECTURE.md#adr-022-remote-terminal-is-an-opt-in-capability-superseding-the-blanket-shell-exclusion).
 
 Full model: [`docs/SECURITY.md`](../../docs/SECURITY.md).
 
@@ -34,7 +58,7 @@ internal/
 ├── config/          environment loading and validation
 ├── logging/         log/slog setup
 ├── buildinfo/       version metadata, injected at link time
-└── controller/      control plane interface (contract only in Phase 0)
+└── controller/      control plane interface (contract only; no implementation)
 ```
 
 No third-party dependencies, deliberately — the standard library covers
@@ -107,7 +131,8 @@ a real `SIGTERM`.
 
 ## Example: systemd unit
 
-Not yet installed by the project — provided as a reference for Phase 1.
+Not yet installed by the project — provided as a reference. Packaging is
+Phase 10.
 
 ```ini
 [Unit]
@@ -118,7 +143,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 # Dedicated unprivileged user. Group membership for Docker access is added
-# in Phase 4, when the agent first needs the socket.
+# in Phase 6, when the agent first needs the socket.
 User=hcc-agent
 Group=hcc-agent
 Environment=HCC_AGENT_CONTROLLER_URL=https://hcc.internal:8000

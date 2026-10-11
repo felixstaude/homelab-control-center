@@ -1,8 +1,19 @@
 # Architecture
 
 Technical architecture for Homelab Control Center. Describes the system as
-designed, distinguishing what exists today (Phase 0) from what the design
-anticipates.
+designed, distinguishing what exists today from what the design anticipates.
+
+This document is the hub. Five subsystems are large enough to have their own
+documents, linked from the relevant sections below:
+
+| Document | Covers |
+| --- | --- |
+| [`AGENT_ARCHITECTURE.md`](AGENT_ARCHITECTURE.md) | Transport, enrollment, credential rotation and revocation, configuration synchronisation, offline behaviour |
+| [`MONITORING_MODULES.md`](MONITORING_MODULES.md) | The module catalogue, collection methods, hardware caveats |
+| [`SCHEDULING.md`](SCHEDULING.md) | The shared scheduling model, DST, missed runs, drift |
+| [`DATA_RETENTION.md`](DATA_RETENTION.md) | Per-category retention, downsampling, storage limits, volume figures |
+| [`REMOTE_MANAGEMENT.md`](REMOTE_MANAGEMENT.md) | Capability model, authorization chain, remote terminal |
+| [`PLUGINS.md`](PLUGINS.md) | Future extension points; why no plugin system now |
 
 - [1. System overview](#1-system-overview)
 - [2. Components](#2-components)
@@ -13,10 +24,11 @@ anticipates.
 - [7. Event and log ingestion](#7-event-and-log-ingestion)
 - [8. Metrics retention](#8-metrics-retention)
 - [9. Notification rule engine](#9-notification-rule-engine)
-- [10. Docker management security model](#10-docker-management-security-model)
+- [10. Host management security model](#10-host-management-security-model)
 - [11. Network monitoring](#11-network-monitoring)
 - [12. Deployment model](#12-deployment-model)
 - [13. Architecture decision records](#13-architecture-decision-records)
+- [14. Open design questions](#14-open-design-questions)
 
 ---
 
@@ -38,6 +50,7 @@ microservices.
 │  • Owns ALL persistent state             │
 │  • Only component that touches the DB    │
 │  • Authenticates users and agents        │
+│  • Owns module + schedule configuration  │
 │  • Evaluates notification rules          │
 │  • Issues management commands            │
 └───────┬───────────────────────┬──────────┘
@@ -59,12 +72,23 @@ microservices.
 │  /proc, /sys   │  │                │  │                │
 │  docker.sock   │  │                │  │                │
 │  journald      │  │                │  │                │
+│  hwmon, SMART  │  │                │  │                │
 └────────────────┘  └────────────────┘  └────────────────┘
 ```
 
 The single most important structural property: **agents always dial out. The
-control plane never connects to an agent.** Everything in [§10](#10-docker-management-security-model)
-follows from it.
+control plane never connects to an agent.** Everything in
+[§10](#10-host-management-security-model) follows from it.
+
+LAN hosts, rented VPSes and machines behind CGNAT all use the same protocol
+over the same transport. There is no separate "remote mode" — see
+[`AGENT_ARCHITECTURE.md §1`](AGENT_ARCHITECTURE.md#1-topology).
+
+The second structural property, added by the configurability requirements:
+**the controller owns configuration and agents hold a cached copy.** What a
+host collects, how often, and which management capabilities it permits are all
+controller-owned, versioned documents that agents validate and acknowledge.
+See [`AGENT_ARCHITECTURE.md §6`](AGENT_ARCHITECTURE.md#6-configuration-synchronisation).
 
 ### What exists today
 
@@ -78,6 +102,8 @@ follows from it.
 | React shell, design system, 7 nav sections | Implemented |
 | Go agent lifecycle, config, logging, shutdown | Implemented |
 | Controller protocol | **Interface only**, no implementation |
+| Monitoring modules, scheduling, retention | **Design, not code** |
+| Remote management and terminal | **Design, not code** |
 | Everything else below | **Design, not code** |
 
 ---
@@ -107,7 +133,10 @@ FastAPI. The authority for all state.
 **Responsibilities:**
 - Sole owner of the database. No other component connects to PostgreSQL.
 - Authenticates and authorizes users and agents.
+- **Owns configuration.** Resolves global defaults and per-host overrides into
+  one versioned document per host, validates it, and serves it to agents.
 - Ingests metrics, logs and events from agents.
+- Computes rollups and enforces retention.
 - Evaluates notification rules and dispatches notifications.
 - Queues management commands for agents and records the audit trail.
 - Performs network checks that do not require an agent.
@@ -121,19 +150,29 @@ mechanism exists for the scheduler — scaled horizontally.
 A single static Go binary per monitored host.
 
 **Responsibilities:**
-- Collect host metrics from `/proc` and `/sys`.
-- Discover and monitor local Docker containers via the local socket.
-- Tail configured log sources.
-- Execute the closed set of management commands it is sent.
+- Run the monitoring modules its configuration enables — and **only** those.
+  Every module is disabled by default
+  ([`MONITORING_MODULES.md §2`](MONITORING_MODULES.md#2-everything-is-off-by-default)).
+- Evaluate its own schedules locally, so collection survives a controller
+  outage ([`SCHEDULING.md`](SCHEDULING.md)).
+- Validate and acknowledge configuration, keeping the last known good document
+  if a new one is invalid.
+- Report which modules are actually available on this host, with reasons.
+- Buffer on disk when the controller is unreachable, bounded, dropping oldest
+  first and reporting the loss.
+- Execute the enumerated set of management commands it is sent, subject to the
+  capabilities enabled for its host.
 - Report everything outward to the control plane.
 
 **Explicitly not responsible for:** storing history (it is a forwarder with a
-small buffer), evaluating notification rules, or deciding what matters. An
-agent that evaluated rules locally would mean fleet-wide rule changes requiring
-a fleet-wide agent rollout.
+bounded buffer), resolving configuration layers (the controller sends a
+resolved document), evaluating notification rules, computing rollups, or
+deciding what matters. An agent that evaluated rules locally would mean
+fleet-wide rule changes requiring a fleet-wide agent rollout.
 
 **Structural constraints:** no listening socket; no inbound connections; never
-proxies the Docker socket; executes no arbitrary commands.
+proxies the Docker socket; runs only enumerated operations and a compiled-in
+allow-list of collector binaries (ADR-021); never root.
 
 ---
 
@@ -143,9 +182,14 @@ proxies the Docker socket; executes no arbitrary commands.
 | --- | --- | --- | --- |
 | Browser → control plane | HTTPS REST, JSON | Inbound | Session cookie |
 | Browser → control plane | WebSocket | Inbound | Session cookie |
-| Agent → control plane | HTTPS REST, JSON | **Outbound from host** | Bearer token |
+| Agent → control plane | HTTPS REST, JSON | **Outbound from host** | Bearer credential |
+| Agent → control plane | WebSocket | **Outbound from host** | Bearer credential |
 | Control plane → PostgreSQL | PostgreSQL wire | Outbound | Password / TLS |
 | Control plane → notifiers | HTTPS / SMTP | Outbound | Per-destination |
+
+Every agent connection is **initiated by the agent**, including the WebSocket.
+The control plane has no means of connecting to a host. Details in
+[`AGENT_ARCHITECTURE.md §2`](AGENT_ARCHITECTURE.md#2-transport).
 
 ### 3.1 API versioning
 
@@ -178,11 +222,37 @@ Every non-2xx response has one shape, so clients parse one contract:
 stack traces, connection strings — never cross this boundary. Implemented in
 `apps/server/hcc/errors.py`.
 
-### 3.3 WebSockets (Phase 3+)
+### 3.3 WebSockets
 
-Used for live log tailing and dashboard updates. Read-only: all mutations go
-through REST, so that authorization and audit logging live on one path instead
-of two. Authenticated by the same session cookie as REST.
+Two distinct uses, not to be conflated:
+
+**Browser ↔ control plane.** Live log tailing and dashboard updates.
+Read-only: ordinary mutations go through REST, so that authorization and audit
+logging live on one path instead of two. Authenticated by the same session
+cookie as REST.
+
+**Agent → control plane.** Opened outbound by the agent and held open. Carries
+pending-command delivery, event-driven module output (Docker lifecycle and
+logs), and terminal session frames.
+
+#### The one exception to "WebSockets are read-only"
+
+A remote terminal session is inherently a bidirectional, mutating stream: it
+cannot be expressed as REST calls. It is therefore an explicit, named
+exception rather than a quiet erosion of the rule.
+
+What keeps the exception contained:
+
+- It is the **only** mutating WebSocket path, and it carries nothing but
+  terminal frames for one authorized session.
+- Opening it requires the full authorization chain plus re-authentication,
+  evaluated over REST **before** the stream is established
+  ([`REMOTE_MANAGEMENT.md §5.2`](REMOTE_MANAGEMENT.md#52-gates)).
+- Every session is recorded with no off switch, so the audit guarantee is met
+  by recording rather than by per-message audit entries.
+
+All other mutations continue to go through REST. A proposal to add a second
+mutating WebSocket path should be treated as a design smell.
 
 ---
 
@@ -229,20 +299,45 @@ concrete consequences — see [§7](#7-event-and-log-ingestion).
 
 ### 4.3 Authorization model
 
+Authorization is evaluated along **two independent axes**, and both must
+permit an action:
+
+```
+  WHO: the user's role                AND    WHERE: the target host's
+  (Viewer / Operator / Administrator)        enabled capabilities
+```
+
 Role-based, checked server-side on every request:
 
-| Role | Read monitoring | Manage containers | Edit rules | Manage agents/users |
-| --- | --- | --- | --- | --- |
-| Viewer | ✓ | | | |
-| Operator | ✓ | ✓ | ✓ | |
-| Admin | ✓ | ✓ | ✓ | ✓ |
+| Role | Read monitoring | Manage containers | Manage units | Edit rules | Terminal | Manage agents/users |
+| --- | :-: | :-: | :-: | :-: | :-: | :-: |
+| Viewer | ✓ | | | | | |
+| Operator | ✓ | ✓ | ✓ | ✓ | | |
+| Administrator | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+
+A role grants nothing on a host whose corresponding capability is disabled —
+and every capability is disabled by default. An Operator on a host with
+`docker.control` off cannot restart a container there, and the refusal is
+explicit rather than a silent no-op.
+
+The role set stays the closed three from ADR-013. Granularity comes from the
+capability axis, not from inventing more roles: the alternative — a role per
+capability combination — multiplies out and is unmanageable. The capability
+matrix and the full ordered chain are in
+[`REMOTE_MANAGEMENT.md §4`](REMOTE_MANAGEMENT.md#4-authorization-chain).
 
 Management actions additionally require re-authentication for destructive
-operations and are written to an append-only audit log before dispatch.
+operations and for terminal access, and are written to an append-only audit
+log before dispatch. Audit logging has no off switch.
 
 ---
 
 ## 5. Agent registration
+
+> Full specification, including credential rotation, revocation and
+> configuration synchronisation:
+> [`AGENT_ARCHITECTURE.md`](AGENT_ARCHITECTURE.md). This section is the
+> summary.
 
 Agents are enrolled deliberately by an administrator. There is no
 auto-discovery and no self-service enrolment — a monitoring system that
@@ -291,9 +386,13 @@ PostgreSQL 17, accessed exclusively by the control plane.
 monitoring tool is deployed by one person on their own hardware. Every
 additional stateful service is another thing to back up, upgrade and debug at
 2am. PostgreSQL handles the expected volume — tens of hosts, thousands of
-containers, single-digit-million metric rows per day — comfortably. If volume
-later demands it, TimescaleDB is a PostgreSQL extension, not a migration to a
-different system. See ADR-003.
+containers, and on the order of half a million raw metric rows per host per
+day at the default schedules — comfortably. Note that ingestion rate is not
+the constraint; storage growth and long-range query performance are, which is
+what partitioning and the rollup tiers address. If volume later demands it,
+TimescaleDB is a PostgreSQL extension, not a migration to a different system.
+See ADR-003 and
+[`DATA_RETENTION.md §7`](DATA_RETENTION.md#7-expected-volume).
 
 ### 6.1 Access rules
 
@@ -403,35 +502,60 @@ vector:
 
 ## 8. Metrics retention
 
-Not implemented. Design for Phase 2.
+> Full specification, including per-category retention, aggregation rules,
+> storage limits, measured volume projections and the required benchmarks:
+> [`DATA_RETENTION.md`](DATA_RETENTION.md). This section is the summary.
 
-Raw samples are not kept forever: at a 30-second interval, one host produces
-~2.9M samples a year per metric, and nobody inspects 30-second granularity
-from eight months ago.
+Not implemented. Design for Phase 3 (core metrics).
 
-**Tiered downsampling, with aggregates computed by a scheduled job:**
+Three tiers, time-partitioned in plain PostgreSQL, with rollups computed by a
+scheduled job and expiry implemented as partition drops:
 
-| Tier | Resolution | Retention | Purpose |
+| Tier | Default resolution | Default retention | Purpose |
 | --- | --- | --- | --- |
-| Raw | 30 s | 7 days | Live view, recent incident investigation |
+| Raw | module-specific (1 s–6 h) | 7 days | Live view, recent incident investigation |
 | 5-minute | 5 min | 90 days | Trends, weekly patterns |
 | 1-hour | 1 h | 2 years | Capacity planning, long-term growth |
 
-Mechanism: time-partitioned tables, aggregates written by a scheduled
-rollup job, expired partitions dropped rather than deleted. Retention is
-operator-configurable per tier — their disk, their decision.
+**These are defaults, not the design.** Retention is configured **per metric
+category**, because the categories differ in how they age: a SMART
+reallocated-sector count is valuable for years and must never be averaged,
+while a session inventory is uninteresting after a week. Each tier can also be
+disabled. ADR-008 is amended accordingly.
 
-TimescaleDB's continuous aggregates would do this with less code and are a
-plausible later optimisation. Phase 2 starts with plain PostgreSQL to keep the
-deployment to one standard image; `alembic/env.py` already carries the
-`include_object` hook needed to exclude Timescale-managed artefacts if that
-changes. See ADR-008.
+Two rules that follow from the configurability requirements:
+
+- **Rollups store min, max, avg, count, first and last** — not just an
+  average. Averaging a 5-second temperature series into 5-minute means erases
+  the thermal spike the operator enabled 5-second sampling to catch. The UI
+  renders downsampled series as a min–max band, not a single line.
+- **Storage is budgeted and the cost is shown before it is incurred.** The
+  controller projects steady-state size when a schedule or retention changes,
+  rejects configurations exceeding the budget, and at the hard limit stops
+  ingesting **loudly** rather than silently dropping samples, silently
+  shortening retention, or filling the filesystem.
+
+Expected volume at the recommended defaults is roughly **0.9 GB per host** at
+steady state (~5 raw rows/second, 103 series); driven to the per-module
+interval floors it reaches ~4.9 GB of raw data per host per week. The
+arithmetic is in
+[`DATA_RETENTION.md §7`](DATA_RETENTION.md#7-expected-volume) and must be
+replaced by measurements before it ships
+([§8 there](DATA_RETENTION.md#8-benchmarks-required-before-metric-storage-ships)).
+
+TimescaleDB's continuous aggregates would do this with less code and are the
+first escalation if benchmarks demand it — it is a PostgreSQL *extension*, so
+adopting it preserves the one-stateful-service property. `alembic/env.py`
+already carries the `include_object` hook needed to exclude Timescale-managed
+artefacts. See ADR-003, ADR-008, and
+[`DATA_RETENTION.md §9`](DATA_RETENTION.md#9-when-to-revisit-the-database-choice)
+for the conditions that would reopen the decision.
 
 ---
 
 ## 9. Notification rule engine
 
-Not implemented. Design for Phase 5. This is the feature with the most
+Not implemented. Design for Phase 8. This is the feature with the most
 specific product requirements, so the data model is specified early — it is
 the hardest thing to retrofit.
 
@@ -505,9 +629,16 @@ tested until 3am is the main failure mode of alerting systems.
 
 ---
 
-## 10. Docker management security model
+## 10. Host management security model
 
 This section is the most security-sensitive part of the design.
+
+> Scope note. This section was written when management meant three Docker
+> commands. Management is now a set of independent, default-off capabilities
+> covering Docker, systemd, screen/tmux and an interactive terminal. The
+> invariants below still hold; the capability model, the authorization matrix
+> and the terminal's specific boundaries are specified in
+> [`REMOTE_MANAGEMENT.md`](REMOTE_MANAGEMENT.md).
 
 ### 10.1 The Docker socket is root
 
@@ -524,65 +655,132 @@ exists at all: without it, the control plane would need remote Docker access,
 which means either exposing the socket or holding root-equivalent credentials
 for every host.
 
-**The command set is closed.** `internal/controller.CommandType` enumerates
-every action an agent will ever perform:
+**The command set is closed and enumerated.**
+`internal/controller.CommandType` enumerates every action an agent will ever
+perform. The agent rejects any type it does not recognise. There is no
+`exec`, no `run`, no generic passthrough, and no command that accepts a
+caller-supplied command line.
 
-```go
-CommandContainerStart   = "container.start"
-CommandContainerStop    = "container.stop"
-CommandContainerRestart = "container.restart"
-```
+The set has grown beyond the original three Docker commands to cover systemd
+and session control; the current membership is in
+[`REMOTE_MANAGEMENT.md §3`](REMOTE_MANAGEMENT.md#3-command-set). Growing an
+enumerated set is not the same as opening it: each member maps to one
+capability, carries only an enumerated target the agent itself discovered, and
+is added deliberately with its authorization rule, audit entry and tests.
 
-The agent rejects any type it does not recognise. There is no `exec`, no
-`run`, no shell, and no generic passthrough. Adding a member is a deliberate
-decision requiring a matching authorization rule and audit entry.
+**Every capability is default-deny.** A freshly enrolled agent refuses every
+command, including from a legitimate administrator, until a capability is
+explicitly enabled for that host. The agent enforces this from its own applied
+configuration rather than trusting the controller to have checked — so a
+compromised controller cannot exceed what each host was already granted.
 
-**Commands are polled, not pushed.** The agent asks for pending work. This
-preserves the no-inbound-connections property, which in turn means a
-compromised control plane cannot connect to hosts — it can only wait to be
-asked, and what it can answer is constrained by the closed command set.
+**The agent initiates every connection.** The original wording of this
+invariant was "commands are polled, not pushed". Polling cannot carry an
+interactive terminal, and makes event-driven log streaming either laggy or
+wasteful, so command delivery now uses a WebSocket the **agent dials out** and
+holds open.
+
+The security property was never polling as a mechanism; it was that the agent
+opens every connection and listens on nothing. That is unchanged: there is
+still no listening socket, the controller still cannot initiate anything, and
+commands still carry `expires_at` so one delivered after a partition cannot
+execute against changed state. Recorded as
+[ADR-018](#adr-018-agent-initiated-websocket-replaces-command-polling).
 
 ### 10.3 Authorization and audit chain
 
 Every management action passes through, in order:
 
 1. **Authenticated** — a valid user session.
-2. **Authorized** — the user's role permits this action on this host.
-3. **Audited** — written to the append-only audit log *before* dispatch, so an
-   action that crashes mid-flight is still recorded.
-4. **Validated** — the target container exists on the target host.
-5. **Scoped** — the command is queued for exactly one agent.
-6. **Expiring** — commands carry `expires_at`; the agent refuses stale
+2. **Authorized** — the user's role permits this action class, **and** the
+   target host has the corresponding capability enabled. Both axes, checked
+   independently; see [§4.3](#43-authorization-model).
+3. **Re-authenticated** — for destructive operations, protected systemd units
+   and all terminal access, the user proves possession of their password
+   again. A valid session alone is not sufficient.
+4. **Audited** — written to the append-only audit log *before* dispatch, so an
+   action that crashes mid-flight is still recorded. Refused attempts are
+   audited too: "a Viewer tried to restart a container" is a security signal
+   worth keeping.
+5. **Validated** — the target container, unit or session exists on the target
+   host, and is permitted by that capability's target allow-list where one
+   applies.
+6. **Scoped** — the command is queued for exactly one agent.
+7. **Expiring** — commands carry `expires_at`; the agent refuses stale
    commands, so one queued during a network partition cannot execute hours
    later against changed state.
-7. **Reported** — the agent returns a result, which completes the audit record.
+8. **Re-checked at the agent** — the agent verifies the capability is enabled
+   in its own applied configuration before acting.
+9. **Reported** — the agent returns a result, which completes the audit record.
    A failed command always carries a reason; a failure with no reason is not
    auditable.
 
 ### 10.4 Agent privileges on the host
 
-The agent runs as a dedicated unprivileged user, **not root**. Docker access
-in Phase 4 comes from `docker` group membership — which is root-equivalent and
-must be documented as such to the operator, not glossed over. The reference
-systemd unit in `agents/linux/README.md` applies `NoNewPrivileges`,
-`ProtectSystem=strict` and a restricted syscall surface.
+The agent runs as a dedicated unprivileged user, **not root**, and does not
+escalate: it is not in `sudoers`.
+
+Each capability needs its own narrow host grant, and the UI states what it is
+asking for before the operator enables it. The per-capability table is in
+[`REMOTE_MANAGEMENT.md §6`](REMOTE_MANAGEMENT.md#6-host-privileges). Two
+caveats are repeated here because they undercut the "never root" property:
+
+- **Docker group membership is root-equivalent.** Socket access permits
+  launching a privileged container that mounts the host filesystem. Stated
+  plainly, not glossed over.
+- **Enabling `docker.control` and `terminal` on the same host is effectively
+  root access**, because the terminal session can reach the Docker socket.
+  The UI says so at the point of enabling.
+
+Collector modules that have no kernel interface — SMART, some RAID
+controllers, screen/tmux — invoke external binaries from a compiled-in
+allow-list with fixed argument vectors, no shell, read-only subcommands, and
+absolute paths. This sits deliberately close to the exclusion in §10.5; the
+rules that make it a different thing are in
+[`MONITORING_MODULES.md §4.3`](MONITORING_MODULES.md#43-external-binaries--the-one-genuinely-new-risk)
+and [ADR-021](#adr-021-external-collector-binaries-on-a-fixed-allow-list).
+
+The reference systemd unit in `agents/linux/README.md` applies
+`NoNewPrivileges`, `ProtectSystem=strict` and a restricted syscall surface.
 
 ### 10.5 Explicitly excluded, permanently
 
 Per the product vision, and not deferred:
 
-- Arbitrary command or shell execution on hosts.
+- **A general-purpose command-execution API.** No endpoint and no agent
+  command type accepts a caller-supplied command line.
+- **Root or `sudo`-capable execution.** The agent is unprivileged and does not
+  escalate.
+- **Arbitrary collector binaries.** Collection uses a compiled-in allow-list
+  with fixed argv (ADR-021); an operator cannot point a module at an
+  executable of their choosing.
+- **Capabilities enabled by default.** Default-deny is an invariant.
+- **Unrecorded interactive access.** Session recording has no off switch.
 - Autonomous self-healing or automatic remediation.
 - Automatic root-cause analysis or AI-generated error explanations.
 
 The platform monitors, notifies, and performs **user-initiated** management
-actions from a closed set.
+actions from an enumerated set.
+
+#### Supersession notice
+
+Earlier revisions listed "arbitrary command or shell execution on hosts" as
+excluded without qualification, which was read as excluding an interactive
+terminal entirely. That blanket wording is superseded by
+[ADR-022](#adr-022-remote-terminal-is-an-opt-in-capability-superseding-the-blanket-shell-exclusion).
+
+An interactive terminal is now a planned capability: off by default, per host,
+Administrator-only, re-authenticated, unprivileged, time-bounded, revocable
+and fully recorded. The hazard the original exclusion targeted — a monitoring
+agent that doubles as an always-available root backdoor — remains excluded by
+the bullets above. [`REMOTE_MANAGEMENT.md §5`](REMOTE_MANAGEMENT.md#5-remote-terminal)
+gives the boundaries and an honest assessment of the residual risk.
 
 ---
 
 ## 11. Network monitoring
 
-Not implemented. Design for Phase 6.
+Not implemented. Design for Phase 9.
 
 **Devices are registered manually**, by IP or hostname. The platform does not
 scan or sweep the network. Unsolicited scanning is hostile behaviour on
@@ -719,7 +917,7 @@ Revisit if real deployments exceed what partitioning handles — not before.
 **Decision.** Async throughout, not sync.
 
 **Why.** The workload is I/O-bound and concurrent: many agents ingesting
-concurrently, plus WebSocket log streaming from Phase 3. Retrofitting async
+concurrently, plus WebSocket log streaming from Phase 5. Retrofitting async
 later would touch every repository function and every handler.
 
 **Cost.** Async code is harder to debug, and some libraries lack async
@@ -767,14 +965,32 @@ endpoint.
 
 ### ADR-008: Tiered downsampling for metrics retention
 
-**Decision.** Raw 7 days, 5-minute 90 days, hourly 2 years, operator-tunable.
-Implemented with partitioned tables and a rollup job.
+**Decision.** Three tiers — raw, 5-minute, hourly — implemented with
+partitioned tables and a rollup job. Expiry is a partition drop.
 
 **Why.** Unbounded raw retention is unaffordable, and nobody needs
-30-second resolution from last year. Dropping partitions is cheap; `DELETE`
-bloats tables.
+second-level resolution from last year. Dropping partitions is cheap;
+`DELETE` bloats tables.
 
 **Cost.** A scheduled job to maintain, and queries must select the right tier.
+
+**Amended (configurability requirements).** Two changes:
+
+1. **Retention is per metric category, not global.** The original fixed
+   figures (7 / 90 days / 2 years) are now *defaults*. Categories age
+   differently: SMART attributes stay raw for years and are never averaged,
+   because an averaged reallocated-sector count destroys the diagnostic
+   signal; session inventory is worthless after a week. Tiers may be
+   individually disabled.
+2. **Rollups store min, max, avg, count, first and last** — not an average
+   alone. The original wording did not specify the aggregate, and an average
+   would erase exactly the spikes that justify 5-second sampling.
+
+Also superseded: the original volume reasoning assumed a uniform 30-second
+interval. With 5-second temperature presets and ~103 series per host the
+figure is ~5 raw rows/second/host at defaults. See
+[`DATA_RETENTION.md`](DATA_RETENTION.md), which also adds the storage budget
+and the benchmarks required before metric storage ships.
 
 ### ADR-009: System fonts, no external assets
 
@@ -810,9 +1026,28 @@ with elevated group membership. Its entire supply chain is the Go standard
 library, so a compromised transitive dependency cannot reach those hosts. The
 stdlib covers structured logging (`log/slog`), flags, signals and HTTP.
 
-**Cost.** Some functionality must be written by hand. Phase 2 may need a
+**Cost.** Some functionality must be written by hand. Phase 3 may need a
 `/proc` parsing helper; the decision will be revisited then, explicitly,
 rather than drifting.
+
+**Reaffirmed (configurability requirements).** The new requirements pushed on
+this decision in three places, and it holds in all three:
+
+| Pressure | Resolution |
+| --- | --- |
+| Duration parsing (`"2h30m"`) | Avoided entirely: durations are integer seconds (ADR-019). No parser needed. |
+| Cron expression parsing | Avoided entirely: calendar schedules are structured fields (ADR-020). No parser needed. |
+| Time zone data for DST | Go's standard `time/tzdata`, embedded. Still stdlib, and it means schedules are correct on minimal hosts with no system tzdata. |
+
+Those three avoidances were a deliberate consequence of this ADR rather than a
+coincidence — the constraint shaped the design toward representations that are
+also easier to validate.
+
+**Scope clarification.** This ADR is about *Go module dependencies*. It does
+not cover invoking external **binaries** such as `smartctl` or `mdadm`, which
+some collectors genuinely require. That is a separate decision with a
+different risk profile, recorded as
+[ADR-021](#adr-021-external-collector-binaries-on-a-fixed-allow-list).
 
 ### ADR-012: Mock data is isolated and loudly labelled
 
@@ -823,7 +1058,7 @@ never served through a fake API client.
 **Why.** Engineering rules 8 and 9. A foundation that looks like a working
 product invites the belief that monitoring exists. Randomly generated values
 would animate on each render and read as live telemetry; a fake API client
-would be a placeholder that pretends to work. Deleted in Phase 2.
+would be a placeholder that pretends to work. Deleted in Phase 3.
 
 **Cost.** The Overview page is rebuilt when real data arrives. Intended — the
 fixtures exist to validate the design, not to be the implementation. A test
@@ -919,6 +1154,264 @@ ids, which matters for a `users` table.
 **Cost.** Random v4 values scatter across the primary-key index, so inserts
 have worse locality than a sequential key. Irrelevant at the scale this
 product targets (tens of users, tens of hosts). High-volume tables arriving in
-Phase 2 are a different decision and will be made separately — a time-ordered
+Phase 3 are a different decision and will be made separately — a time-ordered
 key such as UUIDv7 is the likely choice there, once the minimum Python version
 makes `uuid.uuid7` available.
+
+### ADR-017: Configuration is controller-owned, versioned and acknowledged
+
+**Decision.** All module, schedule, retention and capability configuration is
+authored in the web interface and owned by the controller. Layers (global
+defaults → per-host overrides) are **resolved by the controller** into one
+flat, versioned, checksummed document per host. Agents fetch it, validate it
+locally, apply it atomically, and acknowledge it by version and checksum. An
+invalid document is rejected with structured reasons and **never replaces the
+last known good configuration**.
+
+**Why.**
+
+- *Controller-side resolution* means the UI can show exactly what a host will
+  run before it is applied, and layer-precedence bugs cannot differ between
+  agent versions. An agent that merged layers itself would make "why is this
+  host collecting every 5 seconds?" unanswerable without SSH.
+- *Versioning plus checksum* makes drift detectable. The heartbeat carries the
+  running version, so an agent silently running month-old configuration is
+  surfaced rather than hidden.
+- *Agent-side validation* catches host-specific mismatches the controller
+  cannot know about — SMART enabled on a host with no `smartctl` — and that
+  mismatch is itself information worth showing.
+- *Keeping the last known good* is the critical rule. A monitoring agent that
+  stops monitoring because someone typed a bad interval has failed at its one
+  job.
+
+**Cost.** Two validation implementations, controller and agent, which can
+disagree. Mitigated by sharing the schema definition and by treating a NACK of
+a controller-validated document as a reportable defect rather than routine.
+Rejected versions also require UI surface area, because a rejection nobody
+sees is a silent failure.
+
+**Alternatives rejected.** Config files on each host (defeats the point of a
+web interface, and drifts); agent-side layer merging (above); fleet-wide
+atomic apply (needs distributed consensus, which ADR-001 exists to avoid, and
+an offline host would block every rollout).
+
+### ADR-018: Agent-initiated WebSocket replaces command polling
+
+**Decision.** Pending commands, event-driven module output and terminal frames
+are delivered over a WebSocket that the **agent** opens outbound and holds
+open. Long-polling remains the fallback where upgrades are blocked. This
+supersedes the "commands are polled, not pushed" wording in
+[§10.2](#102-invariants).
+
+**Why.** Polling cannot carry an interactive terminal at usable latency, and
+makes event-driven Docker log streaming either laggy or wasteful. More
+importantly, the security property that mattered was never polling as a
+mechanism — it was **the agent opens every connection and listens on
+nothing**. A WebSocket dialled out by the agent preserves that exactly.
+
+Unchanged: no listening socket on the agent, no inbound firewall rule, the
+controller cannot initiate a connection, NAT and CGNAT remain non-issues, the
+command set stays enumerated, and commands still expire.
+
+**Cost.** A long-lived connection is more state to manage than a request loop:
+reconnection with jittered backoff, and a fallback path that is by definition
+less exercised. Capabilities needing a live stream report unavailable on the
+fallback rather than silently degrading.
+
+### ADR-019: Durations are normalised to integer seconds
+
+**Decision.** Every duration in the system — intervals, timeouts, retention,
+cooldowns, grace periods — is stored, transmitted and compared as **integer
+seconds**. No duration strings (`"2h30m"`), no floats, no per-field units.
+
+**Why.**
+
+- *Validation is comparison.* Enforcing a 5-second floor is an integer test,
+  not parse-then-compare against an ambiguous unit.
+- *Arbitrary intervals come free.* "Every 17 seconds" and "every 2 h 30 min"
+  are 17 and 9000; neither is a special case, which is what the requirement
+  for arbitrary intervals asks for.
+- *One representation end to end.* The same integer goes into PostgreSQL, onto
+  the wire, and into a Go `time.Ticker`. No conversion means no conversion
+  bug.
+- *No parser in the agent*, upholding ADR-011.
+
+Presets (5 s, 30 s, 1 min, …) are UI sugar over the same field, so no code
+branches on "is this a preset".
+
+**Cost.** Raw stored values are less readable (`9000` rather than `2h30m`),
+and the UI must do all formatting and parsing. Sub-second intervals become
+unrepresentable — accepted deliberately, since the 1-second floor is a
+documented limit and sub-second collection is not a homelab requirement.
+
+### ADR-020: Structured calendar schedules, not cron expressions
+
+**Decision.** Calendar schedules are structured fields — IANA time zone,
+months, days of month, days of week, a list of `HH:MM` times, plus explicit
+DST and missed-execution policies. Cron expressions are not accepted.
+
+**Why.**
+
+- *Field-level validation.* A UI can present weekday checkboxes and a time
+  picker, and reject bad input per field with a specific message.
+  `"*/7 2-5 * * 1-5"` can only be validated as a whole.
+- *No ambiguity.* Cron ORs day-of-month with day-of-week, which surprises
+  nearly everyone and silently runs jobs on unintended days. Here they are
+  ANDed, and that is written down.
+- *DST policy has somewhere to live.* Cron has no field for "what happens when
+  02:30 does not exist tonight". Here it is explicit, with defaults.
+- *No parser dependency* in the agent (ADR-011).
+
+**Cost.** Operators fluent in cron cannot paste an expression, and some
+expressible patterns ("every 7th day of the month") are not representable.
+Accepted: the audience configures a handful of schedules in a web form, and
+the patterns actually needed — nightly, weekly on chosen days, several times a
+day — are all covered.
+
+### ADR-021: External collector binaries on a fixed allow-list
+
+**Decision.** Modules with no kernel interface (SMART, some RAID controllers,
+screen/tmux) may invoke external binaries, subject to all of: a **compiled-in
+allow-list** of executables; **fixed argument vectors** with only
+agent-discovered device paths substituted; **no shell**, ever; **read-only
+subcommands** except the separately-gated `smart_selftest` module; resolution
+by **absolute path**, never `PATH`; timeouts, output caps and per-device
+concurrency limits; **never root**; and module-level audit of the resolved
+`argv`.
+
+**Why.** There is no kernel interface for SMART attributes or most hardware
+RAID controllers. The alternatives were to drop those modules — losing the
+disk-failure warning that is among the most valuable things a homelab monitor
+can provide — or to reimplement vendor protocols, which is a large amount of
+hardware-specific code with worse correctness than the vendor's own tool.
+
+This sits deliberately close to the exclusion of "arbitrary command execution"
+in [§10.5](#105-explicitly-excluded-permanently). The distinction is not a
+technicality: with a compiled-in allow-list and fixed argv there is **no input
+path by which a caller chooses what runs**. An operator cannot point a module
+at a different executable, and no user-supplied string reaches an argument.
+Arbitrary execution means the caller picks the command; this does not.
+
+**Cost.** The agent now depends on host tooling it does not ship, so module
+availability becomes host-dependent — which is why capability reporting
+exists. Subprocess execution is a larger attack surface than reading
+`/proc`, and the mitigations above are load-bearing rather than belt-and-braces.
+A module that cannot be implemented within these constraints does not ship.
+
+### ADR-022: Remote terminal is an opt-in capability, superseding the blanket shell exclusion
+
+**Decision.** An interactive terminal becomes a planned, **opt-in** capability:
+disabled by default, enabled per host, Administrator-only, requiring
+re-authentication, running as the agent's unprivileged user with no `sudo`,
+idle- and absolute-timeout bounded, revocable mid-session, and **recorded with
+no off switch**.
+
+This supersedes the unqualified "unrestricted remote shell execution is
+permanently excluded" in earlier revisions of
+[`PRODUCT_VISION.md`](PRODUCT_VISION.md#clarification-unrestricted-remote-shell-execution),
+[`ROADMAP.md`](ROADMAP.md) and [§10.5](#105-explicitly-excluded-permanently).
+
+**Why.** The original wording conflated two features. The hazard it targeted —
+a monitoring agent that doubles as an always-available, root-capable backdoor
+on every host — is addressed by default-deny, per-host opt-in, role
+restriction, re-authentication, unprivileged execution and mandatory
+recording. Refusing to build a terminal at all did not remove that hazard; it
+pushed operators back to maintaining separate SSH access, which this platform
+cannot audit and which is frequently root-capable. The honest comparison is
+not "terminal versus nothing" but "audited unprivileged terminal versus
+unaudited root SSH".
+
+**What stays excluded.** A general-purpose command-execution API; root or
+`sudo` execution; any path available without explicit per-host opt-in; and
+unrecorded access. See
+[`REMOTE_MANAGEMENT.md §8`](REMOTE_MANAGEMENT.md#8-still-excluded).
+
+**Cost, stated plainly.** This materially expands the threat surface. An
+attacker holding an Administrator session who can re-authenticate gains
+interactive unprivileged shell access to hosts where the capability is
+enabled. No design removes that; the design bounds it. It also creates a
+second mutating WebSocket path, an explicit exception to
+[§3.3](#33-websockets). And on a host where `docker.control` is also enabled,
+the terminal can reach the Docker socket and is therefore effectively root —
+documented at the point of enabling rather than buried here.
+
+Operators who judge the trade-off unacceptable get the original guarantee by
+leaving the capability off, which is the default and requires no action.
+
+### ADR-023: Capability granularity on hosts, not more roles
+
+**Decision.** Authorization is two-dimensional: a coarse **user role**
+(Viewer / Operator / Administrator, unchanged from ADR-013) ANDed with a
+**per-host capability** flag (`docker.read`, `docker.control`,
+`systemd.control`, `terminal`, …). Read and control are always separate
+capabilities, and enabling one never implies another.
+
+**Why.** The requirement is that permissions be evaluable for both the user
+and the target agent. The alternative — encoding capabilities into roles —
+multiplies out: three roles times seven capabilities is a combinatorial mess
+that nobody can reason about, and it would force the `user_role` enum open
+every time a capability is added, contradicting ADR-013's reasoning that
+widening an authorization surface should be a reviewed migration.
+
+Keeping capabilities on the host also matches how operators think: "this
+machine may be restarted from the dashboard; that one is read-only" is a
+property of the machine, not of a person.
+
+**Cost.** Two things to configure before an action works, and a corresponding
+need for good error messages distinguishing "your role does not permit this"
+from "this host does not permit this". A per-host *role assignment* (user X is
+an Operator only on these hosts) is a plausible future third dimension; it
+composes with this model rather than replacing it, and is listed in
+[§14](#14-open-design-questions).
+
+### ADR-024: No plugin system, but keep the module boundary clean
+
+**Decision.** No plugin framework, no published extension API, and no stable
+module interface. Internal modules are compiled-in Go packages behind a
+common interface which remains **explicitly unstable**. Extension points are
+nonetheless kept clean, and the intent is recorded in
+[`PLUGINS.md`](PLUGINS.md).
+
+**Why.** A plugin system is a published contract, and the module interface
+cannot be known to be right yet. The designed modules differ in shape in ways
+that will reshape it: `cpu` reads a file and returns numbers, `docker` holds
+an event stream and needs reconciliation, `smart_selftest` triggers a
+multi-hour hardware operation with progress, `system_logs` produces records on
+a different pipeline. An interface that honestly accommodates all of them is
+one discovered by writing all of them. Publishing after the first would mean
+either breaking third-party authors later or carrying a bad abstraction
+permanently.
+
+Second, a plugin system is an arbitrary-code-execution feature. The whole
+security posture rests on the agent running only enumerated operations, with
+external binaries confined to ADR-021's allow-list. Letting operators install
+third-party collectors onto monitored hosts is in direct tension with that,
+and the open questions in
+[`PLUGINS.md §4`](PLUGINS.md#4-questions-that-must-be-answered-first) — above
+all whether the controller distributes plugin code to agents — must be
+answered before any mechanism is chosen.
+
+**Cost.** Community contributions must go through pull requests for the
+foreseeable future, which is slower and limits the catalogue to what
+maintainers will merge. Accepted: a wrong plugin contract is far more
+expensive than a slow one, and the declarative "read this file, parse this
+number" form sketched in `PLUGINS.md §3` would cover most plausible community
+modules without arbitrary execution at all.
+
+---
+
+## 14. Open design questions
+
+Recorded rather than silently deferred. Each needs an answer before the
+milestone that depends on it, not before the next commit.
+
+| # | Question | Blocks | Current leaning |
+| --- | --- | --- | --- |
+| 1 | Does storage volume at realistic fleet size hold up? The figures in [`DATA_RETENTION.md §7`](DATA_RETENTION.md#7-expected-volume) are arithmetic, not measurements. | Phase 3 schema freeze | Benchmark first ([§8 there](DATA_RETENTION.md#8-benchmarks-required-before-metric-storage-ships)); PostgreSQL expected to hold, TimescaleDB as first escalation |
+| 2 | Per-host role assignment — should a user be an Operator on some hosts and a Viewer on others? | Multi-user milestones | Likely yes, as a third authorization dimension composing with ADR-023; not in the first delivery |
+| 3 | Host groups as a configuration layer. [`AGENT_ARCHITECTURE.md §6.1`](AGENT_ARCHITECTURE.md#61-layering) reserves the slot but defers it. | Fleet-scale configuration | Defer until someone runs enough hosts to need it; two layers cover the homelab case |
+| 4 | Metric identity across config changes: if an operator changes a module's labels, is that the same series or a new one? | Phase 3 schema | Probably a new series, with the UI stitching them for display — but it affects the schema and must be settled before it lands |
+| 5 | Whether `sessions.control` is worth shipping at all. Attaching to an existing session inherits that session's privileges, including root. | Session management milestone | Possibly read-only only; the control half may be more risk than value |
+| 6 | Agent self-update distribution. Phase 10 lists it as opt-in and signature-verified, but it makes the controller a code-distribution channel — the same concern as plugin question 10. | Phase 10 | Keep opt-in and signed; prefer OS packages over self-update |
+| 7 | Rollup computation location: controller-side job, or PostgreSQL-side with Timescale continuous aggregates. | Phase 3 | Controller-side first (portable, testable); revisit with benchmarks |
+| 8 | Whether the terminal needs a break-glass path when the controller is down. Today it does not work offline, by design. | Terminal milestone | Leave it unavailable; a break-glass path is an unaudited backdoor by another name |

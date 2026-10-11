@@ -253,6 +253,12 @@ jobs:
           fi
           echo "✓ No private keys found"
 
+      - name: Check documentation
+        # The docs carry the architecture and security model and cross-link
+        # heavily; a broken link silently turns a documented decision into an
+        # undocumented one.
+        run: ./scripts/check-docs.sh
+
       - name: Verify every .env.example documents no real secret
         run: |
           status=0

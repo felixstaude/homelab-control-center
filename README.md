@@ -35,20 +35,35 @@ fine, and if not, what broke?"*
 
 | Area | Capability |
 | --- | --- |
-| **Hosts** | CPU, memory, swap, disk and network metrics; uptime; hardware inventory; history |
+| **Hosts** | CPU, memory, disk usage and I/O, network, temperature, SMART, RAID, systemd — each a module you enable per host |
 | **Docker** | Automatic container discovery; state and resource usage; logs; start/stop/restart |
 | **Logs** | Collection from journald, files and containers; full-text search; live tailing |
 | **Alerts** | Nested AND/OR rules with regex matching, cooldowns, and dry-run testing |
 | **Network** | Manually registered devices; ICMP and TCP checks; user-defined topology |
+| **Management** | Independent, opt-in capabilities for Docker, systemd and sessions — all off by default, all audited |
+
+Everything is configurable from the web interface: which modules run, what they
+collect, how often, how long history is kept, which management capabilities are
+permitted, and what notifies you. Every setting has a safe default and
+technically necessary limits are enforced.
 
 ### What it will never do
 
 AI-generated error explanations · automatic root-cause analysis · autonomous
-self-healing · automatic remediation · unrestricted remote shell execution.
+self-healing · automatic remediation · a general-purpose command-execution
+API · root or `sudo`-capable execution · capabilities on by default ·
+unrecorded interactive access.
 
 These are product boundaries, not backlog items — see
 [`docs/PRODUCT_VISION.md`](docs/PRODUCT_VISION.md#what-this-is-not). This is a
 monitoring, notification and **user-controlled** management platform.
+
+An interactive remote terminal *is* planned, as an opt-in, per-host,
+Administrator-only, unprivileged, fully recorded capability that ships
+disabled. That is deliberately not the same thing as the unrestricted shell
+execution listed above — the distinction, and the honest assessment of the
+added risk, is in
+[`docs/REMOTE_MANAGEMENT.md`](docs/REMOTE_MANAGEMENT.md#5-remote-terminal).
 
 ## Design principles
 
@@ -78,9 +93,10 @@ Agent (Go) on each monitored host
 
 The agent always dials out; the control plane never connects to an agent. The
 Docker socket is therefore never exposed on the network — which is the reason
-the agent exists at all.
+the agent exists at all. LAN hosts, rented VPSes and machines behind CGNAT all
+use the same protocol, with no inbound ports anywhere.
 
-Full detail, including all twelve architecture decision records:
+Full detail, including all twenty-four architecture decision records:
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Stack
@@ -139,11 +155,17 @@ Conventions, troubleshooting and the full setup guide:
 
 | Document | Contents |
 | --- | --- |
-| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | System design, trust boundaries, security model, 12 ADRs |
+| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | The hub: system design, trust boundaries, 24 ADRs, open questions |
 | [PRODUCT_VISION.md](docs/PRODUCT_VISION.md) | What this is, who it is for, what it will never do |
-| [ROADMAP.md](docs/ROADMAP.md) | Phases 0–7 as small, independently testable milestones |
+| [ROADMAP.md](docs/ROADMAP.md) | Phases 0–11 as small, independently testable milestones |
+| [SECURITY.md](docs/SECURITY.md) | Threat model, capability risks, secrets handling, known gaps |
 | [DEVELOPMENT.md](docs/DEVELOPMENT.md) | Setup, conventions, troubleshooting |
-| [SECURITY.md](docs/SECURITY.md) | Threat model, secrets handling, known Phase 0 gaps |
+| [AGENT_ARCHITECTURE.md](docs/AGENT_ARCHITECTURE.md) | Transport, enrollment, credential rotation, config sync, offline behaviour |
+| [MONITORING_MODULES.md](docs/MONITORING_MODULES.md) | Module catalogue, collection methods, hardware caveats |
+| [SCHEDULING.md](docs/SCHEDULING.md) | Shared scheduling model, DST, missed runs, drift |
+| [DATA_RETENTION.md](docs/DATA_RETENTION.md) | Retention, downsampling, storage limits, volume figures |
+| [REMOTE_MANAGEMENT.md](docs/REMOTE_MANAGEMENT.md) | Capability model, authorization chain, remote terminal |
+| [PLUGINS.md](docs/PLUGINS.md) | Future extension points; why no plugin system now |
 | [PHASE_0_PLAN.md](docs/PHASE_0_PLAN.md) | What Phase 0 set out to do, and its accepted deviations |
 
 ## Repository layout
@@ -175,6 +197,8 @@ Before opening a pull request:
 2. New behaviour has tests.
 3. Architectural decisions are documented as an ADR in
    [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#13-architecture-decision-records).
+   A decision that contradicts an existing ADR must say so and supersede it
+   explicitly, rather than quietly disagreeing.
 4. No secrets are committed. CI enforces this.
 
 ## Security
