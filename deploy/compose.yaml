@@ -1,0 +1,46 @@
+# Local development dependencies for Homelab Control Center.
+#
+# This file starts the services the application needs during development. It
+# does NOT run the application itself — the backend, frontend and agent run on
+# the host with hot reload, which is a much faster feedback loop.
+#
+# Works with both runtimes (ADR-010):
+#   docker compose -f deploy/compose.yaml up -d
+#   podman-compose -f deploy/compose.yaml up -d
+# Or from the repository root:  make db-up
+#
+# The credentials below are local-development-only and intentionally committed
+# so that a fresh checkout works with no setup. They grant access to a
+# throwaway container bound to loopback. NEVER reuse them in a deployment.
+
+name: hcc
+
+services:
+  postgres:
+    image: docker.io/library/postgres:17-alpine
+    container_name: hcc-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: hcc
+      POSTGRES_PASSWORD: hcc_local_dev
+      POSTGRES_DB: hcc
+      # Deterministic collation, so index behaviour matches across machines.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    ports:
+      # Bound to loopback explicitly: the default (5432:5432) listens on all
+      # interfaces, which on a laptop means the whole local network.
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # `make migrate` and the test suite wait on this, so it must reflect
+      # genuine query readiness, not just a listening socket.
+      test: ["CMD-SHELL", "pg_isready -U hcc -d hcc"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  postgres-data:
+    driver: local

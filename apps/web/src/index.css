@@ -1,0 +1,229 @@
+@import 'tailwindcss';
+
+/*
+ * ============================================================================
+ * Homelab Control Center — design system
+ * ============================================================================
+ *
+ * A single token layer that every component reads from. Feature code must not
+ * invent its own colours or spacing: it composes the primitives in
+ * `src/components/ui`, which in turn reference only these tokens. That is what
+ * keeps seven pages looking like one product.
+ *
+ * Colours are authored in OKLCH because it is perceptually uniform — stepping
+ * lightness produces visually even steps, which hex and HSL do not. That
+ * matters for the layered surfaces below, where each elevation must read as a
+ * distinct but subtle step.
+ *
+ * Dark mode is the default and the design target: this is an infrastructure
+ * console, usually on a second monitor in a dim room. The palette is near-
+ * black with low-chroma blue-grey surfaces rather than pure neutral grey,
+ * which reads as "instrument panel" instead of "unstyled".
+ */
+
+@theme {
+  /* --- Typography -------------------------------------------------------
+   * System font stack by design: a self-hosted homelab tool must not phone
+   * home to a font CDN on every page load, and must work on an air-gapped
+   * network. See ADR-009.
+   */
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
+    'Noto Sans', sans-serif;
+  --font-mono:
+    ui-monospace, 'JetBrains Mono', 'SF Mono', 'Cascadia Code', Menlo, Consolas,
+    'Liberation Mono', monospace;
+
+  /* --- Surfaces ---------------------------------------------------------
+   * Four elevation steps. `base` is the page, `raised` is a card, `overlay`
+   * is a popover/modal, `sunken` is an inset well (log viewers, code).
+   */
+  --color-surface-base: oklch(0.1684 0.0119 264.34);
+  --color-surface-sunken: oklch(0.1381 0.0106 264.34);
+  --color-surface-raised: oklch(0.2042 0.0134 264.34);
+  --color-surface-overlay: oklch(0.2385 0.0147 264.34);
+  --color-surface-hover: oklch(0.2612 0.0156 264.34);
+
+  /* --- Borders ---------------------------------------------------------- */
+  --color-border-subtle: oklch(0.2612 0.0156 264.34);
+  --color-border-default: oklch(0.3156 0.0171 264.34);
+  --color-border-strong: oklch(0.4089 0.0188 264.34);
+
+  /* --- Text ------------------------------------------------------------
+   * Four levels, each meeting WCAG AA on `surface-base`.
+   */
+  --color-text-primary: oklch(0.9612 0.0053 264.34);
+  --color-text-secondary: oklch(0.7845 0.0102 264.34);
+  --color-text-muted: oklch(0.6123 0.0131 264.34);
+  --color-text-faint: oklch(0.4812 0.0142 264.34);
+
+  /* --- Accent ----------------------------------------------------------
+   * Restrained teal. Used for interactive affordances and the "nominal"
+   * state — deliberately not green, so it never competes with the semantic
+   * status colours below.
+   */
+  --color-accent: oklch(0.7234 0.1189 195.12);
+  --color-accent-hover: oklch(0.7712 0.1203 195.12);
+  --color-accent-muted: oklch(0.4312 0.0712 195.12);
+  --color-accent-subtle: oklch(0.2634 0.0345 195.12);
+  --color-accent-contrast: oklch(0.1684 0.0119 264.34);
+
+  /* --- Semantic status -------------------------------------------------
+   * The four states an operator triages by. Each has a saturated `-fg`
+   * for text/icons and a low-chroma `-bg`/`-border` for badges and rows,
+   * so status can be conveyed by more than hue alone (accessibility).
+   */
+  --color-status-ok: oklch(0.7523 0.1512 155.23);
+  --color-status-ok-bg: oklch(0.2534 0.0456 155.23);
+  --color-status-ok-border: oklch(0.3712 0.0689 155.23);
+
+  --color-status-warn: oklch(0.8012 0.1489 82.34);
+  --color-status-warn-bg: oklch(0.2712 0.0512 82.34);
+  --color-status-warn-border: oklch(0.4012 0.0812 82.34);
+
+  --color-status-critical: oklch(0.6823 0.1923 22.45);
+  --color-status-critical-bg: oklch(0.2645 0.0678 22.45);
+  --color-status-critical-border: oklch(0.3923 0.1012 22.45);
+
+  --color-status-unknown: oklch(0.6123 0.0131 264.34);
+  --color-status-unknown-bg: oklch(0.2385 0.0147 264.34);
+  --color-status-unknown-border: oklch(0.3156 0.0171 264.34);
+
+  --color-status-info: oklch(0.7012 0.1234 262.45);
+  --color-status-info-bg: oklch(0.2523 0.0534 262.45);
+  --color-status-info-border: oklch(0.3712 0.0812 262.45);
+
+  /* --- Focus ------------------------------------------------------------ */
+  --color-focus-ring: oklch(0.7234 0.1189 195.12);
+
+  /* --- Radii ------------------------------------------------------------ */
+  --radius-sm: 0.3125rem;
+  --radius-md: 0.4375rem;
+  --radius-lg: 0.625rem;
+  --radius-xl: 0.875rem;
+
+  /* --- Elevation --------------------------------------------------------
+   * Shadows on near-black surfaces read as murk, so elevation is carried
+   * mostly by a hairline top highlight plus a soft ambient shadow.
+   */
+  --shadow-raised: 0 1px 2px 0 oklch(0 0 0 / 0.3), 0 1px 1px -1px oklch(0 0 0 / 0.2);
+  --shadow-overlay:
+    0 12px 32px -8px oklch(0 0 0 / 0.55), 0 4px 12px -4px oklch(0 0 0 / 0.4),
+    0 0 0 1px oklch(0.4089 0.0188 264.34 / 0.4);
+
+  /* --- Motion -----------------------------------------------------------
+   * Short and unobtrusive. A monitoring console updates constantly; long
+   * animations make it feel laggy and draw the eye away from real changes.
+   */
+  --ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/*
+ * ----------------------------------------------------------------------------
+ * Base layer
+ * ----------------------------------------------------------------------------
+ */
+@layer base {
+  * {
+    border-color: var(--color-border-subtle);
+  }
+
+  html {
+    /* Dark-first: declared so form controls, scrollbars and the browser's
+     * own UI render dark without a flash of light chrome on first paint. */
+    color-scheme: dark;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    background-color: var(--color-surface-base);
+    color: var(--color-text-primary);
+    font-family: var(--font-sans);
+    font-feature-settings: 'cv11', 'ss01';
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* A single, consistent focus treatment for every interactive element.
+   * `:focus-visible` rather than `:focus` so mouse users do not see rings,
+   * but keyboard users always do. */
+  :focus-visible {
+    outline: 2px solid var(--color-focus-ring);
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+  }
+
+  /* Numeric data must align in columns and not shift width as values change. */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: 'tnum';
+  }
+
+  ::selection {
+    background-color: var(--color-accent-muted);
+    color: var(--color-text-primary);
+  }
+
+  /* Scrollbars: thin and recessive, matching the surface palette. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-border-strong) transparent;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background-color: var(--color-border-strong);
+    border-radius: 9999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: var(--color-text-faint);
+  }
+
+  /* Respect the OS-level reduced-motion preference. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+/*
+ * ----------------------------------------------------------------------------
+ * Utilities
+ * ----------------------------------------------------------------------------
+ */
+@layer utilities {
+  /* Hairline top highlight that makes a raised surface read as lit from
+   * above. Cheaper and cleaner than a heavy drop shadow on dark UI. */
+  .surface-lit {
+    box-shadow:
+      inset 0 1px 0 0 oklch(1 0 0 / 0.04),
+      var(--shadow-raised);
+  }
+
+  /* Faint grid, used behind the page header to suggest an instrument panel
+   * without adding visual noise to content areas. */
+  .bg-grid {
+    background-image:
+      linear-gradient(to right, oklch(1 0 0 / 0.022) 1px, transparent 1px),
+      linear-gradient(to bottom, oklch(1 0 0 / 0.022) 1px, transparent 1px);
+    background-size: 32px 32px;
+  }
+}

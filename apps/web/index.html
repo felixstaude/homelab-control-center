@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <!-- Matches --color-surface-base, so the browser chrome and the initial
+         paint do not flash a light background before CSS loads. -->
+    <meta name="theme-color" content="#14161d" />
+    <meta
+      name="description"
+      content="Self-hosted monitoring and management for Linux hosts, Docker containers and network devices."
+    />
+    <!-- A homelab tool should not call out to the public internet. There are
+         no external fonts, analytics or CDN assets anywhere in this app. -->
+    <title>Homelab Control Center</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <noscript>
+      <p style="padding: 2rem; font-family: system-ui; color: #e8e9ed">
+        Homelab Control Center requires JavaScript. The interface is a live
+        monitoring console and has no static fallback.
+      </p>
+    </noscript>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

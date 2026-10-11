@@ -1,0 +1,72 @@
+# Dependency version management (Task G).
+#
+# Strategy: grouped weekly PRs per ecosystem. Grouping matters — ten separate
+# PRs each triggering a full CI run, every week, is how dependency automation
+# gets switched off. Security updates are not grouped and arrive immediately.
+version: 2
+
+updates:
+  # --- Backend ---
+  - package-ecosystem: pip
+    directory: /apps/server
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      python-minor-patch:
+        patterns: ['*']
+        update-types: [minor, patch]
+    labels: [dependencies, python]
+    commit-message:
+      prefix: 'chore(deps)'
+
+  # --- Frontend ---
+  - package-ecosystem: npm
+    directory: /apps/web
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      # React and its types must move together or the build breaks.
+      react:
+        patterns: ['react', 'react-dom', '@types/react', '@types/react-dom']
+      # Likewise the linting stack: typescript-eslint caps the TypeScript
+      # version it supports, so these are upgraded as a set.
+      linting:
+        patterns: ['eslint*', '@eslint/*', 'typescript-eslint', 'typescript']
+      build-tooling:
+        patterns: ['vite', '@vitejs/*', 'vitest', '@vitest/*']
+      other-minor-patch:
+        patterns: ['*']
+        update-types: [minor, patch]
+    labels: [dependencies, javascript]
+    commit-message:
+      prefix: 'chore(deps)'
+
+  # --- Agent ---
+  # The agent has no third-party dependencies by design (ADR-011). This entry
+  # exists to keep the Go directive and toolchain current, and will pick up
+  # dependencies if that decision is ever revisited.
+  - package-ecosystem: gomod
+    directory: /agents/linux
+    schedule:
+      interval: weekly
+      day: monday
+    labels: [dependencies, go]
+    commit-message:
+      prefix: 'chore(deps)'
+
+  # --- CI ---
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns: ['*']
+    labels: [dependencies, ci]
+    commit-message:
+      prefix: 'chore(ci)'

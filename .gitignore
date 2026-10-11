@@ -1,0 +1,54 @@
+# ---- Secrets (never commit) ----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+!**/testdata/**/*.pem
+secrets/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+dist/
+build/
+
+# ---- Node ----
+node_modules/
+apps/web/dist/
+apps/web/dev-dist/
+.vite/
+*.tsbuildinfo
+pnpm-debug.log*
+npm-debug.log*
+
+# ---- Go ----
+agents/linux/bin/
+*.test
+*.out
+
+# ---- Editors / OS ----
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.shared.json
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# ---- Local data / runtime ----
+.data/
+postgres-data/
+*.sqlite3
+*.db
+*.log
