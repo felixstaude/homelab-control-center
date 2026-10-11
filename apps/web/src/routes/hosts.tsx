@@ -14,7 +14,7 @@ export function HostsPage() {
         icon={Server}
         title="Host monitoring"
         summary="Register Linux hosts, pair them with an agent, and track their resources and availability centrally."
-        milestone="Phase 1 and Phase 2"
+        milestone="Phase 1 and Phase 3"
         planned={[
           'Host registration with agent enrolment tokens',
           'CPU, memory, swap, disk and network metrics',

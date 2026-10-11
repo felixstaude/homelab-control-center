@@ -14,7 +14,7 @@ export function NetworkPage() {
         icon={Network}
         title="Network monitoring"
         summary="Register devices by address, check them over ICMP and configurable TCP probes, and lay them out in a topology you define. Devices are added deliberately — the platform does not scan or probe your network unprompted."
-        milestone="Phase 6"
+        milestone="Phase 9"
         planned={[
           'Manual device registration by IP or hostname',
           'ICMP reachability checks',

@@ -14,7 +14,7 @@ export function SettingsPage() {
         icon={Settings}
         title="Configuration"
         summary="Manage agent enrolment, user accounts and roles, notification destinations, and how long collected data is retained."
-        milestone="Phase 1 and Phase 7"
+        milestone="Phase 1 and Phase 10"
         planned={[
           'Agent enrolment tokens with rotation and revocation',
           'User accounts, sessions and role assignment',

@@ -14,7 +14,7 @@ export function DockerPage() {
         icon={Boxes}
         title="Docker monitoring and management"
         summary="Automatically discover containers through the agent's local Docker socket, monitor their state, and run a strictly limited set of explicitly authorised lifecycle commands."
-        milestone="Phase 4"
+        milestone="Phase 6 and Phase 7"
         planned={[
           'Automatic container discovery per host',
           'Container state and resource usage',

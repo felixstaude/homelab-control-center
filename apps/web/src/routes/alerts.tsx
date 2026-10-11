@@ -14,7 +14,7 @@ export function AlertsPage() {
         icon={Bell}
         title="Notification rules"
         summary="A rule engine giving you complete control over what notifies you and when. Rules are explicit and testable; the platform never invents explanations for an error or decides on its own what matters."
-        milestone="Phase 5"
+        milestone="Phase 8"
         planned={[
           'Conditions on log level, message, container, host and source',
           'Exact, substring and regular-expression matching',

@@ -21,13 +21,9 @@ enabled, scheduled and retained from the UI is not shippable under
 Later phases shifted and new module phases were added. Remote management is
 split by risk, with the terminal last.
 
-> **Known inconsistency.** The frontend placeholder pages still display the
-> old phase numbers (`apps/web/src/routes/*.tsx`, the `milestone` prop on
-> `NotImplemented`): Logs says Phase 3 but is now 5, Docker says 4 but is now
-> 6, Alerts says 5 but is now 8, Network says 6 but is now 9, Settings says 7
-> but is now 10. That documentation revision deliberately changed no frontend
-> code, so correcting those six strings is the first task of the next
-> implementation milestone.
+> The frontend placeholder pages were updated to the new numbering in a
+> separate housekeeping commit; the `milestone` prop on `NotImplemented` in
+> `apps/web/src/routes/*.tsx` now matches the phases below.
 
 ---
 

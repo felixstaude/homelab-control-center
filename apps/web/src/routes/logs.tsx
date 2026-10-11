@@ -14,7 +14,7 @@ export function LogsPage() {
         icon={ScrollText}
         title="Log monitoring"
         summary="Collect logs from configured sources while preserving the original message and timestamp exactly as emitted. Parsing is configurable because real applications do not agree on log formats."
-        milestone="Phase 3"
+        milestone="Phase 5"
         planned={[
           'Ingestion from journald, files and container logs',
           'Original messages and timestamps preserved verbatim',
