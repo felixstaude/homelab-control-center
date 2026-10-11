@@ -2,11 +2,13 @@
 
 The security model for Homelab Control Center.
 
-> **Phase 0 status.** No authentication, authorization, agent communication or
-> Docker access is implemented yet. Sections below marked **(design)** describe
-> what Phase 1+ will build; they are documented now because they constrain the
-> architecture that *is* built. Sections marked **(implemented)** are in the
-> code today and covered by tests.
+> **Current status (Phase 1, milestone 1.1).** No authentication,
+> authorization, agent communication or Docker access is implemented yet. The
+> `users` table exists as schema only — see "Known gaps" below. Sections
+> marked **(design)** describe what later milestones will build; they are
+> documented now because they constrain the architecture that *is* built.
+> Sections marked **(implemented)** are in the code today and covered by
+> tests.
 
 ## Threat model
 
@@ -291,9 +293,12 @@ them.
 
 Stated plainly rather than implied:
 
-1. **There is no authentication.** The Phase 0 API is unauthenticated. It
-   exposes only health probes and version metadata, but it must not be
-   deployed on an untrusted network.
+1. **There is no authentication.** The API is still unauthenticated. It exposes
+   only health probes and version metadata, but it must not be deployed on an
+   untrusted network. Milestone 1.1 added the `users` table — schema only. No
+   login, session, registration or password-reset path exists yet, and nothing
+   hashes or verifies a password; `password_hash` is simply a NOT NULL column
+   with a non-empty CHECK constraint awaiting milestone 1.2.
 2. **There is no rate limiting.** Added with the ingestion endpoints in
    Phase 2, where it matters.
 3. **There is no audit log.** Phase 1.

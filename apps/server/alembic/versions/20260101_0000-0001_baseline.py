@@ -1,7 +1,7 @@
 """baseline
 
 Establishes the migration chain for a fresh database. Intentionally empty:
-Phase 0 defines no tables (see hcc/models/__init__.py).
+Phase 0 defined no tables; the first real schema arrives in 0002_users.
 
 Having a baseline revision means a new deployment runs `alembic upgrade head`
 and ends up with a stamped, tracked database, rather than an untracked one

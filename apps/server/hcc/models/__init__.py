@@ -1,15 +1,30 @@
 """ORM model registry.
 
-Phase 0 defines no tables. The schema is introduced alongside the features
-that need it, starting with hosts and agent registration in Phase 1 — adding
-speculative tables now would violate engineering rule 3.
-
-This package exists as the single import point for Alembic autogenerate:
+This package is the single import point for Alembic autogenerate:
 ``alembic/env.py`` imports it, so every model module re-exported here is
-registered on ``Base.metadata``. New model modules must be imported below or
-autogenerate will not see them.
+registered on ``Base.metadata``. **New model modules must be imported below**,
+or autogenerate will not see them — and worse, will emit drop statements for
+tables it believes have been removed.
 """
 
 from hcc.db import Base
+from hcc.models.user import (
+    PASSWORD_HASH_MAX_LENGTH,
+    USER_ROLE_ENUM_NAME,
+    USERNAME_MAX_LENGTH,
+    USERNAME_MIN_LENGTH,
+    User,
+    UserRole,
+    normalize_username,
+)
 
-__all__ = ["Base"]
+__all__ = [
+    "PASSWORD_HASH_MAX_LENGTH",
+    "USERNAME_MAX_LENGTH",
+    "USERNAME_MIN_LENGTH",
+    "USER_ROLE_ENUM_NAME",
+    "Base",
+    "User",
+    "UserRole",
+    "normalize_username",
+]

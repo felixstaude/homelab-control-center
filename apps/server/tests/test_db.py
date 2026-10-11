@@ -51,7 +51,15 @@ def test_metadata_uses_an_explicit_naming_convention() -> None:
     assert Base.metadata.naming_convention == NAMING_CONVENTION
 
 
-def test_phase_0_defines_no_tables() -> None:
-    # Guards engineering rule 3: schema arrives with the features that need it.
-    # Delete this test in Phase 1 when the first real model lands.
-    assert Base.metadata.tables == {}
+def test_models_are_registered_on_the_metadata() -> None:
+    # Replaces Phase 0's `test_phase_0_defines_no_tables`, which asserted an
+    # empty schema. Its real purpose was to catch a model module that
+    # hcc/models/__init__.py forgets to import — autogenerate would then emit
+    # a drop for the missing table. This keeps that guarantee as tables are
+    # added: importing hcc.models must register every mapped table.
+    # Imported inside the test, not at module scope, because the assertion is
+    # about the import's side effect on Base.metadata.
+    import hcc.models
+
+    assert hcc.models.Base is Base
+    assert "users" in Base.metadata.tables

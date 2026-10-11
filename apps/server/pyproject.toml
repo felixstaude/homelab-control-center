@@ -73,7 +73,17 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 # Tests may use asserts (that is the point) and need no return annotations.
-"tests/**" = ["S101", "ANN201", "ANN001"]
+# S603/S608: the test suite runs Alembic as a subprocess with a fixed argv, and
+# builds raw SQL from literals it defines itself, in order to verify that
+# database constraints hold for writes that bypass the ORM. Neither takes
+# external input.
+"tests/**" = ["S101", "ANN201", "ANN001", "S603", "S608"]
+# flake8-type-checking wants the types used in `Mapped[...]` annotations moved
+# into a TYPE_CHECKING block. That breaks the application: SQLAlchemy resolves
+# those annotations at class-definition time to derive column types, so a
+# type-checking-only import makes the mapping fail outright. Same reason the
+# rules are disabled for hcc/api/** (FastAPI's dependency annotations).
+"hcc/models/**" = ["TC001", "TC002", "TC003"]
 # Alembic generates its own scaffolding style, and migration modules are not
 # an importable package.
 "alembic/**" = ["ANN201", "ANN001", "INP001", "TC003"]

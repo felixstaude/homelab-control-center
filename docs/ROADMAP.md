@@ -10,7 +10,8 @@ feature three phases away.
 
 No dates. This is a side project; sequence is a commitment, schedule is not.
 
-**Legend:** ✅ done · ⬜ not started
+**Legend:** ✅ done · ⬜ not started. A phase heading without ✅ or ⬜ is in
+progress.
 
 ---
 
@@ -31,7 +32,7 @@ components. No product features.
 
 ---
 
-## Phase 1 — Identity and enrolment ⬜
+## Phase 1 — Identity and enrolment (in progress)
 
 **Goal:** a real user can log in, and a real agent can enrol. No telemetry yet.
 
@@ -41,7 +42,7 @@ unauthenticated endpoint or reworking attribution later.
 
 | # | Milestone | Exit criterion |
 | --- | --- | --- |
-| 1.1 | User schema and migration | `users`, `roles`, `sessions` tables; `alembic check` clean |
+| 1.1 | User schema and migration | ✅ `users` table with UUID key, canonical-username uniqueness, role enum, timestamptz timestamps and an `updated_at` trigger; reversible migration `0002_users`; `alembic check` clean. `sessions` moves to 1.3, where it is actually used. |
 | 1.2 | Password authentication | Argon2id hashing; login returns a `Secure`/`HttpOnly`/`SameSite` session cookie |
 | 1.3 | Session middleware | Protected endpoint returns 401 without a session, 200 with one |
 | 1.4 | First-run admin setup | Fresh install prompts for an admin account; no default credentials exist |

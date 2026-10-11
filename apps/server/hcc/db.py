@@ -45,9 +45,10 @@ NAMING_CONVENTION: dict[str, str] = {
 class Base(DeclarativeBase):
     """Declarative base for all ORM models.
 
-    Phase 0 defines no models deliberately — the schema arrives with the
-    features that need it (Phase 1 onwards). The base and its metadata exist so
-    that Alembic has a target to compare against.
+    The schema grows with the features that need it rather than being defined
+    up front. Models live in ``hcc.models`` and must be imported from that
+    package's ``__init__``, which is what Alembic autogenerate compares
+    against.
     """
 
     metadata = MetaData(naming_convention=NAMING_CONVENTION)

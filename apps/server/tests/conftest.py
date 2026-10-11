@@ -14,10 +14,16 @@ Test strategy (two tiers):
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from hcc.app import create_app
 from hcc.config import Settings
@@ -29,6 +35,14 @@ if TYPE_CHECKING:
 
 # Credentials for a throwaway local test database. Not a secret.
 _UNREACHABLE_TEST_DSN = "postgresql://hcc:hcc_test@127.0.0.1:1/hcc_test"
+
+# apps/server — the directory holding alembic.ini.
+_SERVER_DIR = Path(__file__).resolve().parent.parent
+
+# Tables emptied between integration tests. Listed explicitly rather than
+# discovered from metadata, so adding a table is a deliberate decision about
+# test isolation instead of a silent change in behaviour.
+_TRUNCATED_TABLES = ("users",)
 
 
 @pytest.fixture
@@ -70,12 +84,15 @@ async def client(app: FastAPI) -> AsyncIterator[AsyncClient]:
         yield async_client
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def test_database_url() -> Iterator[str]:
     """The integration-test database URL, or skip the test.
 
     Skips with a message naming the variable to set, so a skipped integration
     test is self-explanatory.
+
+    Session-scoped so that :func:`migrated_database`, which is expensive, can
+    depend on it and run once per test session.
     """
     url = os.environ.get("HCC_TEST_DATABASE_URL")
     if not url:
@@ -84,3 +101,73 @@ def test_database_url() -> Iterator[str]:
             "(`make db-up`) and export it to run integration tests"
         )
     yield url
+
+
+@pytest.fixture(scope="session")
+def migrated_database(test_database_url: str) -> str:
+    """Bring the test database up to ``head`` and return its URL.
+
+    Schema is built by running the real Alembic migrations, not by
+    ``Base.metadata.create_all``. That matters: the ``updated_at`` trigger
+    exists only in the migration, so ``create_all`` would produce a schema
+    that differs from the one actually deployed, and the tests would pass
+    against something nobody runs.
+
+    Run as a subprocess rather than through Alembic's Python API because
+    ``alembic/env.py`` calls ``asyncio.run``, which cannot be nested inside the
+    event loop pytest-asyncio has already started.
+    """
+    # Fixed argv, no shell, no user input.
+    result = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        cwd=_SERVER_DIR,
+        env={**os.environ, "HCC_DATABASE_URL": test_database_url},
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=120,
+    )
+    if result.returncode != 0:
+        # Fail loudly with the migration output; a silent skip here would hide
+        # a broken migration behind "no integration tests ran".
+        pytest.fail(
+            "alembic upgrade head failed, so the schema under test is unknown.\n"
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
+    return test_database_url
+
+
+@pytest.fixture
+async def db_session(migrated_database: str) -> AsyncIterator[AsyncSession]:
+    """A session against the migrated test database, isolated per test.
+
+    Tests using this fixture commit for real, which is the point: server
+    defaults and the ``updated_at`` trigger only take effect on an actual
+    write. Isolation therefore comes from truncating afterwards rather than
+    from rolling back a wrapping transaction.
+
+    A fresh engine per test with ``NullPool`` avoids binding a pooled
+    connection to one test's event loop and then reusing it from another's.
+    """
+    settings = Settings(
+        environment="test",
+        database_url=migrated_database,
+        log_level="WARNING",
+    )
+    engine = create_async_engine(settings.sqlalchemy_url(), poolclass=NullPool)
+    factory = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def truncate() -> None:
+        async with engine.begin() as connection:
+            for table in _TRUNCATED_TABLES:
+                await connection.execute(text(f"TRUNCATE TABLE {table} CASCADE"))
+
+    try:
+        # Truncate first as well: a previous crashed run must not leak rows
+        # into this one.
+        await truncate()
+        async with factory() as session:
+            yield session
+        await truncate()
+    finally:
+        await engine.dispose()

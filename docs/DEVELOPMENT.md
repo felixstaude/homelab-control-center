@@ -140,8 +140,18 @@ make migration m="add hosts table"      # autogenerate a revision
    it will generate an empty migration, or worse, drop statements.
 3. `make migration m="what changed"`.
 4. **Read the generated file.** Autogenerate does not detect renames (it emits
-   drop + add, losing data), check constraints, or server defaults reliably.
+   drop + add, losing data), nor enum member changes, nor triggers. It also
+   creates PostgreSQL enum types implicitly without dropping them on
+   downgrade — see `0002_users` for the corrected pattern, and ADR-013.
 5. Verify it round-trips: `make migrate && make migrate-down && make migrate`.
+   The second `migrate` is the part that matters: a downgrade leaving an enum
+   type or function behind only fails on re-upgrade.
+6. Give the revision a readable sequential id (`0003_hosts`) rather than
+   Alembic's default hash, matching the existing chain.
+
+Objects Alembic cannot see — triggers, functions — must be created *and*
+dropped explicitly in the migration. Their invisibility to autogenerate means
+they never cause false drift, so `alembic check` stays clean.
 
 CI enforces that migrations apply to an empty database, are reversible, and
 that no model change is missing a migration.
@@ -156,7 +166,7 @@ apps/
 │   │   ├── config.py    validated environment settings
 │   │   ├── errors.py    AppError hierarchy + handlers
 │   │   ├── db.py        engine, sessions, DeclarativeBase
-│   │   ├── models/      ORM models (empty in Phase 0)
+│   │   ├── models/      ORM models (users)
 │   │   └── api/         health probes + versioned routers
 │   ├── alembic/         migration environment
 │   └── tests/           unit + integration
@@ -201,6 +211,16 @@ docs/                    architecture, vision, roadmap, security
   FastAPI resolves them to build its dependency graph, so a
   `TYPE_CHECKING`-only import breaks route registration. The `TC` lint rules
   are disabled for that package for exactly this reason.
+- The same applies to `hcc/models/**`: SQLAlchemy resolves `Mapped[...]`
+  annotations at class-definition time to derive column types, so types used
+  inside them (`datetime`, `uuid.UUID`) must be imported at runtime too.
+- ORM models carry their invariants. Use a `@validates` hook for anything that
+  must hold on every assignment (see `User.username` keeping
+  `username_canonical` in step), so a violation raises where the bad value was
+  set rather than at flush time.
+- Never put a secret in a model's `__repr__`. `User.__repr__` omits
+  `password_hash` deliberately — these objects reach log lines and exception
+  context.
 
 ### Frontend
 

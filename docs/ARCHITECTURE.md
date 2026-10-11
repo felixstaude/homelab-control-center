@@ -66,14 +66,15 @@ The single most important structural property: **agents always dial out. The
 control plane never connects to an agent.** Everything in [§10](#10-docker-management-security-model)
 follows from it.
 
-### What exists in Phase 0
+### What exists today
 
 | Element | Status |
 | --- | --- |
 | Monorepo, build system, CI | Implemented |
 | FastAPI app, settings, logging, error envelope | Implemented |
 | `/healthz`, `/readyz`, `/api/v1/info` | Implemented |
-| PostgreSQL connectivity, Alembic chain | Implemented (no tables yet) |
+| PostgreSQL connectivity, Alembic chain | Implemented |
+| `users` table (milestone 1.1) | Implemented — schema only, no auth |
 | React shell, design system, 7 nav sections | Implemented |
 | Go agent lifecycle, config, logging, shutdown | Implemented |
 | Controller protocol | **Interface only**, no implementation |
@@ -316,12 +317,13 @@ CI verifies three things on every push: migrations apply to an empty database,
 they are reversible, and `alembic check` finds no model change lacking a
 migration.
 
-### 6.3 Expected schema shape (Phase 1+)
+### 6.3 Schema shape
 
-Indicative, not implemented:
+`users` is implemented (milestone 1.1); the rest is indicative:
 
 ```
-users, sessions, roles
+users                       IMPLEMENTED
+sessions, roles
 hosts ── agent_credentials
       ├─ host_metrics       (time-series, partitioned by time)
       ├─ containers ── container_metrics
@@ -826,3 +828,97 @@ would be a placeholder that pretends to work. Deleted in Phase 2.
 **Cost.** The Overview page is rebuilt when real data arrives. Intended — the
 fixtures exist to validate the design, not to be the implementation. A test
 asserts the banner is present.
+
+### ADR-013: `role` is a native PostgreSQL enum, not a string or a lookup table
+
+**Decision.** `UserRole` is a Python `StrEnum` mapped to a native PostgreSQL
+`user_role` enum type storing the member *values* (`viewer`), not their names.
+
+**Why.** The role set is deliberately closed (§4.3), so the database should
+enforce it: an unknown role becomes impossible rather than merely unexpected.
+A `VARCHAR` + `CHECK` would be easier to extend, which is exactly the wrong
+incentive — adding a role changes the authorization surface and should require
+a reviewed migration, the same reasoning as the closed command set in §10.2.
+A separate `roles` table was rejected as unnecessary indirection for three
+fixed values with no attributes of their own.
+
+`values_callable` is required because SQLAlchemy persists enum *names* by
+default, which would put `VIEWER` in the database while the API says `viewer`.
+
+**Cost.** Adding a role needs `ALTER TYPE user_role ADD VALUE` in a migration,
+and Alembic autogenerate does not detect changes to enum members — so a new
+role must be written by hand. Accepted, and the reason
+`test_enum_type_has_exactly_the_expected_labels` pins the label list.
+
+### ADR-014: Username uniqueness via a derived canonical column
+
+**Decision.** Two columns: `username` holds exactly what the user typed;
+`username_canonical` holds the normalized form and carries the unique
+constraint. Normalization is NFKC → strip → casefold → NFKC, and rejects
+interior whitespace and control characters. A SQLAlchemy `@validates` hook on
+`username` recomputes the canonical value on every assignment.
+
+**Why.** Users expect `Admin` and `admin` to be the same account, but also
+expect their chosen capitalization to be displayed. Storing only the
+normalized form loses the display case; a unique functional index on
+`lower(username)` keeps it but can only apply `lower()`.
+
+Full Unicode handling needs more than `lower()`: casefolding expands `ß` to
+`ss`, and NFKC folds full-width `ｆｅｌｉｘ` onto `felix`, so a near-duplicate
+cannot be registered alongside an existing name. Neither operation exists in
+SQL, which rules out a PostgreSQL generated column — those may only call
+immutable SQL functions. The control plane is the only writer (ADR-003), so
+the application is the right place to enforce it.
+
+Interior whitespace is rejected because NFKC maps U+00A0 onto a plain space:
+without that check, `ad min` would normalize to `ad min` and become
+confusable with a deliberately registered account.
+
+**Cost.** The invariant is application-enforced, so a write issued outside the
+ORM could store an inconsistent canonical value. Mitigated by the `@validates`
+hook, by CHECK constraints on both columns' lengths, and by tests asserting the
+hook fires on reassignment. Accents are deliberately *not* folded — `félix`
+and `felix` are different accounts, which is a documented boundary rather than
+an oversight.
+
+### ADR-015: `updated_at` is maintained by a database trigger
+
+**Decision.** A `BEFORE UPDATE` trigger (`trg_users_set_updated_at`) calling a
+shared `set_updated_at()` function sets `updated_at = now()`. The ORM does not
+use `onupdate`; the column is declared `server_onupdate=FetchedValue()` so
+SQLAlchemy knows to refetch it.
+
+**Why.** SQLAlchemy's `onupdate` only fires for ORM-mediated updates. A bulk
+`UPDATE`, a migration, or a maintenance statement would leave `updated_at`
+stale, which makes the column untrustworthy — and it is the column an audit
+trail will lean on. The trigger holds for every write path.
+
+Assigning unconditionally also means a client cannot backdate a row to conceal
+a change: any `updated_at` supplied by an `UPDATE` is overwritten.
+
+The trigger carries `WHEN (OLD.* IS DISTINCT FROM NEW.*)`, so a no-op update
+does not bump the timestamp. `updated_at` therefore means "when this row's
+data last actually changed", which is what callers assume.
+
+**Cost.** Triggers are invisible to Alembic autogenerate, so they must be
+written by hand in migrations and dropped explicitly on downgrade. The upside
+of that invisibility is that they cannot cause false schema drift — `alembic
+check` stays clean. Because `now()` is the transaction timestamp, two updates
+in one transaction share an `updated_at`; that is correct, not a defect.
+
+### ADR-016: UUID primary keys generated in Python
+
+**Decision.** `id` is a `uuid4` generated by the application
+(`default=uuid.uuid4`), stored in a native PostgreSQL `uuid` column.
+
+**Why.** Application-side generation means code holds the id before the row is
+flushed, so a unit of work can insert a parent and its children together
+without a round trip. UUIDs also avoid leaking row counts through sequential
+ids, which matters for a `users` table.
+
+**Cost.** Random v4 values scatter across the primary-key index, so inserts
+have worse locality than a sequential key. Irrelevant at the scale this
+product targets (tens of users, tens of hosts). High-volume tables arriving in
+Phase 2 are a different decision and will be made separately — a time-ordered
+key such as UUIDv7 is the likely choice there, once the minimum Python version
+makes `uuid.uuid7` available.
