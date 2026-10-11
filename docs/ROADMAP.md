@@ -54,20 +54,21 @@ unauthenticated endpoint or reworking attribution later.
 
 | # | Milestone | Exit criterion |
 | --- | --- | --- |
-| 1.1 | User schema and migration | ✅ `users` table with UUID key, canonical-username uniqueness, role enum, timestamptz timestamps and an `updated_at` trigger; reversible migration `0002_users`; `alembic check` clean. `sessions` moves to 1.3, where it is actually used. |
-| 1.2 | Password authentication | Argon2id hashing; login returns a `Secure`/`HttpOnly`/`SameSite` session cookie |
-| 1.3 | Session middleware | Protected endpoint returns 401 without a session, 200 with one |
-| 1.4 | First-run admin setup | Fresh install prompts for an admin account; no default credentials exist |
-| 1.5 | Login UI | Login page, session persistence, logout; protected routes redirect |
-| 1.6 | Role enforcement | Viewer is refused a write endpoint with a 403 in the standard envelope |
-| 1.7 | Host registration | Create a host in the UI; `hosts` table populated |
-| 1.8 | Enrolment tokens | One-time token issued, hashed at rest, single-use, expiring |
-| 1.9 | Agent enrolment endpoint | `POST /api/v1/agents/enroll` exchanges a one-time token for a credential |
-| 1.10 | Agent-side enrolment | Agent enrols on first start, persists its credential, survives restart |
-| 1.11 | Heartbeat | Agent heartbeats; UI shows last-seen and marks a silent host **Unknown** |
-| 1.12 | Credential revocation | Revoking a host rejects its next call immediately |
-| 1.13 | Audit log | Append-only `audit_log`; login, enrolment and revocation recorded |
-| 1.14 | Generated API client | TypeScript types generated from OpenAPI (ADR-007); drift fails CI |
+| 1.1 | User schema and migration | ✅ `users` table with UUID key, canonical-username uniqueness, role enum, timestamptz timestamps and an `updated_at` trigger; reversible migration `0002_users`; `alembic check` clean. `sessions` moves to 1.4, where it is actually used. |
+| 1.2 | Password hashing | ✅ Argon2id via `argon2-cffi` at RFC 9106 low-memory parameters; configurable with enforced floors; rehash detection; fails closed on malformed hashes; NFC-normalized policy that never truncates. Hashing only — the login endpoint moved to 1.3, since it needs sessions and rate limiting. |
+| 1.3 | Login endpoint and rate limiting | Login returns a `Secure`/`HttpOnly`/`SameSite` session cookie; attempts are rate-limited, because each costs ~64 MiB and ~50 ms |
+| 1.4 | Session middleware | Protected endpoint returns 401 without a session, 200 with one |
+| 1.5 | First-run admin setup | Fresh install prompts for an admin account; no default credentials exist |
+| 1.6 | Login UI | Login page, session persistence, logout; protected routes redirect |
+| 1.7 | Role enforcement | Viewer is refused a write endpoint with a 403 in the standard envelope |
+| 1.8 | Host registration | Create a host in the UI; `hosts` table populated |
+| 1.9 | Enrolment tokens | One-time token issued, hashed at rest, single-use, expiring |
+| 1.10 | Agent enrolment endpoint | `POST /api/v1/agents/enroll` exchanges a one-time token for a credential |
+| 1.11 | Agent-side enrolment | Agent enrols on first start, persists its credential, survives restart |
+| 1.12 | Heartbeat | Agent heartbeats; UI shows last-seen and marks a silent host **Unknown** |
+| 1.13 | Credential revocation | Revoking a host rejects its next call immediately |
+| 1.14 | Audit log | Append-only `audit_log`; login, enrolment and revocation recorded |
+| 1.15 | Generated API client | TypeScript types generated from OpenAPI (ADR-007); drift fails CI |
 
 **Phase 1 delivers:** a secure multi-host inventory with live up/down status.
 

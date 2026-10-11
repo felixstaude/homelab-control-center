@@ -2,9 +2,11 @@
 
 The security model for Homelab Control Center.
 
-> **Current status (Phase 1, milestone 1.1).** No authentication,
+> **Current status (Phase 1, milestone 1.2).** No authentication flow,
 > authorization, agent communication, monitoring or management is implemented
-> yet. The `users` table exists as schema only — see "Known gaps" below.
+> yet. The `users` table (1.1) and Argon2id password hashing (1.2) exist;
+> there is still no login endpoint, session or registration path, so nothing
+> yet *calls* the hasher. See "Known gaps" below.
 > Sections marked **(design)** describe what later milestones will build; they
 > are documented now because they constrain the architecture that *is* built.
 > Sections marked **(implemented)** are in the code today and covered by
@@ -35,13 +37,13 @@ The security model for Homelab Control Center.
 
 1. **An attacker on the local network** who can reach the control plane's
    HTTP port.
-2. **A compromised monitored host** — one agent, fully controlled. It must not
+5. **A compromised monitored host** — one agent, fully controlled. It must not
    escalate to the fleet.
-3. **A malicious or careless authenticated user** with a low-privilege role.
+6. **A malicious or careless authenticated user** with a low-privilege role.
    Now also: an Administrator whose session is stolen, which is the adversary
    the terminal capability's gates exist for.
-4. **A compromised dependency** in any of the three components' supply chains.
-5. **An attacker with a stolen database dump**, offline.
+7. **A compromised dependency** in any of the three components' supply chains.
+8. **An attacker with a stolen database dump**, offline.
 
 ### Explicitly out of scope
 
@@ -143,14 +145,17 @@ Concretely:
 
 ---
 
-## Authentication (design)
+## Authentication
+
+The password hashing component is **implemented** (milestone 1.2); everything
+that would use it — login, sessions, registration — is still design.
 
 Two distinct identity types, deliberately not conflated:
 
 | | Users | Agents |
 | --- | --- | --- |
 | Credential | Password → session | Long-lived enrolment credential |
-| Hashing | Argon2id | Argon2id (stored hashed) |
+| Hashing | Argon2id *(implemented)* | Argon2id (stored hashed) |
 | Transport | `Secure`, `HttpOnly`, `SameSite=Lax` cookie | `Authorization: Bearer` |
 | Scope | Fleet-wide, role-limited | **One host only** |
 | May issue commands | Yes, if authorized | No |
@@ -159,6 +164,53 @@ Two distinct identity types, deliberately not conflated:
 An agent credential authenticates *one host reporting its own data*. It is not
 a user credential with a different shape, and cannot be used to read the fleet
 or issue commands. This is what contains adversary #2.
+
+### Password hashing (implemented)
+
+`hcc/security/password.py`. Argon2id through `argon2-cffi`, the reference
+binding to the official C implementation. No cryptography is implemented in
+this project. Full rationale in
+[ADR-025](ARCHITECTURE.md#adr-025-argon2id-via-argon2-cffi-with-rfc-9106-low-memory-parameters)
+and [ADR-026](ARCHITECTURE.md#adr-026-password-policy--permissive-nfc-normalized-never-truncated).
+
+| Property | Value |
+| --- | --- |
+| Algorithm | Argon2id (RFC 9106 §4 recommendation for passwords) |
+| Default cost | 64 MiB memory, 3 passes, 4 lanes — RFC 9106 "low memory" profile |
+| Digest / salt | 32 bytes / 16 bytes, random per hash |
+| Stored form | Full PHC string, parameters included, 97 characters |
+| Floors | 19456 KiB, 2 passes, 1 lane (OWASP minimum), enforced in two layers |
+
+Properties that hold today, each covered by tests:
+
+- **Only hashes are stored.** No plaintext is persisted, and the hash is
+  verified to contain no plaintext.
+- **A unique random salt per hash**, so two accounts sharing a password are
+  not identifiable as such from a database dump.
+- **Verification fails closed.** `verify()` returns `bool` and never raises,
+  for any input — wrong password, malformed hash, wrong algorithm, or a
+  non-string. A caller cannot mistake an exception path for success.
+- **A malformed stored hash is reported, not swallowed.** It logs at warning
+  level with the exception type only, and returns `False`.
+- **No secret reaches a log, exception or `repr`.** Policy errors carry field
+  names and limits; the only log statements record exception types and
+  argument *types*. Asserted by capturing structured log events and checking
+  every key and value.
+- **Parameter upgrades are possible without a password reset.** The stored
+  hash is self-describing, so `needs_rehash()` identifies a stale one and the
+  next successful login can re-hash transparently.
+- **Over-long passwords are rejected, never truncated**, so two passwords
+  sharing a long prefix can never become the same credential.
+- **Hashing is offloaded to a worker thread** by the `*_async` methods, so a
+  50 ms CPU-bound operation cannot stall the event loop.
+
+Two consequences for the milestones that will use this:
+
+1. **The login endpoint needs rate limiting.** Each attempt costs ~64 MiB and
+   ~50 ms, so an unauthenticated caller can otherwise exhaust memory and CPU.
+   Tracked as a known gap below.
+2. **Handlers must use `hash_async` / `verify_async`.** The synchronous
+   methods are for CLI and test use.
 
 ### Agent enrolment
 
@@ -207,7 +259,7 @@ Every management action passes through, in order:
    an action that crashes mid-flight is still recorded.
 4. **Validated** — target exists on the target host.
 5. **Scoped** — queued for exactly one agent.
-6. **Expiring** — carries `expires_at`; the agent refuses stale commands, so
+9. **Expiring** — carries `expires_at`; the agent refuses stale commands, so
    one queued during a network partition cannot execute hours later against
    changed state.
 7. **Reported** — the result completes the audit record. A failed command
@@ -446,12 +498,16 @@ them.
 
 Stated plainly rather than implied:
 
-1. **There is no authentication.** The API is still unauthenticated. It exposes
-   only health probes and version metadata, but it must not be deployed on an
-   untrusted network. Milestone 1.1 added the `users` table — schema only. No
-   login, session, registration or password-reset path exists yet, and nothing
-   hashes or verifies a password; `password_hash` is simply a NOT NULL column
-   with a non-empty CHECK constraint awaiting milestone 1.2.
+1. **There is no authentication flow.** The API is still unauthenticated. It
+   exposes only health probes and version metadata, but it must not be
+   deployed on an untrusted network. Milestones 1.1 and 1.2 added the `users`
+   table and the password hashing component, but no login, session,
+   registration or password-reset path exists yet — nothing in the running
+   application calls the hasher.
+2. **The login path will need rate limiting from the moment it exists.** Each
+   verification costs ~64 MiB of RAM and ~50 ms of CPU by design, so an
+   unauthenticated endpoint that hashes without a limit is a denial-of-service
+   vector. This must land with milestone 1.2's consumer, not after it.
 2. **There is no rate limiting.** Added with the ingestion endpoints in
    Phase 3, where it matters.
 3. **There is no audit log.** Phase 1.

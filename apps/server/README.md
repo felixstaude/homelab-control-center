@@ -19,6 +19,7 @@ hcc/
 ├── middleware.py   # request id correlation + access logging
 ├── db.py           # engine, session factory, DeclarativeBase
 ├── models/         # ORM models — user.py (see the module docstring)
+├── security/       # framework-free auth primitives — password.py (Argon2id)
 └── api/
     ├── deps.py     # shared FastAPI dependencies
     ├── health.py   # /healthz (liveness), /readyz (readiness)
@@ -73,3 +74,9 @@ unset. CI always sets it, so they never skip silently there.
   types.
 - Model invariants belong in `@validates` hooks so they fail at assignment
   rather than at flush. Secrets must never appear in `__repr__`.
+- `hcc/security/**` must stay free of FastAPI and HTTP concerns, so it is
+  callable from a handler, a CLI command or a test alike. A test asserts the
+  package imports without pulling in `fastapi` or `starlette`.
+- Password hashing goes through `hcc.security.password`. Use the `*_async`
+  methods from request handlers: a hash costs ~50 ms of CPU and would
+  otherwise block the event loop.

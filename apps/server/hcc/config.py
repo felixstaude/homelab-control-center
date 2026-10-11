@@ -58,6 +58,25 @@ class Settings(BaseSettings):
     database_max_overflow: int = Field(default=10, ge=0, le=100)
     database_echo: bool = False
 
+    # --- Password hashing -------------------------------------------------
+    # Argon2id cost parameters. Defaults are the RFC 9106 "low memory"
+    # (second recommended) profile. Configurable so an operator on
+    # constrained hardware can tune them, with floors enforced so that
+    # configuration cannot weaken the security property — the invariants
+    # versus capabilities rule in docs/PRODUCT_VISION.md. See ADR-025 and
+    # hcc/security/password.py for the full rationale.
+    #
+    # Memory is the dominant cost and is charged *per concurrent hash*:
+    # 65536 KiB = 64 MiB each.
+    password_hash_memory_cost: int = Field(
+        default=65536, ge=19456, le=4194304, description="Argon2id memory cost in KiB."
+    )
+    # Floor of 2 passes; 1 pass is only appropriate at RFC 9106's 2 GiB profile.
+    password_hash_time_cost: int = Field(default=3, ge=2, le=20, description="Argon2id iterations.")
+    password_hash_parallelism: int = Field(
+        default=4, ge=1, le=16, description="Argon2id parallel lanes."
+    )
+
     # --- Logging ----------------------------------------------------------
     log_level: LogLevel = "INFO"
     log_format: LogFormat = "console"

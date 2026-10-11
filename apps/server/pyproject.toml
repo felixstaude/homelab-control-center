@@ -14,6 +14,10 @@ license = { text = "AGPL-3.0-only" }
 # security updates flow in, while a major bump stays an explicit decision.
 # The exact resolved set for reproducible installs lives in requirements.lock.
 dependencies = [
+  # Argon2id password hashing. The reference Python binding to the official
+  # Argon2 C implementation; actively maintained. Chosen over passlib, whose
+  # last release was 2020. See ADR-025.
+  "argon2-cffi~=25.1",
   "fastapi~=0.143",
   "uvicorn[standard]~=0.38",
   "pydantic~=2.14",
@@ -65,6 +69,7 @@ select = [
   "BLE",  # flake8-blind-except — enforces engineering rule 6
   "TRY",  # tryceratops — no silent error swallowing
   "ANN",  # flake8-annotations — enforces engineering rule 5
+  "SLF", # flake8-self — private access must be deliberate and marked
 ]
 ignore = [
   "ANN401",  # Allow `Any` where it is genuinely unavoidable (e.g. **kwargs passthrough)
@@ -77,7 +82,10 @@ ignore = [
 # builds raw SQL from literals it defines itself, in order to verify that
 # database constraints hold for writes that bypass the ORM. Neither takes
 # external input.
-"tests/**" = ["S101", "ANN201", "ANN001", "S603", "S608"]
+# S105/S106: test fixtures contain literal passwords by necessity — a
+# password-hashing test suite cannot avoid them, and they are not credentials
+# for anything.
+"tests/**" = ["S101", "ANN201", "ANN001", "S603", "S608", "S105", "S106"]
 # flake8-type-checking wants the types used in `Mapped[...]` annotations moved
 # into a TYPE_CHECKING block. That breaks the application: SQLAlchemy resolves
 # those annotations at class-definition time to derive column types, so a

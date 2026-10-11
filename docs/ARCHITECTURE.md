@@ -1415,3 +1415,101 @@ milestone that depends on it, not before the next commit.
 | 6 | Agent self-update distribution. Phase 10 lists it as opt-in and signature-verified, but it makes the controller a code-distribution channel — the same concern as plugin question 10. | Phase 10 | Keep opt-in and signed; prefer OS packages over self-update |
 | 7 | Rollup computation location: controller-side job, or PostgreSQL-side with Timescale continuous aggregates. | Phase 3 | Controller-side first (portable, testable); revisit with benchmarks |
 | 8 | Whether the terminal needs a break-glass path when the controller is down. Today it does not work offline, by design. | Terminal milestone | Leave it unavailable; a break-glass path is an unaudited backdoor by another name |
+
+### ADR-025: Argon2id via argon2-cffi, with RFC 9106 low-memory parameters
+
+**Decision.** Passwords are hashed with **Argon2id** through
+[`argon2-cffi`](https://argon2-cffi.readthedocs.io/). Default cost parameters
+are RFC 9106's *second recommended* ("low memory") profile — 64 MiB memory,
+3 passes, 4 lanes, 32-byte digest, 16-byte salt — configurable within enforced
+floors. The full PHC-encoded string is stored, which makes parameter upgrades
+detectable without a schema change.
+
+**Why Argon2id.** RFC 9106 §4 recommends the hybrid variant for password
+hashing, as does OWASP. Argon2i alone is weaker against time-memory trade-off
+attacks; Argon2d alone leaks information through data-dependent memory access.
+
+**Why `argon2-cffi`.** It is the reference Python binding to the official
+Argon2 C implementation, actively maintained, and ships the RFC profiles as
+named constants. The obvious alternative, `passlib`, last released in 2020 and
+has known friction with current `bcrypt` releases — an unmaintained dependency
+on the authentication path is not a trade worth making. No cryptography is
+implemented in this project.
+
+**Why these parameters.** Measured on a 20-core desktop: ~50 ms per hash at
+the defaults, ~115 ms at `parallelism=1`. Both are acceptable login latencies
+and expensive enough to make offline cracking costly.
+
+RFC 9106's *first* recommended profile (2 GiB, `t=1`) is deliberately not the
+default: it is stronger on a dedicated machine, but a single login would
+exceed the total memory of much of the hardware this product targets.
+
+**Memory is charged per concurrent hash**, which is the operationally
+surprising part and is documented wherever the setting appears: ten
+simultaneous logins at 64 MiB each transiently need ~640 MiB.
+
+**Why configurable, and why floored.** A Raspberry Pi serving a household of
+three should be able to tune the cost down; an operator with memory to spare
+should be able to tune it up. Floors (19456 KiB, 2 passes, 1 lane — OWASP's
+minimum) mean configuration can trade cost for hardware but cannot configure
+the hashing into uselessness. This is the invariants-versus-capabilities rule
+from [`PRODUCT_VISION.md`](PRODUCT_VISION.md#4-invariants-are-structural-capabilities-are-configurable)
+applied to a concrete setting. The bounds are enforced twice, in Pydantic
+settings and again in `Argon2Parameters`, with a test asserting the two have
+not drifted apart.
+
+**Cost.** Login is inherently slow — tens of milliseconds of CPU and tens of
+megabytes of RAM per attempt. That is the point of a password hash, but it has
+two consequences the later milestones must handle: hashing must not run on the
+event loop (hence the `*_async` methods offloading to a worker thread), and
+the login endpoint needs rate limiting, because an unauthenticated caller can
+otherwise make the server spend 64 MiB and 50 ms per request.
+
+### ADR-026: Password policy — permissive, NFC-normalized, never truncated
+
+**Decision.** Minimum 8 characters, maximum 1024 UTF-8 bytes, **no composition
+rules**, all Unicode accepted, **NFC** normalization, and over-long input
+**rejected rather than truncated**. Passwords are not stripped of whitespace.
+
+**Why no composition rules.** NIST SP 800-63B removed them, because requiring
+character classes pushes users toward predictable patterns (`Password1!`) and
+measurably reduces real-world entropy. The minimum length is the one rule that
+survives that reasoning.
+
+**Why a maximum at all.** Argon2 has no inherent input limit — unlike bcrypt,
+which silently ignores everything past 72 bytes. The cap exists purely because
+hashing cost grows with input length, so an unbounded field lets an
+unauthenticated caller make the server do arbitrary work. It is measured in
+**bytes, not characters**, because bytes are what the algorithm processes: a
+character-based cap would let a four-times-larger payload through as emoji.
+
+**Why never truncate.** Silently shortening a password breaks the user's
+expectation and, worse, makes two distinct passwords sharing a long prefix
+into the same credential. A test demonstrates that collision to document what
+rejection prevents.
+
+**Why NFC and not NFKC — the opposite of usernames.** This is the interesting
+part, because milestone 1.1 chose NFKC for usernames (ADR-014) and this
+chooses NFC for passwords. Both are right:
+
+* Usernames need *aggressive* folding so a full-width or ligature variant
+  cannot be registered alongside an existing name. Confusables are an
+  impersonation risk, and collapsing them is the goal.
+* Passwords need *minimal* folding. NFKC maps compatibility variants onto
+  canonical ones, which would collapse genuinely distinct passwords and
+  discard entropy the user intended to have.
+
+NFC fixes only encoding differences representing *identical* text — `é` as one
+code point versus `e` plus a combining accent. Without it, a user who sets a
+password on one platform and types it on another can be locked out by an
+invisible difference; this was verified experimentally before choosing. The
+profile is PRECIS `OpaqueString` (RFC 8265 §4.2), the standard for passwords.
+
+**Why whitespace is preserved.** Leading and trailing spaces are legitimate
+password characters and a password manager may generate them. Trimming would
+silently alter the secret — the same class of mistake as truncation.
+
+**Cost.** The minimum length is enforced when *setting* a password but
+deliberately **not** when verifying one, so that raising the minimum later
+cannot lock out existing users. The byte cap is enforced on both paths,
+because that bound exists to limit work rather than to express policy.
