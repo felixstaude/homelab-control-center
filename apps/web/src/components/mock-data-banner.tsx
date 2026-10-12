@@ -30,7 +30,7 @@ export function MockDataBanner({ className }: { className?: string }) {
           Everything below is a hard-coded fixture used to demonstrate the
           intended layout and visual design. Nothing here is fetched from an
           API, and no host, container or metric shown actually exists. Real
-          data arrives when agent ingestion lands in Phase 2.
+          data arrives when agent ingestion lands in Phase 3.
         </p>
       </div>
     </div>

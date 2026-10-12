@@ -12,14 +12,16 @@ network devices.**
 
 ---
 
-> ### ⚠️ Phase 0 — Foundation release
+> ### ⚠️ Phase 1 — Identity, in progress
 >
-> **This is not a working monitoring tool yet.** Phase 0 establishes the
-> architecture, build system, design system and CI. It collects no metrics,
-> ships no authentication, and does not talk to Docker.
+> **This is not a working monitoring tool yet.** Phase 0 established the
+> architecture, build system, design system and CI. Phase 1 is building
+> identity: you can create an administrator, sign in to the real application,
+> and sign out. It still collects no metrics and does not talk to Docker.
 >
-> The Overview page shows **clearly labelled sample data** to demonstrate the
-> intended design. Nothing in it is real.
+> The dashboard pages show **clearly labelled sample data** to demonstrate the
+> intended design. Nothing in them is real — the login you see is, the graphs
+> are not.
 >
 > What is actually implemented, and what comes next, is in
 > [`docs/ROADMAP.md`](docs/ROADMAP.md).
@@ -96,7 +98,7 @@ Docker socket is therefore never exposed on the network — which is the reason
 the agent exists at all. LAN hosts, rented VPSes and machines behind CGNAT all
 use the same protocol, with no inbound ports anywhere.
 
-Full detail, including all twenty-four architecture decision records:
+Full detail, including all thirty-seven architecture decision records:
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Stack
@@ -138,6 +140,11 @@ make dev-server  # control plane → http://localhost:8000
 make dev-web     # web client    → http://localhost:5173
 ```
 
+Open http://localhost:5173 and sign in with the administrator you just
+created. If you skipped `make bootstrap`, the browser shows a first-run screen
+with the command to run — it explains the command rather than performing it,
+for the reason above.
+
 | URL | What |
 | --- | --- |
 | http://localhost:5173 | Web client |
@@ -153,6 +160,7 @@ make check            # every quality gate — exactly what CI runs
 make check-server     # ruff format + ruff check + mypy + pytest
 make check-web        # tsc + eslint + vitest
 make check-agent      # gofmt + go vet + go test -race
+make e2e              # Playwright, real browser against a real backend
 ```
 
 Conventions, troubleshooting and the full setup guide:
@@ -162,7 +170,7 @@ Conventions, troubleshooting and the full setup guide:
 
 | Document | Contents |
 | --- | --- |
-| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | The hub: system design, trust boundaries, 24 ADRs, open questions |
+| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | The hub: system design, trust boundaries, 37 ADRs, open questions |
 | [PRODUCT_VISION.md](docs/PRODUCT_VISION.md) | What this is, who it is for, what it will never do |
 | [ROADMAP.md](docs/ROADMAP.md) | Phases 0–11 as small, independently testable milestones |
 | [SECURITY.md](docs/SECURITY.md) | Threat model, capability risks, secrets handling, known gaps |
@@ -191,7 +199,9 @@ Makefile           Task runner — start here
 
 There is deliberately no `packages/` directory yet; shared TypeScript types
 will be generated from the OpenAPI schema rather than hand-maintained
-(ADR-007).
+(ADR-007). Until that lands in milestone 1.15, the client's types are
+hand-written but **validated against the backend's real schema**, so drift
+fails the build rather than reaching runtime (ADR-037).
 
 ## Contributing
 
@@ -212,7 +222,7 @@ Before opening a pull request:
 
 Please do not report vulnerabilities in public issues. Use GitHub's private
 vulnerability reporting. See [`docs/SECURITY.md`](docs/SECURITY.md), which also
-lists the known gaps in this Phase 0 release.
+lists the known gaps in this pre-release.
 
 ## License
 

@@ -124,6 +124,39 @@ and the built client are served together. This is deliberate: without the
 proxy, development would rely on CORS that production does not use, and the
 difference would surface as a production-only bug.
 
+One asymmetry remains, and it is why `.env.example` sets `HCC_CORS_ORIGINS`:
+the proxy runs with `changeOrigin`, so it rewrites `Host` to the backend's own
+address while the browser's `Origin` stays `http://localhost:5173`. The
+backend therefore cannot derive the browser's origin from the request and must
+be told it. In production the client is served from the same origin as the API
+and no CORS configuration is needed at all. Both directions are covered by
+`TestViteDevProxyTopology` in
+`apps/server/tests/test_browser_contract_integration.py`.
+
+### Signing in
+
+With all three terminals up, open http://localhost:5173:
+
+- **No administrator yet** → the first-run screen appears and shows the
+  `hcc bootstrap-admin` command to run. It performs no bootstrap itself; a
+  browser flow that could would be exactly the endpoint
+  [ADR-033](ARCHITECTURE.md#adr-033-the-initial-administrator-is-created-by-a-local-command-not-an-endpoint)
+  refuses to create. Run the command in another terminal and press **Check
+  again** — no reload needed.
+- **Administrator exists** → the login page appears. Sign in with the
+  credentials from `make bootstrap`.
+- **Backend not running** → a "cannot reach the control plane" screen with a
+  retry button, *not* a login page. An unreachable backend is deliberately not
+  reported as a signed-out session.
+
+After signing in, the account menu at the bottom of the sidebar shows your
+username and role and holds **Sign out**. Deep links work: visiting
+`/containers` while signed out takes you to the login page and returns you to
+`/containers` afterwards.
+
+The dashboard pages themselves are still static fixtures behind a banner —
+milestone 1.6 wired up authentication, not monitoring data.
+
 ## Quality gates
 
 ```bash
@@ -150,8 +183,9 @@ make fmt-agent     # gofmt -w
 ```bash
 make test-server         # unit tests; no services needed
 make test-integration    # needs `make db-up` first
-make test-web
+make test-web            # vitest
 make test-agent
+make e2e                 # Playwright, real browser against a real backend
 ```
 
 Backend tests come in two tiers:
@@ -162,6 +196,53 @@ Backend tests come in two tiers:
 - **Integration tests** are marked `@pytest.mark.integration` and run only when
   `HCC_TEST_DATABASE_URL` is set. They skip with an explicit message
   otherwise. CI always sets it, so they never skip silently where it matters.
+
+#### Browser end-to-end tests
+
+```bash
+make e2e
+```
+
+`scripts/e2e.sh` owns the whole fixture, so there is nothing to set up and
+nothing to clean up:
+
+1. Creates a **disposable** database with a unique name and applies migrations.
+   **It never touches your development database** — it refuses to proceed if
+   the name it generated already exists.
+2. Creates an administrator with the real `hcc bootstrap-admin` command, so
+   what the tests sign in with is produced the same way a real deployment's
+   first account is.
+3. Starts a real uvicorn control plane and serves the **production** bundle
+   with `vite preview`, so the tests run against the built artefact rather than
+   the dev server.
+4. Runs Playwright headless, then drops the database and stops both processes
+   even on failure.
+
+Playwright itself starts nothing — the script owns the lifecycle, so the suite
+behaves identically locally and in CI. Logs from a failed run land in
+`/tmp/hcc-e2e-*.log` and CI uploads them as an artefact.
+
+First run needs the browser once:
+
+```bash
+cd apps/web && npx playwright install --with-deps chromium-headless-shell
+```
+
+#### API contract drift
+
+```bash
+make openapi          # regenerate apps/web/src/api/openapi.snapshot.json
+make check-contract   # fail if the committed snapshot is stale
+```
+
+The frontend's API types are hand-written and asserted against that committed
+snapshot of the backend's real OpenAPI document
+([ADR-037](ARCHITECTURE.md#adr-037-the-clients-api-types-are-hand-written-and-validated-against-the-real-schema)).
+**Change a response model on the server and the frontend test suite fails**,
+which is the point — hand-written types otherwise validate the client against
+its own belief about the server and break only at runtime. Run `make openapi`
+and commit the diff as part of the same change. Full generation is milestone
+1.15.
 
 ## Database work
 
@@ -260,8 +341,11 @@ apps/
         ├── components/
         │   ├── ui/      design-system primitives
         │   └── layout/  shell, sidebar, navigation
-        ├── routes/      one module per page
-        ├── mocks/       Phase 0 sample data (deleted in Phase 2)
+        ├── api/         the HTTP boundary: client, errors, contract types
+        ├── auth/        authentication state, route guards, permissions
+        ├── routes/      one module per page, plus login and setup
+        ├── mocks/       Phase 0 sample data (deleted in Phase 3)
+        ├── test/        fake backend + renderApp helpers
         └── lib/
 agents/linux/            Go agent
 deploy/compose.yaml      PostgreSQL for development
@@ -322,6 +406,25 @@ scripts/check-docs.sh    documentation link and ADR consistency checks
 - **Mock data is labelled.** Anything rendering from `src/mocks` sits beneath a
   `<MockDataBanner />`. A test enforces this.
 - Prefer `type` aliases over `interface`; most prop types are intersections.
+- **All HTTP goes through `apiRequest`** in `src/api/client.ts`. Never call
+  `fetch` from a component: credentials, CSRF, timeouts and error shape are
+  decided once, and a second call path would get one of them wrong.
+- **Never put anything about the session in `localStorage` or
+  `sessionStorage`.** The session cookie is `HttpOnly`, which is what stops an
+  XSS bug from becoming a stolen session; mirroring it into readable storage
+  undoes that.
+- **Branch on the error kind, not the status code.** `isSessionExpired` is 401
+  only — a 403 is an authorization failure and must not send the user to the
+  login page.
+- **Never treat an unreachable backend as signed out.** `unavailable` is its
+  own authentication state for this reason.
+- **The client is not an authorization boundary.** Permission helpers decide
+  what the interface offers; the server decides what happens. An unrecognised
+  role therefore falls back to the smallest interface rather than throwing.
+- **Add a query key to `lib/query-keys.ts`.** Inline key arrays drift, and a
+  key that sign-out does not know about survives it.
+- Protect a page by **where you mount it** — inside `<RequireAuth>` in
+  `App.tsx` — not with a check inside the component.
 
 ### Agent
 
@@ -350,6 +453,19 @@ The database is unreachable. `make db-up`, then check
 
 **Integration tests all skip.**
 `HCC_TEST_DATABASE_URL` is unset. Use `make test-integration`, which sets it.
+
+**The browser shows the first-run screen but I already have an account.**
+The account exists but the `installation` row does not — a database created
+before migration `0004` and populated by hand. `make bootstrap` will report
+exit code `0` or `3`; if it creates an administrator, the row is now there.
+
+**The frontend test suite fails on `openapi.test.ts`.**
+A backend response model changed. That is the drift check working. Run
+`make openapi` and commit the regenerated snapshot with your change.
+
+**`make e2e` fails immediately with a database error.**
+It needs PostgreSQL running (`make db-up`) — it creates its own disposable
+database on that server and never touches yours.
 
 **Vite fails with a port conflict.**
 `strictPort` is on deliberately: a silent port change would break the proxy and

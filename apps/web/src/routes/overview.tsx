@@ -81,7 +81,7 @@ export function OverviewPage() {
               <CardTitle>Resource utilisation</CardTitle>
               <CardDescription>
                 Sample 24-hour series for one host. Historical metrics storage
-                arrives in Phase 2.
+                arrives in Phase 3.
               </CardDescription>
             </div>
             <Badge variant="warn">Sample</Badge>

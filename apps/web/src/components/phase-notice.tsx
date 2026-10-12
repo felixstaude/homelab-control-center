@@ -20,14 +20,14 @@ export function PhaseNotice() {
       <TooltipTrigger asChild>
         <Badge variant="accent" className="cursor-help">
           <Info className="size-3" aria-hidden="true" />
-          <span className="hidden sm:inline">Phase 0</span>
-          <span className="sm:hidden">P0</span>
+          <span className="hidden sm:inline">Phase 1</span>
+          <span className="sm:hidden">P1</span>
         </Badge>
       </TooltipTrigger>
       <TooltipContent>
-        Foundation release. The application shell, design system and API
-        skeleton are in place. No agents, metrics, logs or notifications are
-        implemented yet.
+        Identity, in progress. The shell, design system and authentication
+        are in place and real — the data is not. No agents, metrics, logs or
+        notifications are implemented yet.
       </TooltipContent>
     </Tooltip>
   );

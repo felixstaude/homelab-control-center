@@ -103,8 +103,12 @@ See [`AGENT_ARCHITECTURE.md §6`](AGENT_ARCHITECTURE.md#6-configuration-synchron
 | Login, logout, server-side sessions, CSRF, throttling (1.3) | Implemented |
 | Default-deny authentication, role authorization (1.4) | Implemented |
 | First-run bootstrap (`hcc bootstrap-admin`), reverse-proxy origin handling (1.5) | Implemented |
+| `GET /api/v1/setup/status` (public, one bit) | Implemented |
 | Per-host capability authorization | **Interface only**, fails closed |
-| React shell, design system, 7 nav sections | Implemented — no API integration yet |
+| React shell, design system, 7 nav sections | Implemented |
+| Typed API client, login, first-run screen, protected routing, account menu (1.6) | Implemented — authenticated against the real API |
+| Overview page data | **Static fixtures** behind a banner, until 3.17 |
+| Generated OpenAPI client | **Hand-written types with schema drift detection**, generation deferred to 1.15 |
 | Go agent lifecycle, config, logging, shutdown | Implemented |
 | Controller protocol | **Interface only**, no implementation |
 | Monitoring modules, scheduling, retention | **Design, not code** |
@@ -127,9 +131,26 @@ evaluation, or holding authoritative state. A browser is an untrusted client;
 anything it decides can be forged. Notification rules are evaluated server-side
 even though they are authored in the UI.
 
+**Not an authorization boundary.** The route guards and the role-to-permission
+map decide what the interface *offers*; the control plane decides what happens
+and refuses anything else regardless of what was rendered
+([ADR-031](#adr-031-authentication-is-default-deny-at-the-router-boundary)).
+An unrecognised role therefore fails closed to the smallest interface rather
+than to an error, because the client's guess only affects presentation.
+
+**Authentication state** is one explicit union — `checking`,
+`setup_required`, `unauthenticated`, `authenticated`, `unavailable` — derived
+from `GET /api/v1/auth/me` and `GET /api/v1/setup/status`. The last two states
+are separate deliberately: an unreachable control plane reported as a sign-out
+would be a false statement about the user's session. Nothing about the session
+is written to `localStorage` or `sessionStorage`; the session cookie is
+`HttpOnly` and the client never needs to read it.
+
 Built to static assets and served by the control plane in production, which
 makes the deployment one container and removes CORS from the production path
-entirely.
+entirely. In development Vite proxies `/api` with `changeOrigin`, which
+rewrites `Host` — so the dev setup does need a declared CORS origin, and that
+asymmetry is covered by a test in both directions.
 
 ### 2.2 Control plane (`apps/server`)
 
@@ -1872,6 +1893,83 @@ left to Phase 5. The `ws`/`wss` schemes also have to be mapped onto `http`/
 `https` when reconstructing an origin, because a browser opening
 `wss://host/x` sends `Origin: https://host` — a small translation, and one
 whose absence made every authenticated handshake fail until a test caught it.
+
+---
+
+### ADR-036: The setup-status endpoint discloses one bit, publicly
+
+**Decision.** `GET /api/v1/setup/status` is unauthenticated and returns
+exactly `{"initialized": true|false}`. It reads the installation row from
+[ADR-033](#adr-033-the-initial-administrator-is-created-by-a-local-command-not-an-endpoint),
+not a user count. It is the fourth and currently last public path in
+production.
+
+**Why anything is public here.** A fresh installation has no credentials, so
+the first screen a browser can reach must be reachable with none. The
+alternative is to infer the state from the login endpoint — a distinct error
+when no administrator exists — which is strictly worse: it reopens the
+username-enumeration oracle [ADR-032](#adr-032-public-endpoints-disclose-as-little-as-possible)
+closes, because the same mechanism that distinguishes "no users yet" can be
+made to distinguish "not this user". The other alternative, showing setup
+instructions to every anonymous visitor, is a worse interface and discloses
+the same bit.
+
+**Why the bit is acceptable.** Its only value to an attacker is knowing
+whether an installation can still be claimed. Under ADR-033 it cannot be
+claimed over HTTP at all, at any time — creating the first administrator
+requires shell access to the host. So the disclosure is "this deployment has
+not finished being set up", which an unconfigured deployment announces anyway
+by having nothing behind the login page. If a future milestone ever adds a
+network-reachable bootstrap path, this endpoint becomes a reconnaissance
+signal and must be reconsidered in the same change.
+
+**Why it reads the installation row.** A user count would answer a different
+question. An installation whose only administrator was later deleted has zero
+users but is still initialized; reporting `false` there would show setup
+instructions for a path that correctly refuses to run, which is a confusing
+dead end rather than a vulnerability — the durable invariant exists precisely
+so the two cannot diverge.
+
+**Cost.** One public endpoint to keep in the default-deny audit
+([ADR-031](#adr-031-authentication-is-default-deny-at-the-router-boundary)),
+pinned by a test asserting the full production public surface, so adding a
+fifth is a deliberate act.
+
+---
+
+### ADR-037: The client's API types are hand-written and validated against the real schema
+
+**Decision.** `apps/web/src/api/types.ts` is written by hand. A committed
+snapshot of the backend's OpenAPI document (`src/api/openapi.snapshot.json`,
+regenerated by `make openapi`) is asserted against those types by
+`src/api/openapi.test.ts`, which fails when the contract moves. Full
+client generation from the schema remains milestone 1.15.
+
+**Why not generate now.** The roadmap reserves generation for 1.15, and taking
+it over early would mean choosing a generator, a build step and a vendoring
+policy as a side effect of a frontend-integration milestone — scope that
+belongs to the milestone that owns it. The frontend needed four endpoints, not
+a code generator.
+
+**Why not just hand-write and move on.** Hand-written types fail silently and
+invisibly: the compiler validates the client against *its own belief* about
+the server, so a renamed field or a widened enum typechecks perfectly and
+breaks at runtime. Drift detection is the half of generation that carries the
+safety, and it is independent of generating anything — so it ships now. The
+test caught a real instance immediately: the login response typed `role` as a
+bare `str` on the server, so the closed role set never reached the schema at
+all.
+
+**Why a committed snapshot rather than a live backend.** The frontend test
+suite must run without PostgreSQL, a running control plane or a network. A
+committed artefact also makes contract changes visible in review as a diff,
+which a live fetch would hide.
+
+**Cost.** The snapshot is a second place to update, and a stale one would
+validate against yesterday's contract — so CI regenerates it from the backend
+and fails if it differs from the committed copy. The types still have to be
+edited by hand until 1.15; the test narrows that to a mechanical, detected
+task rather than a silent one.
 
 ---
 

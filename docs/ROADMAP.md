@@ -33,7 +33,10 @@ split by risk, with the terminal last.
 > deployment to whoever reaches the port first, and on a homelab that race is
 > real. The browser-facing first-run experience moves to 1.6 alongside the
 > login UI, where it can be built against an API that already has an
-> administrator. 1.5 also absorbed the security defects an architecture audit
+> administrator. **1.6 delivered it as instructions, not a flow:** the browser
+> detects the uninitialized state and explains the command to run, because any
+> screen that *performed* the bootstrap would be exactly the endpoint ADR-033
+> refuses to create. 1.5 also absorbed the security defects an architecture audit
 > verified between 1.4 and 1.5 — the reverse-proxy origin failure, the
 > single-source login lockout, wildcard credentialed CORS, and the
 > route-inventory blind spots — because each of them affects the
@@ -73,7 +76,7 @@ unauthenticated endpoint or reworking attribution later.
 | 1.3 | Login, logout and sessions | ✅ `POST/GET /api/v1/auth/{login,logout,me}`; server-side sessions (ADR-028) with only token hashes stored (ADR-027); `HttpOnly`/`Secure`/`SameSite=Lax` cookies; session-bound CSRF plus `Origin` check (ADR-030); per-address and per-username throttling before verification, and a cap on concurrent Argon2 operations (ADR-029); security headers; migration `0003_sessions` |
 | 1.4 | Default-deny authentication and role authorization | ✅ Router-level authentication boundary so a route cannot be unprotected by omission (ADR-031); public surface reduced to three paths, each documented with its reason; `/api/v1/info` moved behind a session; health probes stripped of version, environment and dependency detail (ADR-032); `require_min_role` with `ViewerDep`/`OperatorDep`/`AdminDep`; capability axis defined as a fail-closed interface; behavioural default-deny regression test with a self-check |
 | 1.5 | Secure first-run bootstrap and security hardening | ✅ `hcc bootstrap-admin` creates the initial administrator from a local command; no default credentials exist and no public setup endpoint does either (ADR-033); initialization recorded as a one-way `installation` row so bootstrap cannot reopen when accounts are removed; concurrent attempts create exactly one administrator; reverse-proxy origin handling via `HCC_PUBLIC_ORIGIN`/`HCC_TRUSTED_PROXIES` (ADR-034); three-budget login throttling with no single-source lockout (ADR-029 amended); wildcard credentialed CORS refused at startup; route-inventory scan extended to hidden and WebSocket routes with WebSocket session authentication (ADR-035); `last_login_at` recorded; security headers on unhandled 500s; migration `0004_installation` |
-| 1.6 | Login UI | Login page, session persistence, logout; protected routes redirect; the browser-facing first-run experience, which milestone 1.5 deliberately left to a local command |
+| 1.6 | Login UI | ✅ Typed API client as the single HTTP boundary — same-origin credentials, no-store, per-request CSRF, every failure as one `ApiError` kind; hand-written contract types validated against the backend's real OpenAPI schema, with generation still deferred to 1.15 (ADR-037); authentication as one explicit five-state union where an unreachable control plane is not reported as a sign-out; login page with no username disclosure and no auto-retry; protected routing by placement, with the post-login destination validated against open redirects; first-run screen integrating the actual ADR-033 contract — instructions for the local command, never a browser bootstrap (`GET /api/v1/setup/status`, ADR-036); account menu with sign-out and role-aware permission helpers that fail closed to the smallest interface; query cache cleared on sign-in as well as sign-out; 211 frontend tests, 26 backend browser-contract tests and 24 executed Playwright browser tests against a real control plane and the real `hcc bootstrap-admin` |
 | 1.7 | User management and role enforcement | A second account can be created; Viewer is refused a write endpoint with a 403 in the standard envelope. The first production call site for `AdminDep` |
 | 1.8 | Host registration | Create a host in the UI; `hosts` table populated |
 | 1.9 | Enrolment tokens | One-time token issued, hashed at rest, single-use, expiring |
@@ -82,7 +85,7 @@ unauthenticated endpoint or reworking attribution later.
 | 1.12 | Heartbeat | Agent heartbeats; UI shows last-seen and marks a silent host **Unknown** |
 | 1.13 | Credential revocation | Revoking a host rejects its next call immediately |
 | 1.14 | Audit log | Append-only `audit_log`; login, enrolment and revocation recorded |
-| 1.15 | Generated API client | TypeScript types generated from OpenAPI (ADR-007); drift fails CI |
+| 1.15 | Generated API client | TypeScript types generated from OpenAPI (ADR-007); drift fails CI. 1.6 shipped the drift half — hand-written types asserted against a committed schema snapshot, regenerated and compared in CI (ADR-037) — so this milestone is now generation only, replacing those hand-written types |
 
 **Phase 1 delivers:** a secure multi-host inventory with live up/down status.
 

@@ -14,7 +14,7 @@
  *     `<MockDataBanner />` so a viewer cannot mistake it for telemetry.
  *   - The hostnames, container names and numbers are invented.
  *
- * This file is deleted in Phase 2, when agent ingestion makes the Overview
+ * This file is deleted in Phase 3, when agent ingestion makes the Overview
  * page read from the real API.
  */
 

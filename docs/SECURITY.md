@@ -551,13 +551,14 @@ asserts the running application's behaviour matches that list **in both
 directions** — nothing unlisted is reachable, and nothing listed is
 unreachable.
 
-**In production, three paths:**
+**In production, four paths:**
 
 | Path | Why it has to be public |
 | --- | --- |
 | `GET /healthz` | Liveness. Probed by orchestrators and container runtimes that have no session and frequently cannot present credentials. |
 | `GET /readyz` | Readiness. Same reason. |
 | `POST /api/v1/auth/login` | Authentication must be reachable before a session exists. |
+| `GET /api/v1/setup/status` | A fresh installation has no credentials, so the first screen a browser can reach must be reachable with none. Returns exactly one bit, `{"initialized": true|false}` (ADR-036). |
 
 **Outside production, three more** — FastAPI's own documentation endpoints,
 which are **absent in production** because `create_app` passes `docs_url=None`
@@ -587,6 +588,15 @@ What protects each of them instead of a session:
   operations, and by a bounded request body.
 - The documentation endpoints are absent in production, which is the only
   protection that matters for them.
+- Setup status discloses one bit, and that bit's only value is knowing whether
+  an installation can still be claimed — which under ADR-033 it cannot be over
+  HTTP at any time. It reads the `installation` row, not a user count, so
+  deleting every account does not make it report an uninitialized
+  installation. It was deliberately **not** implemented by inferring the state
+  from a distinct login error, because that mechanism reopens the
+  username-enumeration oracle ADR-032 closes. **If a future milestone adds any
+  network-reachable bootstrap path, this endpoint becomes reconnaissance and
+  must be reconsidered in the same change.**
 
 Everything else — including `GET /api/v1/info`, which used to be public —
 returns `401 not_authenticated` without a valid session.
@@ -751,6 +761,45 @@ as never to be reused.
 Only `VITE_`-prefixed variables reach the client, and they are embedded
 verbatim in the bundle. `apps/web/.env.example` states this and warns against
 putting any secret there.
+
+---
+
+## Browser client (implemented, milestone 1.6)
+
+**The client is not a security boundary.** Its route guards and
+role-to-permission map decide what the interface *offers*; the control plane
+decides what happens, and refuses anything else regardless of what was
+rendered. Every property below is about not *weakening* the server's position
+and not *lying to the user* — none of it is relied on for enforcement.
+
+| Property | How | Why |
+| --- | --- | --- |
+| **Nothing in web storage** | The session is an `HttpOnly` cookie; no token, user object or role is written to `localStorage` or `sessionStorage`. A test asserts both stores are empty after signing in. | `HttpOnly` is what stops an XSS bug from becoming a stolen session. Mirroring any of it into readable storage would hand it straight back. |
+| **No credentials in URLs** | Credentials travel only in the `POST /auth/login` body. A test asserts the password appears in exactly one request body and in no header or query string. | A URL reaches proxy logs, browser history and `Referer`. |
+| **Password does not linger** | The field is cleared after both success and failure; a test asserts the password is absent from `document.body.outerHTML`, which includes attribute values. | A controlled input that serialised its value would otherwise leave it in the DOM. |
+| **No username disclosure** | The login page renders the server's single generic failure message and never distinguishes an unknown user from a wrong password. | It would reopen the oracle the server deliberately closes. |
+| **No automatic retry of credentials** | A 429 is deliberately classified as **not** retryable, and the mutation layer never auto-retries. | An auto-retried login is an automatic password-retry loop that spends the user's own throttle budget and can lock them out. |
+| **403 is not a sign-out** | `isSessionExpired` is **401 only**. A 403 `insufficient_permissions` shows a denial in place; a 403 `csrf_validation_failed` is handled separately. | Redirecting an authenticated user to the login page for an ordinary authorization failure teaches them to re-enter their password when nothing is wrong with their session. |
+| **An unreachable backend is not a sign-out** | `unavailable` is a distinct authentication state; a network failure, timeout or 5xx never clears the session locally. | Reporting a dropped connection as a logout is false and discards the user's place. |
+| **Role handling fails closed** | `normalizeRole` maps anything unrecognised to `viewer`, which grants read-only presentation. | The type system cannot constrain what arrives over the network. The smallest interface is the safe default, and the server refuses the rest anyway. |
+| **No open redirect** | The post-login destination travels in router location state, not a query parameter, and `safeRedirectPath` refuses absolute URLs, protocol-relative `//host`, `/\`, encoded-slash variants, control characters and the login and setup paths themselves. | An open redirect on a login page is a phishing primitive. |
+| **Cache cleared on sign-in as well as sign-out** | `queryClient.clear()` on both. | A second user on the same browser would otherwise be shown the first user's cached data. |
+| **CSRF token read per request** | From the readable `hcc_csrf` cookie at request time, never cached in a module variable. | The cookie is rotated by sign-in and sign-out; a cached token would be stale exactly when it mattered. |
+| **No public bootstrap path added** | The first-run screen displays *instructions* for `hcc bootstrap-admin` and performs no bootstrap itself. | Any screen that performed it would be the endpoint ADR-033 refuses to create. |
+
+Fetch defaults worth stating: `credentials: 'same-origin'` (not `'include'`,
+which would additionally send cookies cross-origin), `cache: 'no-store'` (a
+cache hit after sign-out would redisplay a previous session's data) and
+`redirect: 'error'` (following an unexpected API redirect could replay
+credentials elsewhere).
+
+These are pinned by `apps/web/src/auth/security.test.tsx`,
+`apps/web/src/auth/auth-flow.test.tsx` and `apps/web/src/api/client.test.ts`
+on the client side, and by
+`apps/server/tests/test_browser_contract_integration.py` on the server side,
+which asserts the cookie contract the client depends on — CSRF cookie
+readable, session cookie `HttpOnly`, both `Path=/` with no `Domain`
+attribute.
 
 ---
 
@@ -1004,10 +1053,21 @@ authentication endpoints face an untrusted network.
     tested; the scheduler arrives with the other periodic jobs. Until then the
     table grows with expired rows.
 12. **`pip-audit` and `npm audit` are not yet CI-blocking.**
-13. **The end-to-end smoke test is not run in CI.** It is the only gate that
-    exercises a real uvicorn server, which is where the reverse-proxy origin
-    defect would have been visible.
-14. **Nothing in the agent, monitoring, capability or terminal sections
+13. **The end-to-end smoke test is not run in CI.** The Playwright browser
+    suite added in 1.6 *is* (`scripts/e2e.sh`, which starts a real uvicorn
+    server against a disposable database), so the gap the reverse-proxy origin
+    defect fell through is now covered from the browser's side —
+    `scripts/smoke-test.sh` itself remains a local-only gate.
+14. **The client has no Content-Security-Policy beyond the server's default
+    headers**, and the bundle is served by the control plane in production.
+    A strict CSP needs the asset-serving path that arrives with packaging.
+15. **A signed-out browser keeps whatever is already on screen until the next
+    request.** Sign-out clears the local session and the query cache
+    immediately, but another tab holding a rendered page learns its session is
+    gone only when it next calls the API. Nothing authoritative is exposed —
+    the data is already in that tab's memory — and no request it makes will
+    succeed.
+16. **Nothing in the agent, monitoring, capability or terminal sections
     exists.** They are specified because they constrain what is being built,
     not because any of it is live.
 

@@ -5,6 +5,12 @@ it renders state from the API and collects user intent. It holds no
 authoritative state and makes no product decisions, because a browser is an
 untrusted client.
 
+**Nothing here is a security boundary.** The route guards and permission
+helpers decide what the interface *offers*; the control plane decides what
+actually happens, and refuses anything else regardless of what was rendered
+(ADR-031). A client-side check that disagreed with the server would be a UX
+bug, not a hole.
+
 See [`docs/DEVELOPMENT.md`](../../docs/DEVELOPMENT.md) for setup.
 
 ## Commands
@@ -17,6 +23,108 @@ npm run lint         # eslint with type-aware rules
 npm run test         # vitest
 npm run check        # typecheck + lint + test
 ```
+
+Browser end-to-end tests live in `e2e/` and are run by `make e2e` from the
+repository root — that script owns the disposable database, the backend and
+the preview server, so Playwright starts nothing itself.
+
+## Talking to the API
+
+Every request goes through `apiRequest` in `src/api/client.ts`. One function,
+so credentials, CSRF, timeouts and error parsing are decided once rather than
+per call site.
+
+```ts
+import { apiRequest } from '@/api/client';
+
+const hosts = await apiRequest<Host[]>('/hosts', { signal });
+```
+
+| Decision | Why |
+| --- | --- |
+| `credentials: 'same-origin'` | The client is served same-origin with the API in both development (Vite proxies `/api`) and production. `'include'` would additionally send cookies cross-origin, which nothing needs. |
+| `cache: 'no-store'` | A cache hit after sign-out would re-display a previous session's data. |
+| `redirect: 'error'` | An API redirect is never expected, and following one could replay credentials elsewhere. |
+| CSRF read per request | The token lives in the readable `hcc_csrf` cookie. Reading it each time is the cheapest way never to send a stale one — after sign-in or sign-out the cookie changes. |
+| Nothing in web storage | The session is an `HttpOnly` cookie the client cannot read, which is what keeps an XSS bug from becoming a stolen session. Mirroring any of it into storage would undo that. |
+
+### Errors
+
+`apiRequest` throws `ApiError` for every failure, including transport
+failures, so a caller has one type to handle. The `kind` is a discriminated
+union, not a status code, and the distinction that matters most is between two
+403s:
+
+```ts
+import { isPermissionDenied, isSessionExpired, isBackendUnreachable } from '@/api/errors';
+```
+
+- `isSessionExpired` — **only** a 401. Re-authenticating is the remedy.
+- `isPermissionDenied` — 403 `insufficient_permissions`. Authenticated, just
+  not allowed; signing in again would not help, so **do not** send the user to
+  the login page.
+- `isCsrfFailure` — 403 `csrf_validation_failed`. The session may be fine.
+- `isBackendUnreachable` — network, timeout or 5xx. Never report this as a
+  sign-out.
+
+A 429 is deliberately **not** retryable: auto-retrying a throttled login is an
+automatic password-retry loop that spends the user's remaining budget.
+
+### Types
+
+`src/api/types.ts` is hand-written, and `src/api/openapi.test.ts` validates it
+against the backend's real OpenAPI schema (`src/api/openapi.snapshot.json`,
+regenerated with `make openapi`). Full generation is milestone 1.15; this is
+the drift detection, which is the half worth having first — a type that merely
+*looks* right is the failure mode generation exists to prevent. See ADR-037.
+
+## Authentication
+
+`src/auth/` owns it. The state is an explicit union, not a set of booleans:
+
+```
+checking · setup_required · unauthenticated · authenticated · unavailable
+```
+
+Three independent booleans describe sixteen combinations, most of them
+nonsense, and the UI then has to guess precedence — which is where the
+"protected page flashes before auth resolves" bug lives. A `switch` over one
+`status` either handles every case or fails to typecheck.
+
+Two states exist specifically to avoid lying to the user:
+
+- **`checking`** is not `unauthenticated`. A guard that conflated them would
+  show the login page on every reload before the session resolved.
+- **`unavailable`** is not `unauthenticated`. A dropped network reported as a
+  sign-out is false, discards the user's place, and on a flaky connection
+  produces a login page for no reason.
+
+```tsx
+const { state, signIn, signOut } = useAuth();
+const permissions = usePermissions();   // all false when unauthenticated
+```
+
+### Route protection
+
+Protected pages sit inside `<RequireAuth>` in `App.tsx`, so **a page is
+protected by where it sits** — the same default-safe arrangement the backend
+uses for its protected router. `/login` sits inside `<RequireAnonymous>` and
+`/setup` inside `<AllowDuringSetup>`.
+
+The post-sign-in destination travels in router location state, not a query
+parameter, and is validated by `lib/redirect.ts` before use: absolute URLs,
+protocol-relative `//host`, backslash variants, control characters and the
+login and setup paths themselves are all refused. An open redirect is a
+phishing primitive.
+
+### Query cache
+
+Keys live in `lib/query-keys.ts`. Sign-in **and** sign-out call
+`queryClient.clear()`. The sign-in case matters as much as the other: a
+different user may sign in on the same browser, and a surviving cache entry
+would show them the previous user's data.
+
+Retries are decided by error kind, not by a count — see `lib/query-client.ts`.
 
 ## The design system
 
@@ -99,8 +207,9 @@ page. The rules (engineering rules 8 and 9, ADR-012):
 3. There is **no fake API client**. Nothing pretends to fetch.
 4. Every mock-backed card carries a `Sample` badge.
 
-The whole directory is deleted in Phase 2, when the Overview page reads the
-real API.
+The whole directory is deleted in Phase 3 (milestone 3.17), when the Overview
+page reads the real API. Milestone 1.6 wired up authentication, not
+monitoring data: the Overview page is still fixtures behind a banner.
 
 ## Structure
 
@@ -109,16 +218,31 @@ src/
 ├── index.css              design tokens + base layer
 ├── main.tsx               mount, StrictMode, BrowserRouter
 ├── App.tsx                providers + route table
+├── api/                   the HTTP boundary
+│   ├── client.ts          apiRequest: credentials, CSRF, timeouts
+│   ├── errors.ts          ApiError and its discriminated kinds
+│   ├── types.ts           the contract, drift-checked against the schema
+│   ├── auth.ts            login / logout / me / setup-status
+│   └── openapi.snapshot.json
+├── auth/                  authentication state and routing
+│   ├── auth-state.ts      the state machine
+│   ├── auth-provider.tsx  the two queries it derives from
+│   ├── auth-gate.tsx      RequireAuth / RequireAnonymous
+│   ├── use-auth.ts        useAuth, usePermissions
+│   └── permissions.ts     role helpers
 ├── components/
 │   ├── ui/                design-system primitives
-│   ├── layout/            shell, sidebar, navigation, brand
+│   ├── layout/            shell, sidebar, navigation, brand, account menu
+│   ├── states/            full-page spinner, backend-unavailable
+│   ├── error-boundary      recovery screen for a render error
 │   ├── mock-data-banner   "this is not real data"
 │   ├── not-implemented    honest placeholder for unbuilt sections
 │   ├── page-header        per-page title block
-│   └── phase-notice       persistent Phase 0 marker
-├── routes/                one module per page
-├── mocks/                 Phase 0 fixtures (deleted in Phase 2)
-└── lib/                   cn(), query client
+│   └── phase-notice       persistent phase marker
+├── routes/                one module per page, plus login and setup
+├── mocks/                 Phase 0 fixtures (deleted in Phase 3)
+├── test/                  the fake backend and renderApp helpers
+└── lib/                   cn(), query client, query keys, redirect validation
 ```
 
 Navigation is driven by a single array in `components/layout/navigation.ts`, so
@@ -129,10 +253,10 @@ a section cannot appear in the sidebar but be missing from the drawer.
 - **Recharts is lazy-loaded.** It is roughly half the bundle and used by one
   card, so `routes/overview/resource-chart.tsx` sits behind a `Suspense`
   boundary and ships as a separate chunk.
-- **TanStack Query is configured but unused.** Phase 0 does no fetching
-  (engineering rule 8). The provider is installed so Phase 1 can add its first
-  real query without restructuring the tree. Mutations never auto-retry — a
-  retried container stop could act on a container the user has since restarted.
+- **TanStack Query backs the authentication state** as of milestone 1.6.
+  Mutations never auto-retry — a retried container stop could act on a
+  container the user has since restarted, and a retried sign-in spends another
+  attempt from the throttle budget.
 - **`strictPort` is on.** A silent port change would break the dev proxy and
   the backend's configured CORS origin.
 - **No external requests.** No web fonts, no CDN, no analytics (ADR-009) — a
