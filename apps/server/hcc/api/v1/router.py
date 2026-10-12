@@ -43,7 +43,7 @@ from pydantic import BaseModel, Field
 
 from hcc import __version__
 from hcc.api.deps import SettingsDep, get_current_session, require_min_role
-from hcc.api.v1 import account, audit, auth, setup, users
+from hcc.api.v1 import account, agents, audit, auth, hosts, setup, users
 from hcc.models.user import UserRole
 
 #: Paths under ``/api/v1`` reachable without a session, with the reason.
@@ -77,6 +77,22 @@ _protected = APIRouter(dependencies=[Depends(get_current_session)])
 #: dependency implies the other.
 _admin = APIRouter(dependencies=[Depends(require_min_role(UserRole.ADMIN, audit_denials=True))])
 
+#: Agent-facing, authenticated by a **per-host credential** rather than by a
+#: browser session. Milestone 1.8.
+#:
+#: A fourth sibling rather than a child of ``_protected``, because the two
+#: authenticate different kinds of caller and neither credential may stand in
+#: for the other. Putting these under ``_protected`` would demand a session
+#: cookie from a Go process on a Debian box; putting them under ``_public``
+#: would claim no credential is required, which is false.
+#:
+#: The default-deny guarantee is unchanged: the dependency raises
+#: ``NotAuthenticatedError`` when no bearer credential is presented, so these
+#: paths answer 401 to an anonymous caller exactly as the session-gated ones
+#: do — and they are therefore *absent* from ``PUBLIC_V1_PATHS``. See
+#: hcc/api/v1/agents.py.
+_agents = APIRouter(dependencies=[Depends(agents.agent_credential)])
+
 
 class ApiInfo(BaseModel):
     """Metadata describing this API version."""
@@ -108,10 +124,20 @@ _protected.include_router(auth.router)
 # Self-service: scoped to the caller by construction, so authenticated is the
 # right gate at any role. See hcc/api/v1/account.py.
 _protected.include_router(account.router)
+# Milestone 1.8, and the first router whose module is split across two gates:
+# every role may see the fleet, and only an administrator may change it. A
+# Viewer who cannot list hosts cannot use a monitoring product; an Operator who
+# could mint enrollment credentials could enroll a machine of their own and
+# feed the installation fabricated metrics. See hcc/api/v1/hosts.py.
+_protected.include_router(hosts.read_router)
 
 _admin.include_router(users.router)
 _admin.include_router(audit.router)
+_admin.include_router(hosts.router)
+
+_agents.include_router(agents.router)
 
 router.include_router(_public)
 router.include_router(_protected)
 router.include_router(_admin)
+router.include_router(_agents)

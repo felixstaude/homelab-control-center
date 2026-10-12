@@ -58,6 +58,7 @@ from hcc.security.sessions import AuthenticatedSession, SessionService
 from hcc.security.tokens import tokens_equal
 from hcc.services.account import AccountService
 from hcc.services.audit import AuditQueryService
+from hcc.services.hosts import HostService
 from hcc.services.users import UserService
 
 if TYPE_CHECKING:
@@ -125,6 +126,12 @@ def get_account_service(connection: HTTPConnection) -> AccountService:
 def get_audit_query_service(connection: HTTPConnection) -> AuditQueryService:
     """Return the process-wide audit query service."""
     service: AuditQueryService = connection.app.state.audit_query_service
+    return service
+
+
+def get_host_service(connection: HTTPConnection) -> HostService:
+    """Return the process-wide host management service."""
+    service: HostService = connection.app.state.host_service
     return service
 
 
@@ -449,6 +456,7 @@ AuditContextDep = Annotated[AuditContext, Depends(get_audit_context)]
 UserServiceDep = Annotated[UserService, Depends(get_user_service)]
 AccountServiceDep = Annotated[AccountService, Depends(get_account_service)]
 AuditQueryServiceDep = Annotated[AuditQueryService, Depends(get_audit_query_service)]
+HostServiceDep = Annotated[HostService, Depends(get_host_service)]
 
 #: Any authenticated user. Authentication only — no role requirement beyond
 #: being logged in. Named for the lowest role so that call sites read as a

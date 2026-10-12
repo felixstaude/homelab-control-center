@@ -221,6 +221,40 @@ class Settings(BaseSettings):
         default=300, ge=1, le=86400, description="Password change throttle window."
     )
 
+    # --- Agent enrollment and connectivity --------------------------------
+    # How long a one-time enrollment credential stays usable. Short by design:
+    # this is the secret that gets pasted into a terminal, lands in shell
+    # history and is read over somebody's shoulder, and a short window is what
+    # makes that exposure survivable (docs/AGENT_ARCHITECTURE.md §4.1).
+    #
+    # Fifteen minutes is enough to walk to the machine and run one command,
+    # and not enough to leave a live credential in a chat log over a weekend.
+    # The floor of 60 seconds stops a value so small that enrollment could
+    # never succeed; the ceiling of 24 hours stops "short lived" being
+    # configured away entirely — an invariant, not a capability
+    # (docs/PRODUCT_VISION.md).
+    agent_enrollment_ttl_seconds: int = Field(
+        default=900,
+        ge=60,
+        le=86400,
+        description="Lifetime of a one-time agent enrollment credential.",
+    )
+    # How long a recorded connection may go without a heartbeat before the
+    # interface reports it as stale rather than connected. Three heartbeat
+    # intervals, so one dropped heartbeat does not flap the status while a
+    # genuine failure surfaces inside a minute and a half.
+    #
+    # There is no setting that disables staleness detection, and that is
+    # deliberate: a monitoring tool whose liveness check can be turned off
+    # reports "connected" for a fleet it has not heard from, which is the one
+    # thing product principle 2 forbids.
+    agent_heartbeat_grace_seconds: int = Field(
+        default=90,
+        ge=10,
+        le=3600,
+        description="Heartbeat silence tolerated before a host reads as stale.",
+    )
+
     # --- Security headers -------------------------------------------------
     # A strict Content-Security-Policy breaks the Vite dev server, which needs
     # inline scripts and a websocket for hot reload. Enabled in production,

@@ -134,6 +134,26 @@ class NotAuthenticatedError(AppError):
     message = "Authentication required."
 
 
+class AgentCredentialRejectedError(AppError):
+    """An agent presented a credential the controller will not accept.
+
+    Milestone 1.8. 401 like :class:`NotAuthenticatedError`, with a distinct
+    code so an agent's log says "the controller rejected my credential" rather
+    than "authentication required" — which would read, wrongly, as though
+    nothing had been presented.
+
+    One error for every cause, by the same reasoning
+    :class:`InvalidCredentialsError` gives: expired, already used, revoked and
+    never-existed are indistinguishable to the caller, because a caller that
+    learned which would learn whether a captured credential is real. The audit
+    trail records the real reason, where an administrator can act on it.
+    """
+
+    status_code = status.HTTP_401_UNAUTHORIZED
+    code = "agent_credential_rejected"
+    message = "The agent credential is not valid."
+
+
 class InsufficientPermissionsError(AppError):
     """The caller is authenticated but not permitted.
 

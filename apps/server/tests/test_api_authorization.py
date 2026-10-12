@@ -354,6 +354,19 @@ class TestDefaultDeny:
             for method, path in iter_operations(client):
                 if path in PUBLIC_PATHS:
                     continue
+                if method == WEBSOCKET:
+                    # Dispatched on the pseudo-method, because an HTTP request
+                    # carrying the literal method "WEBSOCKET" does not match a
+                    # WebSocket route and comes back 404 — which would make
+                    # every socket in the application look like a failure here
+                    # while actually testing nothing. A real handshake is
+                    # driven instead, and the bar is that it must not reach
+                    # `accept`. Milestone 1.8 added the first production
+                    # socket, which is when this stopped being hypothetical.
+                    messages = await attempt_websocket(client, path)
+                    if was_accepted(messages):
+                        unprotected.append(f"{method} {path} -> accepted")
+                    continue
                 response = await client.request(method, path)
                 if response.status_code != 401:
                     unprotected.append(f"{method} {path} -> {response.status_code}")
@@ -362,6 +375,33 @@ class TestDefaultDeny:
                 "these operations are neither authenticated nor in the public "
                 f"allow-list: {unprotected}"
             )
+
+    async def test_the_scan_rejects_an_unprotected_socket_it_finds(
+        self, api_factory: ApiFactory
+    ) -> None:
+        """Proves the WebSocket branch above can fail.
+
+        Without this, "no unprotected sockets found" could mean the branch
+        does nothing — which is exactly what the old behaviour amounted to,
+        since every socket came back 404 and 404 was never compared against.
+        """
+        leaky = APIRouter()
+
+        @leaky.websocket("/_ws-scan-leaky")
+        async def leaky_socket(socket: WebSocket) -> None:
+            await socket.accept()
+            await socket.close()
+
+        async with api_factory(routers=[leaky]) as client:
+            offenders = [
+                path
+                for method, path in iter_operations(client)
+                if method == WEBSOCKET
+                and path not in PUBLIC_PATHS
+                and was_accepted(await attempt_websocket(client, path))
+            ]
+
+            assert "/api/v1/_ws-scan-leaky" in offenders
 
     async def test_the_scan_covers_every_routed_operation(self, api_factory: ApiFactory) -> None:
         # The enumeration is the foundation of the guarantee, so assert it is

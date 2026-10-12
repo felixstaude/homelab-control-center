@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from hcc import __version__
+from hcc.agents.registry import ConnectionRegistry
 from hcc.api import health
 from hcc.api.v1 import router as v1_router
 from hcc.api.v1.router import PUBLIC_V1_PATHS
@@ -31,6 +32,8 @@ from hcc.security.ratelimit import LoginThrottle, RateLimiter
 from hcc.security.sessions import SessionService
 from hcc.services.account import AccountService
 from hcc.services.audit import AuditQueryService
+from hcc.services.enrollment import AgentEnrollmentService
+from hcc.services.hosts import HostService
 from hcc.services.users import UserService
 
 if TYPE_CHECKING:
@@ -223,6 +226,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         audit=app.state.audit_service,
         throttle=app.state.password_change_throttle,
     )
+    # Milestone 1.8. Both the enrollment lifetime and the heartbeat grace are
+    # passed in rather than read from a module constant, so the app the tests
+    # build with a two-second grace really behaves that way — a service that
+    # reached for the global default would ignore the injected settings, which
+    # is the bug this module's whole arrangement exists to prevent.
+    app.state.host_service = HostService(
+        audit=app.state.audit_service,
+        enrollment_ttl_seconds=settings.agent_enrollment_ttl_seconds,
+        heartbeat_grace_seconds=settings.agent_heartbeat_grace_seconds,
+    )
+    app.state.agent_enrollment_service = AgentEnrollmentService(audit=app.state.audit_service)
+    # Per *process*, not per application and not shared across workers. This
+    # is the honest statement of a real limitation rather than a cache: the
+    # connections a worker holds are its own, and connectivity is derived from
+    # the database so every worker still answers the same. See
+    # hcc/agents/registry.py and ADR-046.
+    app.state.agent_connections = ConnectionRegistry()
     # No capability resolver: per-host capability configuration does not exist
     # yet, so the second authorization axis is unavailable and any request for
     # it is denied rather than approximated. See hcc/security/authorization.py.
