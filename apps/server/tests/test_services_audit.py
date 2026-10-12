@@ -180,4 +180,17 @@ class TestAuditEventModel:
             "account.password_changed",
             "account.sessions_revoked",
             "admin.access_denied",
+            # Milestone 1.8. Note what is absent: there is no
+            # `host.agent_connected`. A flapping link would write two rows a
+            # second and bury every administrative event — see
+            # `hcc/models/audit.py`.
+            "host.created",
+            "host.updated",
+            "host.disabled",
+            "host.enabled",
+            "host.enrollment_issued",
+            "host.enrollment_revoked",
+            "host.enrolled",
+            "host.credential_revoked",
+            "host.agent_auth_failed",
         }

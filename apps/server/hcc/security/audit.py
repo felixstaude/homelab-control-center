@@ -129,6 +129,7 @@ class AuditService:
         context: AuditContext,
         outcome: AuditOutcome = AuditOutcome.SUCCESS,
         target_user_id: uuid.UUID | None = None,
+        target_host_id: uuid.UUID | None = None,
         details: dict[str, Any] | None = None,
     ) -> AuditEvent:
         """Stage an event in the caller's transaction.
@@ -147,6 +148,7 @@ class AuditService:
             outcome=outcome.value,
             actor_user_id=context.actor_user_id,
             target_user_id=target_user_id,
+            target_host_id=target_host_id,
             request_id=context.request_id,
             details=details or None,
         )
@@ -157,6 +159,7 @@ class AuditService:
             outcome=outcome.value,
             actor_user_id=str(context.actor_user_id) if context.actor_user_id else None,
             target_user_id=str(target_user_id) if target_user_id else None,
+            target_host_id=str(target_host_id) if target_host_id else None,
         )
         return event
 

@@ -58,7 +58,20 @@ _SERVER_DIR = Path(__file__).resolve().parent.parent
 # count and inspect events, so a leftover row from a previous test would make
 # one test's writes look like another's. The table has no foreign keys, so
 # nothing else removes its rows on CASCADE — it has to be listed explicitly.
-_TRUNCATED_TABLES = ("audit_events", "installation", "sessions", "users")
+#
+# `hosts` is listed and its two children are not needed for correctness —
+# `host_enrollments` and `agent_credentials` both cascade from it — but they
+# are listed anyway, so that a future change which drops the cascade cannot
+# silently start leaking credentials between tests.
+_TRUNCATED_TABLES = (
+    "agent_credentials",
+    "audit_events",
+    "host_enrollments",
+    "hosts",
+    "installation",
+    "sessions",
+    "users",
+)
 
 # Cheapest Argon2 parameters the module permits. Integration tests hash and
 # verify real passwords, so the shipped 64 MiB defaults would make the suite

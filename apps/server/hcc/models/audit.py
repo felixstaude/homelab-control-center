@@ -1,11 +1,18 @@
 """Append-only audit trail for privileged operations.
 
-Phase 1, milestone 1.7. A foundation rather than the finished audit system the
-roadmap reserves for 1.14: it records user and session administration, which
-is what milestone 1.7 creates, and its shape is chosen so that later
-privileged operations — agent enrolment, container control, terminal sessions
-— can be added as new action values without a schema change. The scope
-decision is ADR-038.
+Phase 1, milestones 1.7 and 1.8. A foundation rather than the finished audit
+system the roadmap reserves for 1.14: it records user and session
+administration, plus host registration and agent enrollment, and its shape is
+chosen so that later privileged operations — container control, terminal
+sessions — can be added as new action values without a schema change. The
+scope decision is ADR-038.
+
+Milestone 1.8 was the first test of that claim, and it held for the
+vocabulary: the nine host actions are new :class:`AuditAction` members and no
+migration. It did need one column, ``target_host_id``, because a host event's
+subject is a host and an audit trail that cannot be filtered by its subject is
+a list rather than a trail. That is a widening of the existing table, not a
+second audit system (ADR-045).
 
 ## Append-only means append-only
 
@@ -46,20 +53,21 @@ native enum would.
 
 ## Why the actor and target carry no foreign key
 
-``actor_user_id`` and ``target_user_id`` are plain ``uuid`` columns. A foreign
-key with ``ON DELETE CASCADE`` would delete the audit trail along with the
-account, which is exactly backwards: the record of what was done to an account
-is most valuable once the account is gone. ``ON DELETE SET NULL`` would keep
-the row but discard the attribution, which is nearly as bad.
+``actor_user_id``, ``target_user_id`` and ``target_host_id`` are plain ``uuid``
+columns. A foreign key with ``ON DELETE CASCADE`` would delete the audit trail
+along with the account or host, which is exactly backwards: the record of what
+was done to something is most valuable once that thing is gone.
+``ON DELETE SET NULL`` would keep the row but discard the attribution, which is
+nearly as bad.
 
 This is the same reasoning that keeps ``installation.initialized_by_user_id``
 unconstrained (ADR-033): a cascade from ``users`` must not be able to erase an
 invariant or a record.
 
 The cost is that an id can refer to a row that no longer exists, so the read
-API resolves names with a ``LEFT JOIN`` and reports an absent user honestly
-rather than inventing a label. Deactivation rather than deletion is the normal
-path, so in practice the join resolves.
+API resolves names with a ``LEFT JOIN`` and reports an absent user or host
+honestly rather than inventing a label. Deactivation rather than deletion is
+the normal path for an account, so in practice the join resolves.
 
 ## What is never stored here
 
@@ -132,6 +140,43 @@ class AuditAction(enum.StrEnum):
     ACCOUNT_SESSIONS_REVOKED = "account.sessions_revoked"
     ADMIN_ACCESS_DENIED = "admin.access_denied"
 
+    # --- Host registry and agent enrollment, milestone 1.8 ----------------
+    #
+    # The additions ADR-038 anticipated, arriving without a schema change to
+    # the `action` column. What is **not** here is as deliberate as what is:
+    # there is no `host.agent_connected` or `host.agent_disconnected`. A
+    # reconnect loop on one flapping link would write two rows a second and
+    # bury every administrative event in the trail, and the information is
+    # already kept where it belongs — `last_connected_at` on the host row and
+    # the structured log. An audit trail answers "who did what to this
+    # system", and an agent reattaching after a network blip is not somebody
+    # doing something.
+
+    HOST_CREATED = "host.created"
+    HOST_UPDATED = "host.updated"
+    HOST_DISABLED = "host.disabled"
+    HOST_ENABLED = "host.enabled"
+    #: An administrator issued a one-time enrollment credential. The event
+    #: records that one was issued and when it expires — never the credential,
+    #: and never its digest.
+    HOST_ENROLLMENT_ISSUED = "host.enrollment_issued"
+    #: An administrator revoked an unused enrollment credential.
+    HOST_ENROLLMENT_REVOKED = "host.enrollment_revoked"
+    #: An agent successfully claimed a host. The only action here with no
+    #: human actor: `actor_user_id` is null, because the agent is not a user
+    #: and attributing its enrollment to whoever issued the token would be a
+    #: claim about a person who was not present.
+    HOST_ENROLLED = "host.enrolled"
+    #: An administrator revoked a host's agent credential.
+    HOST_CREDENTIAL_REVOKED = "host.credential_revoked"
+    #: A presented agent or enrollment credential was refused. Recorded
+    #: **only** when it resolved to a known host — a revoked credential, a
+    #: disabled host, an expired token. An unrecognised digest is logged and
+    #: not recorded: there is no host to attribute it to, and writing a row
+    #: per unrecognised digest would make an unauthenticated endpoint a
+    #: table-growth amplifier.
+    HOST_AGENT_AUTH_FAILED = "host.agent_auth_failed"
+
 
 class AuditOutcome(enum.StrEnum):
     """Whether the recorded attempt took effect.
@@ -182,6 +227,9 @@ class AuditEvent(Base):
         Index("ix_audit_events_target_user_id", "target_user_id"),
         # "What did this administrator do", for the actor filter.
         Index("ix_audit_events_actor_user_id", "actor_user_id"),
+        # "What has been done to this host" — the host detail view's history,
+        # and the question asked when an enrollment goes wrong.
+        Index("ix_audit_events_target_host_id", "target_host_id"),
         # Action filtering is offered on the list endpoint, and an equality
         # match on a low-cardinality column is worth an index here only
         # because it combines with the ordering above.
@@ -248,6 +296,20 @@ class AuditEvent(Base):
         doc="Which account it acted on, where the action has one. No foreign key.",
     )
 
+    target_host_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        nullable=True,
+        doc=(
+            "Which host it acted on, where the action has one. A sibling of "
+            "`target_user_id` rather than a generic `(target_type, target_id)` "
+            "pair: two nullable columns are filterable and indexable, while a "
+            "polymorphic pair would need the type checked at every read and "
+            "would make 'events about this host' a query no index can serve. "
+            "No foreign key, for the same reason the user column has none — "
+            "deleting a host must not erase the record of what was done to it."
+        ),
+    )
+
     request_id: Mapped[str | None] = mapped_column(
         String(REQUEST_ID_MAX_LENGTH),
         nullable=True,
@@ -296,5 +358,6 @@ class AuditEvent(Base):
         return (
             f"AuditEvent(id={self.id!r}, action={self.action!r}, "
             f"outcome={self.outcome!r}, actor_user_id={self.actor_user_id!r}, "
-            f"target_user_id={self.target_user_id!r})"
+            f"target_user_id={self.target_user_id!r}, "
+            f"target_host_id={self.target_host_id!r})"
         )
