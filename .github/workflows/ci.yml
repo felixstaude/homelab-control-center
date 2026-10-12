@@ -178,18 +178,26 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
-          # go.mod, not go.sum: the agent has no third-party dependencies, so
-          # no go.sum exists and setup-go would fail looking for one.
-          cache-dependency-path: agents/linux/go.mod
+          cache-dependency-path: agents/linux/go.sum
 
       - name: Check formatting
+        # ./cmd ./internal, not `.`: the one dependency is vendored, and
+        # vendored source is not ours to reformat — a `gofmt -l .` would fail
+        # the build over somebody else's line breaks.
         run: |
-          unformatted=$(gofmt -l .)
+          unformatted=$(gofmt -l ./cmd ./internal)
           if [ -n "$unformatted" ]; then
             echo "::error::These files are not gofmt-clean:"
             echo "$unformatted"
             exit 1
           fi
+
+      - name: Verify the vendored dependency matches go.mod
+        # `go mod verify` checks the module cache; this checks the *vendored*
+        # tree, which is what actually gets compiled. A vendor directory that
+        # had drifted from go.mod — or been edited — would otherwise compile
+        # silently, which is the whole failure vendoring exists to prevent.
+        run: go mod verify && go mod vendor && git diff --exit-code -- vendor go.mod go.sum
 
       - name: Vet
         run: go vet ./...

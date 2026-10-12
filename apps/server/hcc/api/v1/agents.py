@@ -191,6 +191,12 @@ def get_connection_registry(connection: HTTPConnection) -> ConnectionRegistry:
 
 EnrollmentServiceDep = Annotated[AgentEnrollmentService, Depends(get_enrollment_service)]
 
+#: Exposed for :mod:`hcc.api.v1.hosts`, so an administrative request that
+#: revokes a credential or disables a host can ask this process to close the
+#: socket at once rather than leaving the agent connected until its next
+#: heartbeat. Best effort by design — see :mod:`hcc.agents.registry`.
+ConnectionRegistryDep = Annotated[ConnectionRegistry, Depends(get_connection_registry)]
+
 
 # ---------------------------------------------------------------------------
 # Schemas
@@ -376,6 +382,26 @@ class _FrameBudget:
         return True
 
 
+def _close_reason(raw: str | None) -> CloseReason:
+    """Map a registry-supplied reason onto the protocol vocabulary.
+
+    Falls back to :attr:`CloseReason.SUPERSEDED`, which is what an entry with
+    no reason means: the only path that signals without setting one is a newer
+    connection registering over an older one.
+
+    Validated rather than cast, because the registry's field is a plain string
+    — it has to be, since the registry must not depend on the protocol module
+    — and a typo there would otherwise become a frame the agent cannot parse.
+    """
+    if raw is None:
+        return CloseReason.SUPERSEDED
+    try:
+        return CloseReason(raw)
+    except ValueError:
+        logger.warning("agent_close_reason_unrecognised", reason=raw)
+        return CloseReason.SUPERSEDED
+
+
 def _refuse_handshake(*, status_code: int, code: str, message: str) -> AppError:
     """Build the error that refuses a handshake before ``accept``.
 
@@ -546,8 +572,14 @@ async def connect(
                 break
 
             if shutdown in done:
-                closing_reason = CloseReason.SUPERSEDED
-                closing_detail = live.reason
+                # The close was decided elsewhere in this process — a newer
+                # connection superseding this one, or an administrator
+                # revoking a credential or disabling the host. The reason
+                # travels on the registry entry, because flattening all three
+                # into "superseded" would tell the agent's operator to go
+                # looking for a duplicate agent that does not exist.
+                closing_reason = _close_reason(live.reason)
+                closing_detail = None
                 break
 
             raw = receive.result()
@@ -574,12 +606,28 @@ async def connect(
                 await db.commit()
 
             if not applied:
-                # A newer connection for this host exists, possibly on another
-                # process. The epoch guard made this write a no-op, which is
-                # how a connection that cannot see the registry entry still
-                # learns it has been superseded.
-                closing_reason = CloseReason.SUPERSEDED
-                closing_detail = "a newer connection for this host was accepted"
+                # The epoch guard made this write a no-op, so this connection
+                # is no longer the host's current one. *Why* is not obvious
+                # from that fact alone, and getting it wrong misleads an
+                # operator: a revocation also clears `current_connection_id`,
+                # so the guard fires for a revoked credential exactly as it
+                # does for a genuine supersession.
+                #
+                # Live verification caught this reporting a revoked agent as
+                # "superseded — a newer connection for this host was
+                # accepted", which is false and sends whoever reads the
+                # agent's log looking for a duplicate agent that does not
+                # exist. So the real reason is established before the
+                # connection is closed: one indexed read, on a path taken once
+                # per connection rather than once per heartbeat.
+                async with database.session_factory() as db:
+                    refusal = await enrollment.is_still_authorized(db, agent=agent)
+                if refusal is not None:
+                    closing_reason = refusal
+                    closing_detail = "authorization was withdrawn"
+                else:
+                    closing_reason = CloseReason.SUPERSEDED
+                    closing_detail = "a newer connection for this host was accepted"
                 break
 
             await socket.send_text(

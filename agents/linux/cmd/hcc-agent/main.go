@@ -6,11 +6,30 @@
 //
 // Usage:
 //
-//	hcc-agent [-version] [-log-level level] [-log-format text|json]
+//	hcc-agent enroll            claim this host with a one-time credential
+//	hcc-agent run               connect and stay connected (the service command)
+//	hcc-agent status            report whether this host is enrolled
+//	hcc-agent version           print version information
 //
 // Configuration is read from HCC_AGENT_* environment variables; see
-// agents/linux/README.md. The enrolment token is intentionally not accepted
-// as a flag, because command lines are world-readable via /proc.
+// agents/linux/README.md. No secret is accepted as a flag, because a command
+// line is readable by every local user through /proc.
+//
+// # Why subcommands rather than one mode
+//
+// Enrollment and running are different operations with different privileges
+// and different lifetimes. Enrollment happens once, interactively, needs write
+// access to /etc/hcc-agent, and spends a credential that cannot be spent
+// twice. Running happens forever, unattended, and needs only to read the
+// credential file. One binary that did both on startup would mean the service
+// unit held the privilege to write its own credential for the whole time it
+// was running — and a restart loop would try to re-enroll with a credential
+// that was spent on the first attempt.
+//
+// `status` exists because the question "is this host enrolled?" is the first
+// one an operator asks on a machine that is not appearing in the interface,
+// and answering it should not require reading a file by hand or starting the
+// service to see what happens.
 package main
 
 import (
@@ -18,6 +37,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
@@ -25,15 +45,23 @@ import (
 	"github.com/felixstaude/homelab-control-center/agents/linux/internal/agent"
 	"github.com/felixstaude/homelab-control-center/agents/linux/internal/buildinfo"
 	"github.com/felixstaude/homelab-control-center/agents/linux/internal/config"
+	"github.com/felixstaude/homelab-control-center/agents/linux/internal/controller"
+	"github.com/felixstaude/homelab-control-center/agents/linux/internal/credentials"
 	"github.com/felixstaude/homelab-control-center/agents/linux/internal/logging"
+	"github.com/felixstaude/homelab-control-center/agents/linux/internal/protocol"
 )
 
 // Exit codes. Distinct codes let a service manager and an operator tell a
-// misconfiguration apart from a runtime failure without reading logs.
+// misconfiguration apart from a runtime failure without reading logs — and
+// let systemd's Restart=on-failure do the right thing.
 const (
 	exitOK           = 0
 	exitRuntimeError = 1
 	exitBadConfig    = 2
+	// exitNotEnrolled is its own code because it is the one failure with an
+	// obvious remedy an operator can act on, and because a restart cannot fix
+	// it. `systemctl status` showing this is a clear instruction.
+	exitNotEnrolled = 3
 )
 
 func main() {
@@ -44,51 +72,84 @@ func main() {
 //
 // Taking args and writers as parameters, and returning an exit code instead of
 // calling os.Exit, means the whole startup path can be exercised by a test.
-func run(args []string, stdout, stderr *os.File) int {
-	flags := flag.NewFlagSet("hcc-agent", flag.ContinueOnError)
-	flags.SetOutput(stderr)
-
-	var (
-		showVersion = flags.Bool("version", false, "print version information and exit")
-		logLevel    = flags.String("log-level", "", "override "+config.EnvLogLevel+" (debug|info|warn|error)")
-		logFormat   = flags.String("log-format", "", "override "+config.EnvLogFormat+" (text|json)")
-	)
-
-	flags.Usage = func() {
-		fmt.Fprintf(stderr, "hcc-agent — Homelab Control Center Linux agent\n\n")
-		fmt.Fprintf(stderr, "Usage:\n  hcc-agent [flags]\n\nFlags:\n")
-		flags.PrintDefaults()
-		fmt.Fprintf(stderr, "\nConfiguration is read from the environment:\n")
-		fmt.Fprintf(stderr, "  %s   base URL of the control plane (required)\n", config.EnvControllerURL)
-		fmt.Fprintf(stderr, "  %s         path to a file containing the enrolment token (preferred)\n", config.EnvTokenFile)
-		fmt.Fprintf(stderr, "  %s             enrolment token (readable via /proc; prefer the file form)\n", config.EnvToken)
-		fmt.Fprintf(stderr, "  %s          identity reported to the controller (default: OS hostname)\n", config.EnvHostname)
-		fmt.Fprintf(stderr, "  %s   how often to report (default 30s)\n", config.EnvReportInterval)
-		fmt.Fprintf(stderr, "\nSee agents/linux/README.md for the full reference.\n")
+func run(args []string, stdout, stderr io.Writer) int {
+	// -version is kept alongside the `version` subcommand. The flag form is
+	// what packaging tools and humans habitually try, and answering it is
+	// cheaper than explaining that it moved.
+	if len(args) == 1 && (args[0] == "-version" || args[0] == "--version") {
+		args = []string{"version"}
 	}
-
-	if err := flags.Parse(args); err != nil {
-		// flag already reported the problem to stderr. ErrHelp is a
-		// successful -h, not a failure.
-		if errors.Is(err, flag.ErrHelp) {
-			return exitOK
-		}
+	if len(args) == 0 {
+		usage(stderr)
 		return exitBadConfig
 	}
 
-	if *showVersion {
+	command, rest := args[0], args[1:]
+	switch command {
+	case "version":
 		fmt.Fprintln(stdout, buildinfo.Get().String())
 		return exitOK
+	case "enroll":
+		return runEnroll(rest, stdout, stderr)
+	case "run":
+		return runAgent(rest, stdout, stderr)
+	case "status":
+		return runStatus(rest, stdout, stderr)
+	case "-h", "--help", "help":
+		usage(stdout)
+		return exitOK
+	default:
+		fmt.Fprintf(stderr, "hcc-agent: unknown command %q\n\n", command)
+		usage(stderr)
+		return exitBadConfig
+	}
+}
+
+func usage(out io.Writer) {
+	fmt.Fprint(out, `hcc-agent — Homelab Control Center Linux agent
+
+Usage:
+  hcc-agent enroll     claim this host using a one-time enrollment credential
+  hcc-agent run        connect to the controller and stay connected
+  hcc-agent status     report whether this host is enrolled
+  hcc-agent version    print version information
+
+Configuration (environment):
+  `+config.EnvControllerURL+`         base URL of the control plane (required, https)
+  `+config.EnvCredentialFile+`        path to the agent credential
+                                       (default `+config.DefaultCredentialFile+`)
+  `+config.EnvEnrollmentFile+`  file holding the one-time credential (enroll only)
+  `+config.EnvEnrollmentToken+`       the one-time credential itself (enroll only)
+  `+config.EnvCAFile+`                extra CA bundle to trust, for an internal CA
+  `+config.EnvLogLevel+`              debug | info | warn | error
+  `+config.EnvLogFormat+`             text | json
+
+No secret is accepted as a flag: a command line is readable by every local
+user through /proc. There is no option to skip TLS verification.
+
+See agents/linux/README.md for the full reference.
+`)
+}
+
+// loadConfig is the shared configuration path for every subcommand that needs
+// one. Flags override the environment, so an operator can raise verbosity for
+// one invocation without editing a unit file.
+func loadConfig(flags *flag.FlagSet, args []string, stderr io.Writer) (config.Config, int, bool) {
+	logLevel := flags.String("log-level", "", "override "+config.EnvLogLevel)
+	logFormat := flags.String("log-format", "", "override "+config.EnvLogFormat)
+
+	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return config.Config{}, exitOK, false
+		}
+		return config.Config{}, exitBadConfig, false
 	}
 
 	cfg, err := config.Load(os.LookupEnv)
 	if err != nil {
 		fmt.Fprintf(stderr, "hcc-agent: %v\n", err)
-		return exitBadConfig
+		return config.Config{}, exitBadConfig, false
 	}
-
-	// Flags override the environment, so an operator can raise verbosity for
-	// one invocation without editing a unit file.
 	if *logLevel != "" {
 		cfg.LogLevel = *logLevel
 	}
@@ -100,7 +161,105 @@ func run(args []string, stdout, stderr *os.File) int {
 		// Printed rather than logged: the logger's own configuration may be
 		// what failed validation.
 		fmt.Fprintf(stderr, "hcc-agent: %v\n", err)
+		return config.Config{}, exitBadConfig, false
+	}
+	return cfg, exitOK, true
+}
+
+// runEnroll spends a one-time credential and installs the durable one.
+func runEnroll(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("hcc-agent enroll", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	force := flags.Bool("force", false,
+		"replace an existing credential (the previous one stops working)")
+
+	cfg, code, ok := loadConfig(flags, args, stderr)
+	if !ok {
+		return code
+	}
+
+	// Checked before the credential is spent. Enrolling a host that is already
+	// enrolled revokes the credential it is using, so doing it by accident
+	// takes a working agent offline — and the one-time credential would be
+	// gone, so the mistake would not even be undoable without issuing another.
+	if !*force {
+		if _, err := credentials.Load(cfg.CredentialFile); err == nil {
+			fmt.Fprintf(stderr,
+				"hcc-agent: this host is already enrolled (%s).\n"+
+					"Re-enrolling revokes the credential the running agent is using.\n"+
+					"Pass -force if that is what you intend.\n",
+				cfg.CredentialFile)
+			return exitBadConfig
+		}
+	}
+
+	enrollmentCredential, err := config.EnrollmentCredential(os.LookupEnv)
+	if err != nil {
+		fmt.Fprintf(stderr, "hcc-agent: %v\n", err)
 		return exitBadConfig
+	}
+
+	info := buildinfo.Get()
+	client, err := controller.New(controller.Config{
+		BaseURL:      cfg.ControllerURL,
+		CAFile:       cfg.CAFile,
+		AgentVersion: info.Version,
+		Platform:     info.Platform,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "hcc-agent: %v\n", err)
+		return exitBadConfig
+	}
+
+	// Cancellable, so an enrollment against an unreachable controller can be
+	// interrupted rather than waited out.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	result, err := client.Enroll(ctx, enrollmentCredential)
+	if err != nil {
+		fmt.Fprintf(stderr, "hcc-agent: enrollment failed: %v\n", err)
+		if errors.Is(err, controller.ErrUnauthorized) {
+			fmt.Fprintf(stderr,
+				"\nAn enrollment credential is single-use and short-lived. "+
+					"Issue a new one from the host's page and try again.\n")
+		}
+		return exitRuntimeError
+	}
+
+	if err := credentials.Save(cfg.CredentialFile, result.Credential); err != nil {
+		// The credential has been spent and the controller has already
+		// recorded this host as enrolled, so this is the worst place to fail.
+		// Said plainly, with the remedy, rather than reported as a generic
+		// write error: the operator has to know that retrying needs a *new*
+		// enrollment credential.
+		fmt.Fprintf(stderr,
+			"hcc-agent: enrollment succeeded but the credential could not be stored: %v\n\n"+
+				"The one-time credential has been spent. Fix the problem above, then "+
+				"issue a new enrollment credential and run this command again.\n",
+			err)
+		return exitRuntimeError
+	}
+
+	fmt.Fprintf(stdout, "Enrolled as %q (host %s).\n", result.HostName, result.HostID)
+	fmt.Fprintf(stdout, "Credential stored in %s (mode 0600).\n", cfg.CredentialFile)
+	if result.SupersededPrevious {
+		fmt.Fprintf(stdout,
+			"\nThis host had an existing agent credential, which has now been revoked.\n"+
+				"Any agent still using it will be disconnected.\n")
+	}
+	fmt.Fprintf(stdout, "\nStart the agent with:\n  systemctl enable --now hcc-agent\n")
+	return exitOK
+}
+
+// runAgent is the service command.
+func runAgent(args []string, _, stderr io.Writer) int {
+	flags := flag.NewFlagSet("hcc-agent run", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+
+	cfg, code, ok := loadConfig(flags, args, stderr)
+	if !ok {
+		return code
 	}
 
 	logger := logging.New(stderr, cfg.LogLevel, logging.Format(cfg.LogFormat))
@@ -115,13 +274,61 @@ func run(args []string, stdout, stderr *os.File) int {
 	instance, err := agent.New(cfg, logger)
 	if err != nil {
 		logger.Error("failed to construct agent", "error", err)
-		return exitRuntimeError
+		return exitBadConfig
 	}
 
-	if err := instance.Run(ctx); err != nil {
+	err = instance.Run(ctx)
+	switch {
+	case err == nil:
+		return exitOK
+	case errors.Is(err, credentials.ErrNotEnrolled):
+		return exitNotEnrolled
+	case errors.Is(err, agent.ErrRevoked):
+		// Non-zero, deliberately. A revoked agent that exited 0 would leave
+		// systemd reporting a clean stop, which is the opposite of what
+		// happened; Restart=on-failure then does nothing and `systemctl
+		// status` says the service is inactive rather than broken.
+		return exitRuntimeError
+	default:
 		logger.Error("agent terminated with an error", "error", err)
 		return exitRuntimeError
 	}
+}
 
-	return exitOK
+// runStatus answers "is this host enrolled?" without starting anything.
+//
+// Reports the credential's *presence and safety*, never its value. There is
+// deliberately no flag that prints it: the credential is in a file the
+// operator can read if they are entitled to, and a command that printed it
+// would put it in shell history and in whatever they piped it to.
+func runStatus(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("hcc-agent status", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+
+	cfg, code, ok := loadConfig(flags, args, stderr)
+	if !ok {
+		return code
+	}
+
+	fmt.Fprintf(stdout, "Controller:      %s\n", cfg.ControllerURL)
+	fmt.Fprintf(stdout, "Credential file: %s\n", cfg.CredentialFile)
+
+	_, err := credentials.Load(cfg.CredentialFile)
+	switch {
+	case err == nil:
+		fmt.Fprintf(stdout, "Enrolled:        yes\n")
+		fmt.Fprintf(stdout, "Protocol:        v%d\n", protocol.Version)
+		return exitOK
+	case errors.Is(err, credentials.ErrNotEnrolled):
+		fmt.Fprintf(stdout, "Enrolled:        no\n\n")
+		fmt.Fprintf(stdout,
+			"Issue an enrollment credential from this host's page in the control "+
+				"plane, then run:\n  %s=... hcc-agent enroll\n",
+			config.EnvEnrollmentToken)
+		return exitNotEnrolled
+	default:
+		fmt.Fprintf(stdout, "Enrolled:        no\n\n")
+		fmt.Fprintf(stderr, "hcc-agent: %v\n", err)
+		return exitRuntimeError
+	}
 }

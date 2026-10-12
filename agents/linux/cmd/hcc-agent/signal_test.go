@@ -27,21 +27,28 @@ const envSubprocess = "HCC_AGENT_TEST_SUBPROCESS"
 func TestGracefulShutdownOnSIGTERM(t *testing.T) {
 	if os.Getenv(envSubprocess) == "1" {
 		// Child: behave as the agent process.
-		os.Exit(run(nil, os.Stdout, os.Stderr))
+		os.Exit(run([]string{"run"}, os.Stdout, os.Stderr))
 	}
 
-	tokenPath := filepath.Join(t.TempDir(), "token")
-	if err := os.WriteFile(tokenPath, []byte("test-token"), 0o600); err != nil {
-		t.Fatalf("writing token file: %v", err)
+	credentialPath := filepath.Join(t.TempDir(), "credential")
+	if err := os.WriteFile(credentialPath, []byte(strings.Repeat("c", 43)), 0o600); err != nil {
+		t.Fatalf("writing credential file: %v", err)
 	}
 
 	cmd := exec.Command(os.Args[0], "-test.run=^TestGracefulShutdownOnSIGTERM$")
 	cmd.Env = append(os.Environ(),
 		envSubprocess+"=1",
-		"HCC_AGENT_CONTROLLER_URL=https://hcc.internal:8000",
-		"HCC_AGENT_TOKEN_FILE="+tokenPath,
-		// Long interval: this test is about shutdown, not ticking.
-		"HCC_AGENT_REPORT_INTERVAL=10m",
+		// A controller nothing is listening on: the agent will fail to connect
+		// and enter its backoff, which is exactly the state a SIGTERM has to
+		// interrupt. Testing shutdown from a *connected* agent would need a
+		// real controller and would test less, because the interruptible wait
+		// is the part that can go wrong.
+		"HCC_AGENT_CONTROLLER_URL=https://127.0.0.1:1",
+		"HCC_AGENT_CREDENTIAL_FILE="+credentialPath,
+		// A long backoff, so the process is definitely inside the wait when
+		// the signal arrives rather than between attempts.
+		"HCC_AGENT_RECONNECT_MIN_WAIT=10m",
+		"HCC_AGENT_RECONNECT_MAX_WAIT=10m",
 		"HCC_AGENT_LOG_FORMAT=text",
 	)
 
@@ -58,7 +65,10 @@ func TestGracefulShutdownOnSIGTERM(t *testing.T) {
 	// Wait until the agent has installed its signal handler. Sending SIGTERM
 	// before that would kill it with the default disposition and make this
 	// test pass or fail for the wrong reason.
-	waitForLog(t, &output, "agent starting", 10*time.Second)
+	// Waits for the *reconnect* line rather than "agent starting", because the
+	// signal must arrive while the process is inside its interruptible wait.
+	// Signalling earlier would test the default disposition instead.
+	waitForLog(t, &output, "reconnecting", 10*time.Second)
 
 	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatalf("sending SIGTERM: %v", err)
@@ -83,7 +93,7 @@ func TestGracefulShutdownOnSIGTERM(t *testing.T) {
 	}
 
 	logs := output.String()
-	for _, want := range []string{"shutdown signal received", "shutdown complete"} {
+	for _, want := range []string{"shutting down", "shutdown complete"} {
 		if !strings.Contains(logs, want) {
 			t.Errorf("expected %q in the output, got:\n%s", want, logs)
 		}

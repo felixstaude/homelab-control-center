@@ -79,6 +79,7 @@ from typing import TYPE_CHECKING, Annotated, Final
 from fastapi import APIRouter, Path, Query, status
 from pydantic import BaseModel, Field
 
+from hcc.agents.protocol import CloseReason
 from hcc.api.deps import (
     AuditContextDep,
     AuditedAdminDep,
@@ -86,6 +87,7 @@ from hcc.api.deps import (
     SessionDep,
     ViewerDep,
 )
+from hcc.api.v1.agents import ConnectionRegistryDep
 from hcc.errors import ConflictError, NotFoundError, ValidationFailedError
 from hcc.logging import get_logger
 from hcc.models.host import (
@@ -678,6 +680,7 @@ async def _set_enabled(
     db: SessionDep,
     hosts: HostServiceDep,
     context: AuditContextDep,
+    connections: ConnectionRegistryDep,
     host_id: uuid.UUID,
     is_enabled: bool,
 ) -> HostResponse:
@@ -694,6 +697,13 @@ async def _set_enabled(
         raise NotFoundError(str(exc)) from exc
 
     await db.commit()
+
+    # After the commit, so a connection is only closed once the disable is
+    # durable: closing first and then failing to commit would drop an agent
+    # for a change that did not happen.
+    if not is_enabled:
+        connections.close(host_id, CloseReason.HOST_DISABLED.value)
+
     record = await hosts.get_host(db, host.id)
     return HostResponse.of(record)
 
@@ -712,6 +722,7 @@ async def disable_host(
     db: SessionDep,
     hosts: HostServiceDep,
     context: AuditContextDep,
+    connections: ConnectionRegistryDep,
     _current: AuditedAdminDep,
     host_id: HostIdPath,
 ) -> HostResponse:
@@ -730,7 +741,12 @@ async def disable_host(
     nothing.
     """
     return await _set_enabled(
-        db=db, hosts=hosts, context=context, host_id=host_id, is_enabled=False
+        db=db,
+        hosts=hosts,
+        context=context,
+        connections=connections,
+        host_id=host_id,
+        is_enabled=False,
     )
 
 
@@ -748,6 +764,7 @@ async def enable_host(
     db: SessionDep,
     hosts: HostServiceDep,
     context: AuditContextDep,
+    connections: ConnectionRegistryDep,
     _current: AuditedAdminDep,
     host_id: HostIdPath,
 ) -> HostResponse:
@@ -757,7 +774,14 @@ async def enable_host(
     dials out to a host (ADR-018). The agent is retrying on its own backoff
     schedule and will succeed on its next attempt.
     """
-    return await _set_enabled(db=db, hosts=hosts, context=context, host_id=host_id, is_enabled=True)
+    return await _set_enabled(
+        db=db,
+        hosts=hosts,
+        context=context,
+        connections=connections,
+        host_id=host_id,
+        is_enabled=True,
+    )
 
 
 @router.post(
@@ -884,6 +908,7 @@ async def revoke_credential(
     db: SessionDep,
     hosts: HostServiceDep,
     context: AuditContextDep,
+    connections: ConnectionRegistryDep,
     _current: AuditedAdminDep,
     host_id: HostIdPath,
 ) -> HostResponse:
@@ -911,5 +936,14 @@ async def revoke_credential(
         raise _conflict(exc) from exc
 
     await db.commit()
+
+    # Best effort, and after the commit. Instant when this process holds the
+    # socket, which is the documented single-process deployment; bounded by
+    # one heartbeat interval otherwise, because that connection's next
+    # heartbeat fails the epoch guard and the endpoint then establishes the
+    # real reason before closing. See hcc/agents/registry.py on why both
+    # mechanisms exist rather than either alone.
+    connections.close(host_id, CloseReason.UNAUTHORIZED.value)
+
     record = await hosts.get_host(db, host.id)
     return HostResponse.of(record)

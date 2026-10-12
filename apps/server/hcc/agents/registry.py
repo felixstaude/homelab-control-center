@@ -150,3 +150,44 @@ class ConnectionRegistry:
     def get(self, host_id: uuid.UUID) -> LiveConnection | None:
         """The connection this process holds for a host, if any."""
         return self._by_host.get(host_id)
+
+    def close(self, host_id: uuid.UUID, reason: str) -> bool:
+        """Ask this process to end a host's connection. Best effort.
+
+        Signals the reader task rather than touching the socket, for the
+        reason in :attr:`LiveConnection.closing`.
+
+        **Best effort is the whole contract here**, and it is worth being
+        precise about what that buys. This is called by the administrative
+        request that revoked a credential or disabled a host, and the operator
+        expects the agent cut off *now*:
+
+        * If this process holds the socket — the single-process deployment,
+          which is the documented one — the connection closes within
+          milliseconds.
+        * If another worker holds it, this returns ``False`` and nothing
+          happens here. The guarantee is not lost, only delayed: the epoch
+          guard turns that connection's next heartbeat into a no-op and the
+          endpoint re-checks authorization before closing, so the agent is cut
+          off within one heartbeat interval.
+
+        That asymmetry is why the durable check is not replaced by this.
+        Relying on the registry alone would make revocation silently
+        ineffective on a two-worker deployment; relying on the poll alone
+        makes it take up to thirty seconds on every deployment. Both, with
+        the database as the one that cannot be wrong.
+
+        Returns whether this process had a connection to signal.
+        """
+        connection = self._by_host.get(host_id)
+        if connection is None:
+            return False
+        connection.reason = reason
+        connection.closing.set()
+        logger.info(
+            "agent_connection_close_requested",
+            host_id=str(host_id),
+            connection_id=str(connection.connection_id),
+            reason=reason,
+        )
+        return True

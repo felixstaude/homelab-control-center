@@ -159,7 +159,7 @@ dev-web: ## Run the frontend dev server on :5173
 
 .PHONY: agent-run
 agent-run: ## Run the agent against the local control plane
-	@cd $(AGENT_DIR) && go run ./cmd/hcc-agent
+	@cd $(AGENT_DIR) && go run ./cmd/hcc-agent run
 
 # ============================================================================
 # Quality gates
@@ -251,12 +251,12 @@ check-agent: fmt-agent-check vet-agent test-agent ## Agent gate
 
 .PHONY: fmt-agent
 fmt-agent: ## Format Go code
-	@cd $(AGENT_DIR) && gofmt -w .
+	@cd $(AGENT_DIR) && gofmt -w ./cmd ./internal
 
 .PHONY: fmt-agent-check
 fmt-agent-check: ## Verify Go formatting
 	@cd $(AGENT_DIR) && \
-		unformatted=$$(gofmt -l .); \
+		unformatted=$$(gofmt -l ./cmd ./internal); \
 		if [ -n "$$unformatted" ]; then \
 			echo "✗ Not gofmt-clean:"; echo "$$unformatted"; exit 1; \
 		fi
@@ -274,7 +274,7 @@ test-agent: ## Run agent tests with the race detector
 agent-build: ## Build the agent binary with version stamping
 	@cd $(AGENT_DIR) && go build -ldflags "$(AGENT_LDFLAGS)" -o bin/hcc-agent ./cmd/hcc-agent
 	@echo "✓ Built $(AGENT_DIR)/bin/hcc-agent ($(AGENT_VERSION))"
-	@$(AGENT_DIR)/bin/hcc-agent -version
+	@$(AGENT_DIR)/bin/hcc-agent version
 
 # ============================================================================
 # Housekeeping
