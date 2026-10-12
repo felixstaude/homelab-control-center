@@ -216,6 +216,62 @@ test('signing out twice in quick succession is not an error', async ({ page }) =
 });
 
 // ---------------------------------------------------------------------------
+// The state before the answer arrives
+// ---------------------------------------------------------------------------
+
+test('a slow session check shows a labelled loading state, not a login page', async ({ page }) => {
+  // The window between "the page has loaded" and "we know who you are" is
+  // where the worst version of this bug lives: showing the login page to
+  // someone who is in fact signed in, or flashing the console to someone who
+  // is not. Delaying the real response is the only way to hold that window
+  // open long enough to assert on.
+  await page.route('**/api/v1/auth/me', async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+    await route.continue();
+  });
+
+  await page.goto('/');
+
+  // Announced, not just a spinning shape: `status` is the role a screen
+  // reader needs to report that something is in progress.
+  const loading = page.getByRole('status');
+  await expect(loading).toBeVisible();
+  await expect(loading).toContainText(/checking your session/i);
+
+  // And emphatically neither of the two answers.
+  await expect(page.getByRole('heading', { name: 'Sign in' })).toHaveCount(0);
+  await expect(page.locator('#main-content')).toHaveCount(0);
+
+  // It resolves to the right answer once the response lands.
+  await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible({ timeout: 20_000 });
+});
+
+test('a slow session check resolves to the console for a signed-in user', async ({ browser }) => {
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await signInAndWait(page);
+  const state = await context.storageState();
+  await context.close();
+
+  const slow = await browser.newContext({ storageState: state });
+  const restored = await slow.newPage();
+  await restored.route('**/api/v1/auth/me', async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await route.continue();
+  });
+
+  await restored.goto('/hosts');
+  await expect(restored.getByRole('status')).toContainText(/checking your session/i);
+  // Never the login page on the way: a signed-in user must not be shown a
+  // sign-in form and then have it yanked away.
+  await expect(restored.getByRole('heading', { name: 'Sign in' })).toHaveCount(0);
+
+  await expect(restored.locator('#main-content')).toBeVisible({ timeout: 20_000 });
+  await expect(restored).toHaveURL(/\/hosts$/);
+  await slow.close();
+});
+
+// ---------------------------------------------------------------------------
 // 401 versus 403
 // ---------------------------------------------------------------------------
 
