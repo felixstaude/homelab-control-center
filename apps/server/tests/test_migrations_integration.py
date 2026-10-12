@@ -41,6 +41,7 @@ EXPECTED_REVISIONS = (
     "0004_installation",
     "0005_user_management",
     "0006_host_registry",
+    "0007_monitoring_config",
 )
 
 # Every table the chain creates, excluding Alembic's own bookkeeping. Pinned so
@@ -51,7 +52,10 @@ EXPECTED_TABLES = frozenset(
     {
         "agent_credentials",
         "audit_events",
+        "global_module_defaults",
+        "host_config_revisions",
         "host_enrollments",
+        "host_module_overrides",
         "hosts",
         "installation",
         "sessions",
@@ -172,6 +176,17 @@ async def test_downgrade_removes_the_table(scratch_database: str) -> None:
     alembic_ok(scratch_database, "upgrade", "head")
     for table in EXPECTED_TABLES:
         assert await table_exists(scratch_database, table), table
+
+    # 0007 drops the three monitoring configuration tables and leaves the host
+    # registry alone — the boundary worth asserting, because the override and
+    # revision tables both cascade from `hosts` and a downgrade that took
+    # `hosts` with them would be a data-loss bug that still passed a
+    # "the table is gone" check.
+    alembic_ok(scratch_database, "downgrade", "0006_host_registry")
+    assert not await table_exists(scratch_database, "global_module_defaults")
+    assert not await table_exists(scratch_database, "host_module_overrides")
+    assert not await table_exists(scratch_database, "host_config_revisions")
+    assert await table_exists(scratch_database, "hosts")
 
     # 0006 drops the host registry and its two child tables.
     alembic_ok(scratch_database, "downgrade", "0005_user_management")
@@ -371,6 +386,54 @@ async def test_host_registry_objects_the_models_cannot_express_exist(
     # nothing. asyncpg returns PostgreSQL's "char" as a single byte.
     assert cascades <= {"c", b"c"}
     assert len(cascades) == 1
+
+
+async def test_monitoring_config_triggers_the_models_cannot_express_exist(
+    scratch_database: str,
+) -> None:
+    """``0007``'s two hand-written triggers, for the ADR-015 reason again.
+
+    Both tables carry ``server_onupdate=FetchedValue()`` in the model, which
+    tells SQLAlchemy to refetch and says nothing to PostgreSQL. The trigger is
+    what actually maintains the column, autogenerate cannot see it, and a
+    statement mistyped or lost in a rebase would leave ``updated_at`` meaning
+    "created_at" with `alembic check`, mypy and every other gate still green.
+
+    ``host_config_revisions`` is asserted to have **no** trigger, because it has
+    no ``updated_at``: a revision's document is immutable, and a trigger there
+    would be a sign someone had made it mutable.
+    """
+    alembic_ok(scratch_database, "upgrade", "head")
+
+    engine = create_async_engine(
+        make_url(scratch_database).set(drivername="postgresql+asyncpg"), poolclass=NullPool
+    )
+    try:
+        async with engine.connect() as connection:
+
+            async def triggers_on(table: str) -> set[str]:
+                return set(
+                    (
+                        await connection.execute(
+                            text(
+                                "SELECT tgname FROM pg_trigger "
+                                f"WHERE tgrelid = '{table}'::regclass AND NOT tgisinternal"
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+
+            defaults = await triggers_on("global_module_defaults")
+            overrides = await triggers_on("host_module_overrides")
+            revisions = await triggers_on("host_config_revisions")
+    finally:
+        await engine.dispose()
+
+    assert defaults == {"trg_global_module_defaults_set_updated_at"}
+    assert overrides == {"trg_host_module_overrides_set_updated_at"}
+    assert revisions == set()
 
 
 async def test_no_schema_drift_between_models_and_migrations(scratch_database: str) -> None:

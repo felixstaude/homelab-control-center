@@ -63,10 +63,18 @@ _SERVER_DIR = Path(__file__).resolve().parent.parent
 # `host_enrollments` and `agent_credentials` both cascade from it — but they
 # are listed anyway, so that a future change which drops the cascade cannot
 # silently start leaking credentials between tests.
+#
+# `global_module_defaults` has no parent at all — it is keyed by module id, not
+# by host — so a test that enables a module globally would otherwise leak that
+# into every later test in the session, and "modules are off by default" would
+# pass or fail depending on test order.
 _TRUNCATED_TABLES = (
     "agent_credentials",
     "audit_events",
+    "global_module_defaults",
+    "host_config_revisions",
     "host_enrollments",
+    "host_module_overrides",
     "hosts",
     "installation",
     "sessions",

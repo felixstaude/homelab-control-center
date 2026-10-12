@@ -177,6 +177,34 @@ class AuditAction(enum.StrEnum):
     #: table-growth amplifier.
     HOST_AGENT_AUTH_FAILED = "host.agent_auth_failed"
 
+    # --- Monitoring configuration, phase 2 --------------------------------
+    #
+    # Enabling a module is the act that starts collecting information about
+    # somebody's machine, so it is the act worth recording. The events name
+    # the module and the resulting revision version, never the whole document:
+    # an audit row per configuration change carrying a few kilobytes of JSON
+    # would make the trail expensive to read for no gain, and the document is
+    # already kept, immutably, in `host_config_revisions`.
+    #
+    # What is **not** here, for the reason `host.agent_connected` is not:
+    # there is no `monitoring.config_acknowledged`. An agent applying a
+    # configuration is not somebody doing something, it happens on every
+    # reconnection, and the acknowledgement is already durable on the revision
+    # row where an operator can see it.
+
+    #: An administrator changed a global module default — the setting that
+    #: applies to every host.
+    MONITORING_GLOBAL_DEFAULT_CHANGED = "monitoring.global_default_changed"
+    #: An administrator set or changed a per-host module override.
+    MONITORING_HOST_OVERRIDE_CHANGED = "monitoring.host_override_changed"
+    #: An administrator reset a host override back to inheriting.
+    MONITORING_HOST_OVERRIDE_RESET = "monitoring.host_override_reset"
+    #: An agent refused a configuration revision. Recorded because it is a
+    #: state an operator has to act on, and because the problems came from the
+    #: host rather than from the controller — so the trail should show that the
+    #: controller was told, and when.
+    MONITORING_CONFIG_REJECTED = "monitoring.config_rejected"
+
 
 class AuditOutcome(enum.StrEnum):
     """Whether the recorded attempt took effect.

@@ -193,4 +193,14 @@ class TestAuditEventModel:
             "host.enrolled",
             "host.credential_revoked",
             "host.agent_auth_failed",
+            # Phase 2. Enabling a module is the act that starts collecting
+            # information about somebody's machine, so it is the act worth
+            # recording. Absent, for the same reason `host.agent_connected`
+            # is: no `monitoring.config_acknowledged`. An agent applying a
+            # configuration happens on every reconnection, is not somebody
+            # doing something, and is already durable on the revision row.
+            "monitoring.global_default_changed",
+            "monitoring.host_override_changed",
+            "monitoring.host_override_reset",
+            "monitoring.config_rejected",
         }

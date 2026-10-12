@@ -89,6 +89,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from hcc.db import Base
+from hcc.monitoring.canonical import CHECKSUM_LENGTH
 from hcc.security.tokens import TOKEN_HASH_LENGTH
 
 if TYPE_CHECKING:
@@ -493,6 +494,46 @@ class Host(Base):
             "When the connected agent process started, as it reports. Lets an "
             "operator tell a reconnect from a restart. Advisory."
         ),
+    )
+
+    # --- Configuration synchronisation -----------------------------------
+    #
+    # What the agent says it is *running*, which is not the same as what it
+    # last acknowledged. The acknowledgement lives on the revision row
+    # (`host_config_revisions.acknowledged_at`) and is a durable statement
+    # about one document; these three columns are the agent's live claim,
+    # refreshed on every heartbeat.
+    #
+    # Both are needed, and the difference between them is the whole of drift
+    # detection. An agent that acknowledged revision 7, was restarted, and
+    # came back running revision 5 from a stale file on disk has an
+    # acknowledgement for 7 and reports 5 — a disagreement no single column
+    # can express (`AGENT_ARCHITECTURE.md` §6.4).
+
+    reported_config_version: Mapped[int | None] = mapped_column(
+        nullable=True,
+        doc=(
+            "The configuration version the agent says it is running. NULL "
+            "means it has not said, which includes 'has never connected' and "
+            "'is running no configuration yet' — distinguished by whether a "
+            "revision exists at all, never by inventing a zero."
+        ),
+    )
+
+    reported_config_checksum: Mapped[str | None] = mapped_column(
+        String(CHECKSUM_LENGTH),
+        nullable=True,
+        doc=(
+            "The checksum the agent reports alongside the version. Compared "
+            "as well as the version, so a truncated or tampered document "
+            "cannot be reported as applied under a version that looks right."
+        ),
+    )
+
+    reported_config_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        doc="When the agent last reported its configuration state.",
     )
 
     created_at: Mapped[datetime] = mapped_column(
