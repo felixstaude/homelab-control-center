@@ -403,37 +403,78 @@ auto-discovery and no self-service enrolment — a monitoring system that
 automatically trusts anything claiming to be a host is a monitoring system
 anyone on the network can poison.
 
+**Implemented as of milestone 1.8.** What follows is what the code does, not
+a plan.
+
 ```
-1. Admin creates a host entry in the UI and gets a one-time enrolment token.
+1. Admin registers a host in the UI. Nothing else happens — no credential is
+   minted, so a mistyped name does not leave a live secret anywhere.
       ↓
-2. Admin installs the agent on the host and writes the token to
-   /etc/hcc-agent/token (mode 0600).
+2. Admin issues a one-time enrolment credential. Shown exactly once; only its
+   SHA-256 digest is stored, so no later request can produce it.
       ↓
-3. Agent starts, POSTs /api/v1/agents/enroll with the one-time token.
+3. Admin runs `hcc-agent enroll` on the host, with the credential in a file
+   (mode 0600) rather than on a command line or in the environment.
       ↓
-4. Control plane validates it, marks it consumed, and returns:
-     - host_id
-     - a long-lived agent credential
+4. Agent POSTs /api/v1/agents/enroll, credential in an Authorization header.
       ↓
-5. Agent persists the credential and uses it for all later calls.
+5. Control plane consumes the credential in one conditional UPDATE, revokes
+   any previous agent credential, issues a new one, and returns:
+     - host_id and host_name
+     - the long-lived agent credential
+     - the protocol version and heartbeat interval
       ↓
-6. Steady state: heartbeat, report, poll for commands — all outbound.
+6. Agent writes the credential atomically at mode 0600, refusing a symlink or
+   a world-writable directory.
+      ↓
+7. Steady state: one outbound authenticated WebSocket, heartbeating. The
+   controller never dials in (ADR-018).
 ```
 
 Design points:
 
-- **One-time enrolment token, separate from the steady-state credential.** The
-  short-lived token is the one that gets pasted into terminals and shell
-  history; it is single-use and expires.
-- **Tokens are stored hashed** (Argon2id), never in plaintext. A database dump
-  does not yield working agent credentials.
-- **Revocation is immediate**, server-side. Revoking a host rejects its
-  credential on the next call; there is no waiting for an expiry.
-- **The token is never a command-line flag.** Command lines are world-readable
-  via `/proc`. It comes from a file (preferred) or the environment. Enforced
-  by a test in `cmd/hcc-agent/main_test.go`.
-- **The token file must not be group- or world-readable.** The agent refuses to
-  start otherwise, rather than accepting a secret that is not secret.
+- **One-time enrolment credential, separate from the steady-state one.** The
+  short-lived one is what gets pasted into terminals and shell history; it is
+  single-use, expires in fifteen minutes, is scoped to one host, and is
+  revocable until spent. The long-lived credential never passes through a
+  human's clipboard.
+- **Both are stored as SHA-256 digests**
+  ([ADR-042](#adr-042-agent-credentials-are-hashed-with-sha-256-not-argon2id)),
+  never in plaintext. A database dump yields nothing replayable. Not Argon2id:
+  there is no candidate list to slow down, and a salted hash cannot be looked
+  up by index — which on the reconnection path a whole fleet takes at once is
+  not a performance note but an outage.
+- **Single use is decided by one conditional `UPDATE`**, not a read followed by
+  a write. Two agents presenting the same credential at the same moment — two
+  machines started by one Ansible run — would otherwise both see it as unused
+  and both enroll.
+- **Revocation is immediate.** Measured at **23 ms** from the administrative
+  request to the agent's disconnection when one process holds the socket, and
+  bounded by one heartbeat interval otherwise
+  ([ADR-046](#adr-046-one-controller-process-stated-rather-than-enforced)).
+  The agent then exits non-zero, so `systemctl status` says something true.
+- **Neither secret is ever a command-line flag or in a URL.** Command lines
+  are readable by every local user through `/proc`; a URL is in the browser's
+  history, in the next request's `Referer`, and in every proxy's access log.
+  Both travel in an `Authorization` header, including on the WebSocket
+  handshake.
+- **Neither file may be group- or world-readable, a symlink, owned by another
+  user, or in a directory others can write to.** The agent refuses rather than
+  fixing the mode itself: silently chmod-ing a file it did not create would
+  hide a misconfiguration the operator needs to see.
+- **There is no option to skip TLS verification.** The previous agent had one,
+  with a warning logged at every start, and it was removed rather than kept —
+  the warning was never a mitigation, and a flag that exists "just for
+  testing" ends up in a unit file on a real server. Plain HTTP survives for
+  loopback only.
+- **The host's identity comes from the credential.** There is no `host_id` on
+  either endpoint and no such field in the protocol, so an agent has nothing
+  to claim to be. §7.3's server-side attribution rule, expressed as an
+  absence.
+- **Connectivity is derived, never stored**
+  ([ADR-043](#adr-043-connectivity-is-derived-never-stored-as-a-boolean)).
+  Three states, and a controller crash reports `stale` rather than leaving
+  every host claiming to be connected.
 
 ---
 
@@ -937,6 +978,31 @@ development and fail in production.
 configuration error, not something to paper over with a localhost guess that
 fails confusingly later. The process exits with a readable diagnostic naming
 the variable.
+
+### 12.4 One controller process
+
+**Run one.** The registry of live agent connections is per process
+([ADR-046](#adr-046-one-controller-process-stated-rather-than-enforced)), so
+a second worker does not share it.
+
+Nothing refuses to start with more, and the degradation is graceful rather
+than silent: connectivity still comes from the database, so every worker
+answers the same, and an agent whose host reconnected onto another worker is
+closed by the epoch guard within one heartbeat interval instead of
+immediately. What is genuinely lost is only *immediacy* — revoking a
+credential becomes "within thirty seconds" rather than "within milliseconds"
+when the revoking request lands on a different worker than the socket.
+
+Measured capacity for that one process:
+**500 concurrent agents at 224 KiB each**, 188 heartbeat round trips a second
+against the 17 that 500 hosts at the 30-second interval need
+([`PERFORMANCE.md`](PERFORMANCE.md)). The 501st connection is refused with a
+503 the agent retries on.
+
+This becomes a correctness question rather than a tidiness one the moment the
+controller needs to *push* to a specific agent — configuration distribution —
+and the answer then is a real channel, most likely PostgreSQL
+`LISTEN`/`NOTIFY`, rather than a shared in-memory registry that cannot exist.
 
 ---
 

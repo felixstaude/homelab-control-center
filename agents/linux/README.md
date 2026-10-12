@@ -3,10 +3,23 @@
 The agent runs on each monitored host, dials out to the control plane, and
 reports what you configure it to report.
 
-**Current scope:** lifecycle only. The agent loads and validates its
-configuration, logs its identity, runs its reporting loop, and shuts down
-cleanly. It collects no metrics, runs no monitoring modules, executes no
-commands and does not touch Docker.
+**Current scope: connectivity.** As of milestone 1.8 the agent enrols against
+a real controller, holds an outbound authenticated WebSocket, heartbeats,
+reconnects with exponential backoff, and is cut off within milliseconds when
+its credential is revoked. It still collects no metrics, runs no monitoring
+modules, executes no commands and does not touch Docker — collection is
+Phase 2, and the agent says so in its own startup log rather than implying
+otherwise.
+
+```bash
+hcc-agent enroll     # spend a one-time credential for a durable one
+hcc-agent run        # connect and stay connected (the service command)
+hcc-agent status     # is this host enrolled? (never prints the credential)
+hcc-agent version
+```
+
+Installation, the hardened systemd unit, and an explicit account of what has
+and has not been verified: [`deploy/README.md`](deploy/README.md).
 
 The designed architecture — transport, enrollment, credential rotation,
 configuration synchronisation and offline behaviour — is in
@@ -22,15 +35,28 @@ These are structural, not configuration options:
 - **The Docker socket is never exposed on the network.** In Phase 6 the agent
   reads its own host's `/var/run/docker.sock` locally and sends results
   outward. The socket is not proxied, forwarded or bound to a port.
-- **No general-purpose command execution.** Management commands are drawn from
-  an enumerated set (`internal/controller.CommandType`). No command type
-  accepts a caller-supplied command line.
+- **No general-purpose command execution.** The protocol has no field that
+  carries a command, a script, a path or a module name — asserted against the
+  encoded frames in `internal/protocol/protocol_test.go`, not merely intended.
+  An agent that runs what the controller tells it has turned a control-plane
+  compromise into root on every monitored machine.
 - **Default deny.** Every management capability is off until explicitly
   enabled for this host, and the agent enforces that from its own applied
   configuration rather than trusting the controller to have checked.
 - **Never root.** The agent runs unprivileged and is not in `sudoers`.
-- **The enrolment token is not a flag.** Command lines are world-readable via
-  `/proc`, so the token comes from the environment or, preferably, a file.
+- **No secret is a flag.** Command lines are readable by every local user
+  through `/proc`, so neither credential is settable that way and
+  `TestNoSecretIsSettableViaAFlag` fails if one becomes so. The enrolment
+  credential comes from a file (preferred) or the environment; the durable one
+  comes from a file and only a file.
+- **No TLS verification bypass exists.** Removed in 1.8 rather than carried
+  forward: the credential and every heartbeat cross that connection, and the
+  warning the old flag logged at every start was never a mitigation. Plain
+  HTTP is permitted for loopback only, and a hostname that merely *resolves*
+  to loopback is refused — DNS is not the agent's to trust.
+- **The host's identity comes from its credential.** The agent reports no
+  hostname and the protocol has no field for one, so a compromised agent
+  cannot report as a machine it does not hold a credential for.
 
 Two designed capabilities deliberately sit close to these lines, and are
 documented rather than glossed over:
@@ -52,10 +78,15 @@ Full model: [`docs/SECURITY.md`](../../docs/SECURITY.md).
 ## Layout
 
 ```
-cmd/hcc-agent/       entrypoint: flags, signals, exit codes
+cmd/hcc-agent/       entrypoint: subcommands, signals, exit codes
+deploy/              systemd unit, environment example, install guide
+vendor/              the one third-party dependency, in-tree (ADR-047)
 internal/
-├── agent/           runtime loop and graceful shutdown
-├── config/          environment loading and validation
+├── agent/           the supervision loop: connect, heartbeat, reconnect
+├── config/          environment loading and validation (and no secrets)
+├── controller/      the HTTP and WebSocket client, and the TLS policy
+├── credentials/     the credential file, and what it refuses
+├── protocol/        the wire format, mirroring the controller's
 ├── logging/         log/slog setup
 ├── buildinfo/       version metadata, injected at link time
 └── controller/      control plane interface (contract only; no implementation)

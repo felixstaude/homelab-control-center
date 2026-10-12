@@ -22,11 +22,17 @@ hcc/
 │   ├── user.py           # accounts; canonical username, display name
 │   ├── session.py        # server-side sessions
 │   ├── installation.py   # the one-row first-run invariant
-│   └── audit.py          # append-only audit events
+│   ├── audit.py          # append-only audit events
+│   └── host.py           # hosts, enrolment credentials, agent credentials
+├── agents/         # the agent-facing half: a different kind of caller
+│   ├── protocol.py       # the wire format, versioned and bounded
+│   └── registry.py       # which sockets *this process* holds (ADR-046)
 ├── services/       # business rules: invariants, refusals, orchestration
 │   ├── users.py          # user administration + the last-admin invariant
 │   ├── account.py        # self-service: password change, own sessions
-│   └── audit.py          # the audit read side, with keyset pagination
+│   ├── audit.py          # the audit read side, with keyset pagination
+│   ├── hosts.py          # host administration + enrolment issuance
+│   └── enrollment.py     # the agent side: spending a credential, connecting
 ├── security/       # framework-free auth primitives
 │   ├── password.py       # Argon2id hashing, policy, concurrency cap
 │   ├── tokens.py         # token generation + SHA-256 storage hashing
@@ -50,7 +56,9 @@ hcc/
         ├── setup.py    # setup status (public, one bit)
         ├── users.py    # user administration (administrator)
         ├── account.py  # self-service account and sessions (any role)
-        └── audit.py    # the audit trail (administrator)
+        ├── audit.py    # the audit trail (administrator)
+        ├── hosts.py    # the host registry: reads any role, writes admin
+        └── agents.py   # enrolment + the agent WebSocket (per-host credential)
 alembic/            # migration environment + versions
 tests/              # unit tests (always run) + integration tests (need Postgres)
 ```
@@ -139,6 +147,32 @@ written to the audit trail.
 | POST | `/api/v1/users/{id}/sessions/revoke` | End every live session. Reports the count; 404 for an unknown account. |
 | GET | `/api/v1/audit/events` | The audit trail, newest first, keyset-paginated. |
 | GET | `/api/v1/audit/actions` | The action vocabulary this build writes. |
+| POST | `/api/v1/hosts` | Register a host. Creates the record only — **no credential is minted**, so a mistyped name does not leave a live secret. 409 `host_name_taken` for a case-insensitive duplicate. |
+| PATCH | `/api/v1/hosts/{id}` | Name, description, environment. Labels only: no field here can set the lifecycle, the administrative state or any connectivity column. |
+| POST | `/api/v1/hosts/{id}/disable` | Refuse this host's agent at the door, keeping its enrolment. Disconnects a live agent in milliseconds. |
+| POST | `/api/v1/hosts/{id}/enable` | Allow it to connect again. Reconnects nothing itself — the controller never dials out (ADR-018). |
+| POST | `/api/v1/hosts/{id}/enrollment` | Mint a one-time credential. **The only response in this API that contains a secret**, and the only time it exists outside the agent's filesystem. Revokes any pending one. 409 `host_already_enrolled` without `allow_reenrollment`. |
+| POST | `/api/v1/hosts/{id}/enrollment/revoke` | Kill an unused credential. Reports the count, so "nothing was pending" stays distinguishable from "one was revoked". |
+| POST | `/api/v1/hosts/{id}/credential/revoke` | Withdraw trust from the agent. 409 `no_live_credential` rather than a cheerful success, because "revoked" and "there was nothing to revoke" are different answers. |
+
+**Any authenticated role** reads the fleet, and that split is the product
+decision rather than an oversight: a Viewer who cannot list hosts cannot use a
+monitoring product, and an Operator who could mint enrolment credentials could
+enroll a machine of their own and feed the installation fabricated metrics.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/api/v1/hosts` | List hosts. Name, lifecycle and status filters; `limit` ≤ 100. The `connectivity` filter is applied **within** the page, because connectivity is derived rather than stored ([ADR-043](../../docs/ARCHITECTURE.md#adr-043-connectivity-is-derived-never-stored-as-a-boolean)) and a SQL predicate would be a second copy of that rule. |
+| GET | `/api/v1/hosts/{id}` | One host. |
+
+**Agent-facing**, authenticated by a **per-host credential** rather than a
+session — a fourth router, because neither credential kind may stand in for
+the other.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| POST | `/api/v1/agents/enroll` | Spend a one-time credential for a durable one. 200, not 201: nothing addressable was created, and there is no endpoint that returns the credential again. |
+| WEBSOCKET | `/api/v1/agents/connect` | The long-lived outbound connection. Refused *before* `accept` when unauthenticated, so no socket is ever opened for an anonymous caller. |
 
 Demoting or deactivating the **last active administrator** is refused with
 409 `last_administrator`, held by a transaction-scoped advisory lock rather

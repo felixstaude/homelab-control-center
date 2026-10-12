@@ -213,8 +213,16 @@ page. The rules (engineering rules 8 and 9, ADR-012):
 4. Every mock-backed card carries a `Sample` badge.
 
 The whole directory is deleted in Phase 3 (milestone 3.17), when the Overview
-page reads the real API. Authentication and user management are wired up, not
-monitoring data: the Overview page is still fixtures behind a banner.
+page reads the real API. Authentication, user management and the **host
+registry** are wired up, not monitoring data: the Overview page is still
+fixtures behind a banner.
+
+**The Hosts page is the exception, and deliberately carries no banner.** Every
+value on it came from an agent or from an administrator, and the columns with
+no value show nothing rather than a zero — so a banner there would be as
+misleading as its absence on the Overview page. The host detail page states
+that no metrics are collected yet rather than rendering a dashboard of zeroes,
+because a zeroed gauge is indistinguishable from a measurement.
 
 ## Structure
 
@@ -231,6 +239,7 @@ src/
 │   ├── users.ts           user administration (administrator only)
 │   ├── account.ts         own account, own sessions, password change
 │   ├── audit.ts           the audit trail (administrator only)
+│   ├── hosts.ts           the host registry: reads any role, writes admin
 │   ├── meta.ts            /info, for the General settings panel
 │   └── openapi.snapshot.json
 ├── auth/                  authentication state and routing
@@ -253,6 +262,7 @@ src/
 │   ├── page-header        per-page title block
 │   └── phase-notice       persistent phase marker
 ├── routes/                one module per page, plus login and setup
+│   ├── hosts/             the host registry's detail page and dialogs
 │   └── settings/          nested: general, users, account, sessions, audit
 ├── mocks/                 Phase 0 fixtures (deleted in Phase 3)
 ├── test/                  the fake backend and renderApp helpers

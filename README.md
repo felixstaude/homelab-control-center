@@ -155,6 +155,37 @@ without an active administrator — that operation is refused, because
 bootstrap does not reopen. See
 [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md#managing-accounts-milestone-17).
 
+### Connecting your first host
+
+The **Hosts** page is real: everything on it came from an agent or from an
+administrator, and a host with no data shows nothing rather than a zero.
+
+```bash
+# In the interface: Hosts → Register host, then "Issue enrolment credential".
+# The credential is shown once and cannot be retrieved again.
+
+# On the machine you want to monitor:
+make agent-build                                    # or cross-compile
+sudo install -m 0755 agents/linux/bin/hcc-agent /usr/local/bin/
+
+sudo install -m 0600 /dev/null /root/hcc-token
+sudo editor /root/hcc-token                         # paste the credential
+
+sudo HCC_AGENT_CONTROLLER_URL=https://your-controller \
+     HCC_AGENT_ENROLLMENT_TOKEN_FILE=/root/hcc-token \
+     hcc-agent enroll
+```
+
+The host appears as **Connected** within a second or two. Full procedure,
+including the systemd unit and what has and has not been verified:
+[`agents/linux/deploy/README.md`](agents/linux/deploy/README.md).
+
+Nothing about enrolment is automatic. A monitoring system that trusts anything
+claiming to be a host is one anyone on the network can poison with fabricated
+metrics, and fabricated metrics fire and suppress notification rules — so an
+administrator registers the record, and the credential authorises an agent to
+claim *that* record and nothing else.
+
 | URL | What |
 | --- | --- |
 | http://localhost:5173 | Web client |
@@ -180,10 +211,11 @@ Conventions, troubleshooting and the full setup guide:
 
 | Document | Contents |
 | --- | --- |
-| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | The hub: system design, trust boundaries, 37 ADRs, open questions |
+| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | The hub: system design, trust boundaries, 47 ADRs, open questions |
 | [PRODUCT_VISION.md](docs/PRODUCT_VISION.md) | What this is, who it is for, what it will never do |
 | [ROADMAP.md](docs/ROADMAP.md) | Phases 0–11 as small, independently testable milestones |
 | [SECURITY.md](docs/SECURITY.md) | Threat model, capability risks, secrets handling, known gaps |
+| [PERFORMANCE.md](docs/PERFORMANCE.md) | Measured figures, the measurement, and what has *not* been measured |
 | [DEVELOPMENT.md](docs/DEVELOPMENT.md) | Setup, conventions, troubleshooting |
 | [AGENT_ARCHITECTURE.md](docs/AGENT_ARCHITECTURE.md) | Transport, enrollment, credential rotation, config sync, offline behaviour |
 | [MONITORING_MODULES.md](docs/MONITORING_MODULES.md) | Module catalogue, collection methods, hardware caveats |

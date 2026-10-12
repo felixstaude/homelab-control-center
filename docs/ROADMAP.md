@@ -78,14 +78,59 @@ unauthenticated endpoint or reworking attribution later.
 | 1.5 | Secure first-run bootstrap and security hardening | ✅ `hcc bootstrap-admin` creates the initial administrator from a local command; no default credentials exist and no public setup endpoint does either (ADR-033); initialization recorded as a one-way `installation` row so bootstrap cannot reopen when accounts are removed; concurrent attempts create exactly one administrator; reverse-proxy origin handling via `HCC_PUBLIC_ORIGIN`/`HCC_TRUSTED_PROXIES` (ADR-034); three-budget login throttling with no single-source lockout (ADR-029 amended); wildcard credentialed CORS refused at startup; route-inventory scan extended to hidden and WebSocket routes with WebSocket session authentication (ADR-035); `last_login_at` recorded; security headers on unhandled 500s; migration `0004_installation` |
 | 1.6 | Login UI | ✅ Typed API client as the single HTTP boundary — same-origin credentials, no-store, per-request CSRF, every failure as one `ApiError` kind; hand-written contract types validated against the backend's real OpenAPI schema, with generation still deferred to 1.15 (ADR-037); authentication as one explicit five-state union where an unreachable control plane is not reported as a sign-out; login page with no username disclosure and no auto-retry; protected routing by placement, with the post-login destination validated against open redirects; first-run screen integrating the actual ADR-033 contract — instructions for the local command, never a browser bootstrap (`GET /api/v1/setup/status`, ADR-036); account menu with sign-out and role-aware permission helpers that fail closed to the smallest interface; query cache cleared on sign-in as well as sign-out; 214 frontend tests, 32 backend browser-contract tests and 80 executed Playwright browser tests across four viewports, against a real control plane and the real `hcc bootstrap-admin`. A stabilization pass after the milestone found and fixed seven further defects — a double-click sending two login requests, absent `Cache-Control` on authenticated responses, a `Server` banner, misleading sign-out copy, a broken `make dev-server`, invisible reloader output, and three drifted copies of the full-page chrome |
 | 1.7 | User management, role enforcement and session administration | ✅ Administrator-only `/api/v1/users` (list with search, role and status filters, bounded pagination and a live-session count per account; create; change display name or role; deactivate; reactivate; revoke sessions) — the first production call site for `AdminDep`, gated at the router so a route is privileged by placement. The **last-active-administrator invariant** is held by a transaction-scoped advisory lock rather than a count-then-update, which is wrong in a way one connection cannot show; ten simultaneous demotions across ten connections leave exactly one administrator (ADR-039). Self-service `/api/v1/account`: own details, own session list with revocation, and a password change that revokes every other session and **rotates** the current one, answering 422 and never 401 for a wrong current password (ADR-040). Usernames made immutable with a new mutable `display_name` (ADR-041). An **audit foundation** shipped early from 1.14 — append-only `audit_events`, success events committed in the mutation's own transaction, refusals and denials in their own, no tamper evidence claimed (ADR-038). Settings became five real nested routes with the administrative sections role-aware, and a 403 or 401 from any request now refreshes the cached identity so the interface cannot keep offering what the server refuses. Migration `0005_user_management`. 601 backend integration tests, 491 unit, 359 frontend and 118 Playwright browser tests. Six defects found by the new suites, including a `SELECT … FOR UPDATE` that read a **stale** hash from SQLAlchemy's identity map — the lock worked, the read did not — and 148px of page overflow caused by an `sr-only` header escaping its scroll container |
-| 1.8 | Host registration | Create a host in the UI; `hosts` table populated |
-| 1.9 | Enrolment tokens | One-time token issued, hashed at rest, single-use, expiring |
-| 1.10 | Agent enrolment endpoint | `POST /api/v1/agents/enroll` exchanges a one-time token for a credential |
-| 1.11 | Agent-side enrolment | Agent enrols on first start, persists its credential, survives restart |
-| 1.12 | Heartbeat | Agent heartbeats; UI shows last-seen and marks a silent host **Unknown** |
-| 1.13 | Credential revocation | Revoking a host rejects its next call immediately |
+| 1.8–1.13 | Host registry, secure enrolment and the first live host | ✅ **Delivered as one slice**, because the deliverable was never the parts: it was a host that actually connects, and six separately-shippable halves of that would each have been untestable. See the paragraphs below. |
 | 1.14 | Audit log | The table, the transactional write discipline and an administrator-only reader shipped in **1.7** as `audit_events` (ADR-038), because 1.7 created the first operations worth auditing and a record cannot be retrofitted over what happened in between. What remains here: login, logout, enrolment and revocation events; retention and pruning; export; and whatever integrity story is decided on |
 | 1.15 | Generated API client | TypeScript types generated from OpenAPI (ADR-007); drift fails CI. 1.6 shipped the drift half — hand-written types asserted against a committed schema snapshot, regenerated and compared in CI (ADR-037) — so this milestone is now generation only, replacing those hand-written types |
+
+### What 1.8–1.13 delivered
+
+Three tables (`hosts`, `host_enrollments`, `agent_credentials`), an
+administrator-only host API with the two reads open to every role, a one-time
+enrolment credential shown exactly once, an agent-facing enrolment endpoint
+and an authenticated outbound WebSocket — and a **real Go agent** that enrols,
+connects, heartbeats, reconnects and is cut off when revoked. Verified by
+driving the actual binary against the actual controller from a real browser
+(`apps/web/e2e/host-journey.spec.ts`), not by rendering a fixture.
+
+The decisions worth knowing about, each recorded as an ADR:
+
+- **Connectivity is derived, never stored** ([ADR-043](ARCHITECTURE.md#adr-043-connectivity-is-derived-never-stored-as-a-boolean)).
+  A boolean cleared on disconnect stays true forever when the controller dies,
+  so the dashboard would report a healthy fleet connected to nothing. There
+  are three states, and `stale` is the honest one.
+- **SHA-256 rather than Argon2id** for both credentials
+  ([ADR-042](ARCHITECTURE.md#adr-042-agent-credentials-are-hashed-with-sha-256-not-argon2id)),
+  superseding what `AGENT_ARCHITECTURE.md` originally said.
+- **Per-host advisory locks** rather than the installation-wide one user
+  management uses ([ADR-044](ARCHITECTURE.md#adr-044-host-invariants-are-serialised-per-host-not-installation-wide)).
+- **One audit trail with a host dimension**, and deliberately no
+  `host.agent_connected` action
+  ([ADR-045](ARCHITECTURE.md#adr-045-the-audit-trail-gains-a-host-dimension-rather-than-a-second-trail)).
+- **One controller process**, stated rather than enforced
+  ([ADR-046](ARCHITECTURE.md#adr-046-one-controller-process-stated-rather-than-enforced)).
+- **One vendored WebSocket dependency**, amending the agent's zero-dependency
+  rule ([ADR-047](ARCHITECTURE.md#adr-047-the-agent-takes-one-vendored-websocket-dependency-amending-adr-011)).
+
+`HCC_AGENT_TLS_SKIP_VERIFY` was **removed** rather than carried forward, along
+with the self-reported hostname — the host's identity now comes from the
+credential, so there is no field for an agent to claim to be another machine.
+
+Eleven defects were found by verification rather than by review, six of them
+only by running the real agent against the real controller: a `TYPE_CHECKING`
+import that made the WebSocket endpoint read a dependency as a query parameter
+and refuse every handshake, a lost update on the connection epoch, an agent
+that slept between heartbeats and so ignored a revocation for thirty seconds,
+two code paths reporting a revoked agent as "superseded", a backoff that reset
+on mere acceptance and turned a disabled host into a one-per-second reconnect
+storm, and a `status` command that reported a healthy host behind a controller
+URL it would always refuse.
+
+**Measured, not assumed** ([`PERFORMANCE.md`](PERFORMANCE.md)): 500
+connections per controller process at 224 KiB each, 188 heartbeat round trips
+a second against the 17 that 500 hosts need, 1.4–1.8 ms per heartbeat write,
+and 0.28 ms for the host list at a thousand rows. **500 is the supported fleet
+size today, not a thousand** — the thousand extrapolates comfortably and has
+not been measured.
 
 **Phase 1 delivers:** a secure multi-host inventory with live up/down status.
 

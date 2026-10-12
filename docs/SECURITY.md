@@ -518,27 +518,59 @@ an account as locked.
    them. Redis was rejected as a second stateful service for one feature
    (ADR-001, ADR-003). **Deploy with one worker** until this is addressed.
 
-### Agent enrolment
+### Agent enrolment (implemented)
 
-1. An admin creates a host and receives a **one-time** enrolment token.
-2. The token goes to `/etc/hcc-agent/token`, mode `0600`.
-3. The agent exchanges it once for a long-lived credential; the token is marked
-   consumed.
+1. An administrator registers a host. **Nothing else happens** — no credential
+   is minted, so a mistyped name does not leave a live secret in a browser.
+2. The administrator issues a **one-time enrolment credential**. Shown exactly
+   once; only its SHA-256 digest is stored.
+3. `hcc-agent enroll` spends it, in one conditional `UPDATE`, for a long-lived
+   per-host credential written to `/etc/hcc-agent/credential` at mode `0600`.
+4. Steady state: an outbound authenticated WebSocket.
 
-Design points:
+**The two credential kinds are never interchangeable**, and that separation is
+the load-bearing one. A browser session is not an agent credential and an
+agent credential is not a session — the second would turn one compromised host
+into an account on the control plane. Both directions are attempted and must
+fail in `apps/web/e2e/agent-security.spec.ts`, along with replay in each
+direction between the two endpoints.
 
-- **The one-time token is separate from the steady-state credential.** The
-  short-lived one is what gets pasted into terminals and lands in shell
-  history.
-- **Both are stored hashed.** A stolen database dump (adversary #5) yields no
-  working credentials.
-- **Revocation is immediate and server-side.** No waiting for expiry.
-- **The token is never a command-line flag** — command lines are world-readable
-  via `/proc`. It comes from a file (preferred) or the environment. Enforced by
-  `TestNoFlagAcceptsTheEnrolmentToken`.
-- **The token file must not be group- or world-readable.** The agent refuses to
-  start otherwise (`config.readTokenFile`), rather than accepting a secret that
-  is not a secret. Tested across modes `0644`, `0640`, `0604`, `0666`.
+Design points, every one implemented and tested:
+
+| Property | Where it is enforced |
+| --- | --- |
+| The one-time credential is separate from the steady-state one | Two tables; the short-lived one is what gets pasted into terminals, so its exposure is bounded to fifteen minutes and one use |
+| Single use, decided by the database | One conditional `UPDATE … WHERE consumed_at IS NULL … RETURNING`; a `SELECT`-then-`UPDATE` loses the race two agents started by one Ansible run would create |
+| At most one live credential per host | A **partial unique index**, so a re-enrollment race cannot leave two valid credentials where revoking "the" one silently leaves the other working |
+| Both stored as SHA-256 digests | [ADR-042](ARCHITECTURE.md#adr-042-agent-credentials-are-hashed-with-sha-256-not-argon2id). A stolen dump (adversary #5) yields nothing replayable |
+| Revocation is immediate | **23 ms** measured, when the revoking request reaches the process holding the socket; bounded by one heartbeat interval otherwise ([ADR-046](ARCHITECTURE.md#adr-046-one-controller-process-stated-rather-than-enforced)). The agent then exits non-zero |
+| Neither secret is a command-line flag | `TestNoSecretIsSettableViaAFlag`. Command lines are readable by every local user through `/proc` |
+| Neither secret is ever in a URL | Both in an `Authorization` header, including on the WebSocket handshake. A URL is in the browser's history, the next `Referer`, and every proxy's access log |
+| Neither file may be group- or world-readable | Measured: `0640`, `0644`, `0660` refused; `0600` and `0400` accepted. Refused rather than fixed — chmod-ing a file the agent did not create would hide the misconfiguration |
+| Neither file may be a symlink, foreign-owned, or in a writable directory | `Lstat` plus `O_NOFOLLOW`; the directory is checked because mode `0600` is no defence if another user can replace the file |
+| Writes are atomic | Temporary file, fsync, rename. An interrupted write otherwise leaves a truncated credential that fails authentication with no indication the file is the cause |
+| No TLS verification bypass exists | Removed rather than kept. The old `HCC_AGENT_TLS_SKIP_VERIFY` logged a warning at every start, and a warning nobody reads is not a mitigation. Plain HTTP survives for loopback only, and a hostname that merely *resolves* to loopback is refused |
+| A refusal discloses nothing | One status and one message for expired, used, revoked and never-existed. Asserted byte-for-byte, modulo the correlation id |
+| An unrecognised credential writes no audit row | Otherwise an endpoint reachable without a session is a table-growth amplifier. Twenty unrecognised attempts produce zero rows; a refusal that resolves to a known host is recorded, at most once per host per minute |
+
+### What a compromised monitored host gets
+
+Worth stating plainly, because it is the bound the whole design exists to
+create. An attacker with root on one monitored machine gets that machine's
+agent credential, and that credential authorises exactly one thing: reporting
+as that host.
+
+It cannot read another host's data, enumerate the fleet, issue commands, or
+act as a user — the host list is session-gated, and a bearer credential is not
+a session. The protocol carries no field naming a host, so the credential
+cannot be used to report as a different machine; and it carries nothing
+executable, so a compromised *controller* cannot run anything on a host either
+([`AGENT_ARCHITECTURE.md §3`](AGENT_ARCHITECTURE.md)). Each of those is
+asserted rather than asserted-about.
+
+What it *can* do is submit false measurements for its own host, which is
+unavoidable — the host is the only source of truth about itself — and is why
+agent-submitted data is untrusted input (structural property 6).
 
 ---
 

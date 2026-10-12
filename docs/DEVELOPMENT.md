@@ -211,6 +211,92 @@ bound that per account and are kept **separate** from the login budgets on
 purpose: sharing them would mean changing your password a few times spends the
 budget you need in order to sign in. `apps/server/.env.example` documents both.
 
+## Connecting a host in development (milestone 1.8)
+
+The whole flow works against a local stack, including the real agent. Plain
+HTTP is permitted here and nowhere else: the agent refuses a non-loopback
+`http://` URL outright, because that would send a host's credential in the
+clear.
+
+```bash
+# Build the agent and put its state somewhere disposable.
+make agent-build
+mkdir -p /tmp/hcc-agent && chmod 700 /tmp/hcc-agent
+```
+
+In the interface: **Hosts → Register host**, then *Issue enrolment credential*
+on the host's page. It is shown once; only its digest is stored, so there is
+no page and no API call that can produce it again.
+
+```bash
+# Put the credential in a file rather than the environment: a process's
+# environment is readable through /proc/<pid>/environ and is inherited by
+# every child it spawns.
+install -m 0600 /dev/null /tmp/hcc-agent/token
+editor /tmp/hcc-agent/token
+
+HCC_AGENT_CONTROLLER_URL=http://127.0.0.1:8000 \
+HCC_AGENT_CREDENTIAL_FILE=/tmp/hcc-agent/credential \
+HCC_AGENT_ENROLLMENT_TOKEN_FILE=/tmp/hcc-agent/token \
+  agents/linux/bin/hcc-agent enroll
+
+# Then run it. The host shows as Connected within a second or two.
+HCC_AGENT_CONTROLLER_URL=http://127.0.0.1:8000 \
+HCC_AGENT_CREDENTIAL_FILE=/tmp/hcc-agent/credential \
+HCC_AGENT_LOG_LEVEL=debug \
+  agents/linux/bin/hcc-agent run
+```
+
+`hcc-agent status` answers "is this host enrolled?" without starting anything,
+and never prints the credential. Its exit codes are distinct so a script can
+branch: `0` fine, `1` runtime failure including a revoked credential, `2` bad
+configuration, `3` not enrolled.
+
+### Things that will look like bugs and are not
+
+- **A host registered but not enrolled shows "Not enrolled" and no
+  connectivity alarm.** `unknown` rather than `critical`, because a step not
+  yet taken is not a failure.
+- **A disabled host shows "Offline" and "Disabled", not "Critical".** Nothing
+  is trying to connect, by the operator's own choice. A product that cries
+  wolf about hosts somebody switched off is one whose alarms get ignored.
+- **A host whose controller was killed shows "Stale", not "Offline".** A
+  connection is recorded and the heartbeats stopped; the controller cannot
+  tell whether the agent died or the network did, and does not guess
+  ([ADR-043](ARCHITECTURE.md#adr-043-connectivity-is-derived-never-stored-as-a-boolean)).
+- **Re-enrolling needs `-force`.** It revokes the credential the running agent
+  is using, so doing it by accident takes a working host offline — and the
+  one-time credential would be spent, so the mistake would not be undoable
+  without issuing another.
+
+### New environment variables
+
+```
+HCC_AGENT_ENROLLMENT_TTL_SECONDS=900     # controller: credential lifetime
+HCC_AGENT_HEARTBEAT_GRACE_SECONDS=90     # controller: silence before "stale"
+```
+
+Both have enforced floors, so neither can be configured away — a monitoring
+tool whose liveness check can be turned off reports "connected" for a fleet it
+has not heard from.
+
+Three variables were **removed** with 1.8, and an agent still setting them is
+silently ignored rather than failing: `HCC_AGENT_TLS_SKIP_VERIFY`,
+`HCC_AGENT_HOSTNAME` and `HCC_AGENT_REPORT_INTERVAL`. The reasoning is in
+`agents/linux/internal/config/config.go`, which keeps it next to the code
+rather than only here.
+
+## Measuring it
+
+```bash
+make db-up
+apps/server/.venv/bin/python scripts/measure-agents.py --hosts 1000 --connections 500
+```
+
+Creates a disposable database, starts a real controller, opens real WebSocket
+connections, and drops the database afterwards. The numbers it produced, and
+what they do **not** cover, are in [`PERFORMANCE.md`](PERFORMANCE.md).
+
 ## Quality gates
 
 ```bash
@@ -512,10 +598,18 @@ scripts/check-docs.sh    documentation link and ADR consistency checks
 
 ### Agent
 
-- **No third-party dependencies** (ADR-011). The standard library covers it. If
-  you believe you need a dependency, raise it as a decision first.
-- **Never log a secret.** `config.Config` redacts its token in both `String()`
-  and `LogValue()`; tests enforce both paths.
+- **One third-party dependency, vendored** ([ADR-047](ARCHITECTURE.md#adr-047-the-agent-takes-one-vendored-websocket-dependency-amending-adr-011)
+  amends ADR-011). `github.com/coder/websocket`, which has zero transitive
+  dependencies, lives in `agents/linux/vendor/`. If you believe you need
+  another, raise it as a decision first — and `go mod vendor` must leave no
+  diff, which CI checks.
+- **`gofmt` runs on `./cmd ./internal`, not `.`** — vendored source is not ours
+  to reformat.
+- **Never log a secret, and prefer having none to redact.** `config.Config`
+  holds no credential at all: the agent reads it from the file at the point of
+  use. That is a stronger guarantee than a redacting `String()`, because it
+  does not depend on anybody remembering to use one. The credential *path* is
+  logged, which is what an operator diagnosing a permission problem needs.
 - **Honour context cancellation.** Shutdown must not be blocked by in-flight
   work.
 - **Tests must pass under `-race`.** The agent's core is a concurrent loop. Use
