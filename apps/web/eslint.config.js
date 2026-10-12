@@ -88,8 +88,13 @@ export default tseslint.config(
   },
 
   // --- Tests: assert against DOM shapes, use deliberate non-null assertions ---
+  //
+  // `e2e/**` is included because Playwright specs are tests under a different
+  // suffix, and the same reasoning applies: a non-null assertion on a locator
+  // that was just asserted visible documents intent better than a branch that
+  // can never be taken.
   {
-    files: ['**/*.test.{ts,tsx}', 'vitest.setup.ts'],
+    files: ['**/*.test.{ts,tsx}', '**/*.spec.{ts,tsx}', 'e2e/**/*.ts', 'vitest.setup.ts'],
     languageOptions: {
       globals: { ...globals.node },
     },

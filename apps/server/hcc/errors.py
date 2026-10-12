@@ -28,7 +28,7 @@ from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from hcc.logging import get_logger
-from hcc.middleware import REQUEST_ID_HEADER, apply_security_headers
+from hcc.middleware import REQUEST_ID_HEADER, apply_security_headers, requires_no_store
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -195,7 +195,11 @@ def _harden_bypassed_response(request: Request, response: JSONResponse) -> None:
     """
     settings = getattr(request.app.state, "settings", None)
     if settings is not None and settings.security_headers_enabled:
-        apply_security_headers(response, enable_csp=settings.effective_csp_enabled)
+        apply_security_headers(
+            response,
+            enable_csp=settings.effective_csp_enabled,
+            no_store=requires_no_store(request.url.path),
+        )
 
     request_id = _request_id(request)
     if request_id is not None:

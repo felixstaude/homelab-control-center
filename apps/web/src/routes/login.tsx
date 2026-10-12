@@ -38,7 +38,11 @@ function arrivalNotice(
       return {
         variant: 'info',
         title: 'You are signed out',
-        body: 'Your session was revoked on the server.',
+        // Confirmation of something the user just did, so it describes their
+        // action and what it achieved. The earlier wording — "your session was
+        // revoked on the server" — described it as something that happened to
+        // them, which is the expiry case's message, not this one.
+        body: 'Your session has been closed on the server. Sign in again to continue.',
       };
     case 'no_session':
       // A first visit needs no explanation.
@@ -60,6 +64,20 @@ export function LoginPage() {
   const usernameId = useId();
   const passwordId = useId();
   const usernameRef = useRef<HTMLInputElement>(null);
+  /**
+   * Whether a submission is already in flight.
+   *
+   * A ref, not state, and deliberately so. The submit button is disabled from
+   * `isSigningIn`, but that only takes effect once React has re-rendered — and
+   * a double-click delivers its second event before that, so the handler ran
+   * twice and sent two login requests. That created a second session nobody
+   * would ever revoke and spent a second attempt from the throttle budget.
+   *
+   * A ref updates synchronously, so the guard holds within the same tick that
+   * the first click is being handled. The `disabled` attribute stays as the
+   * visible affordance; this is what makes it true.
+   */
+  const inFlight = useRef(false);
 
   // Focus the first field on arrival, so a keyboard user can type straight
   // away rather than tabbing past the page furniture.
@@ -100,6 +118,11 @@ export function LoginPage() {
     // rule guessed here could reject an account that actually exists.
     if (username.trim() === '' || password === '') return;
 
+    // A second submission while the first is unresolved is never what the
+    // user meant, and it costs them an attempt from their own budget.
+    if (inFlight.current) return;
+    inFlight.current = true;
+
     try {
       await signIn({ username, password });
       // Clear the password from component state the moment it is no longer
@@ -114,6 +137,10 @@ export function LoginPage() {
       // Nothing is logged: a failed login must not put a username, let alone
       // a password, into the console.
       clearPassword();
+    } finally {
+      // `finally`, so a failed attempt leaves the form usable. Releasing it
+      // only on success would turn one wrong password into a dead form.
+      inFlight.current = false;
     }
   };
 

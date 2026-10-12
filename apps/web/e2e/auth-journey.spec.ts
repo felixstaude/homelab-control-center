@@ -26,55 +26,20 @@
 
 import { execFileSync } from 'node:child_process';
 
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from '@playwright/test';
+
+import {
+  ADMIN_PASSWORD,
+  ADMIN_USERNAME,
+  BACKEND_URL,
+  DATABASE_URL,
+  SERVER_DIR,
+  bootstrapAdministrator,
+  openAccountMenu,
+  signIn,
+} from './helpers';
 
 test.describe.configure({ mode: 'serial' });
-
-const ADMIN_USERNAME = 'E2eAdmin';
-/** Not a production credential: this database exists for one run. */
-const ADMIN_PASSWORD = 'correct horse battery staple';
-
-const BACKEND_URL = process.env.E2E_BACKEND_URL ?? 'http://127.0.0.1:8201';
-const DATABASE_URL = process.env.E2E_DATABASE_URL ?? '';
-const SERVER_DIR = process.env.E2E_SERVER_DIR ?? '';
-
-/**
- * Run `hcc bootstrap-admin` against the disposable database.
- *
- * The real command, with the password on standard input — the same
- * non-interactive path `docs/DEVELOPMENT.md` documents for automation. Using
- * the command rather than inserting a row directly is the point: it verifies
- * that the documented procedure produces an account the browser can then
- * actually sign in with.
- */
-function bootstrapAdministrator(): string {
-  return execFileSync(
-    `${SERVER_DIR}/.venv/bin/hcc`,
-    ['bootstrap-admin', '--username', ADMIN_USERNAME, '--password-stdin'],
-    {
-      cwd: SERVER_DIR,
-      input: `${ADMIN_PASSWORD}\n`,
-      encoding: 'utf8',
-      env: { ...process.env, HCC_DATABASE_URL: DATABASE_URL },
-    },
-  );
-}
-
-/**
- * Fill the form and submit.
- *
- * `exact: true` on the labels: Playwright's `getByLabel` matches substrings by
- * default, so plain `'Password'` also matches the "Show password" toggle.
- */
-async function signIn(page: Page, username = ADMIN_USERNAME, password = ADMIN_PASSWORD) {
-  await page.getByLabel('Username', { exact: true }).fill(username);
-  await page.getByLabel('Password', { exact: true }).fill(password);
-  await page.getByRole('button', { name: 'Sign in' }).click();
-}
-
-async function openAccountMenu(page: Page) {
-  await page.getByRole('button', { name: new RegExp(ADMIN_USERNAME) }).click();
-}
 
 // ---------------------------------------------------------------------------
 // 1. A fresh installation

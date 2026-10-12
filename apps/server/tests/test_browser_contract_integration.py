@@ -250,6 +250,57 @@ class TestSessionResponseContract:
             assert client.cookies["hcc_session"] not in rendered
 
 
+class TestCacheability:
+    """Nothing per-session may be stored by a cache the operator does not own.
+
+    The client sends ``cache: 'no-store'`` on every request, but that binds
+    only the browser. A shared cache decides from the response, so the
+    guarantee has to be stated server-side.
+    """
+
+    async def test_the_session_response_is_not_storable(self, api_factory: ApiFactory) -> None:
+        async with api_factory() as client:
+            await bootstrap(client)
+            await client.post(LOGIN, json={"username": "felixadmin", "password": PASSWORD})
+
+            response = await client.get(ME)
+
+            assert response.status_code == 200
+            # A shared cache storing this would serve one operator's identity
+            # to the next person through the proxy.
+            assert response.headers["cache-control"] == "no-store"
+
+    @pytest.mark.parametrize("path", ["/healthz", "/readyz", SETUP_STATUS])
+    async def test_public_endpoints_are_not_storable(
+        self, api_factory: ApiFactory, path: str
+    ) -> None:
+        async with api_factory() as client:
+            response = await client.get(path)
+
+            # A cached readiness response is a readiness probe that lies, and a
+            # cached setup status would strand a browser on the setup screen
+            # after the installation was initialised.
+            assert response.headers["cache-control"] == "no-store"
+
+    async def test_an_error_response_is_not_storable(self, api_factory: ApiFactory) -> None:
+        async with api_factory() as client:
+            response = await client.get(ME)
+
+            assert response.status_code == 401
+            assert response.headers["cache-control"] == "no-store"
+
+    async def test_a_login_response_is_not_storable(self, api_factory: ApiFactory) -> None:
+        async with api_factory() as client:
+            await bootstrap(client)
+
+            response = await client.post(
+                LOGIN, json={"username": "felixadmin", "password": PASSWORD}
+            )
+
+            # This one carries the CSRF token and the Set-Cookie pair.
+            assert response.headers["cache-control"] == "no-store"
+
+
 class TestCsrfFromABrowser:
     """The cookie-to-header round trip, as the client performs it."""
 

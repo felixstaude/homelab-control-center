@@ -138,6 +138,30 @@ _STATIC_SECURITY_HEADERS: Final = {
     "Cross-Origin-Opener-Policy": "same-origin",
 }
 
+#: Paths whose responses must never be stored by any cache.
+#:
+#: The client already sends ``cache: 'no-store'`` on every request, but that
+#: only binds the browser. A shared cache — a reverse proxy, a corporate
+#: middlebox, a CDN someone puts in front of this — decides from the
+#: *response*, and an authenticated JSON body with no ``Cache-Control`` at all
+#: is heuristically cacheable. For ``/api/v1/auth/me`` that means one
+#: operator's identity being served to another, which is why this is set
+#: server-side rather than trusted to the client.
+#:
+#: The probes are included for a different reason: a cached readiness response
+#: is a readiness probe that lies.
+#:
+#: **When the control plane starts serving the built client**, static assets
+#: will want the opposite policy. Add them as an exclusion here rather than
+#: widening this to everything.
+_NO_STORE_PREFIXES: Final = ("/api/", "/healthz", "/readyz")
+
+
+def requires_no_store(path: str) -> bool:
+    """Whether a response for ``path`` must carry ``Cache-Control: no-store``."""
+    return path.startswith(_NO_STORE_PREFIXES)
+
+
 # A deliberately tight policy for an SPA served same-origin by the control
 # plane. `frame-ancestors 'none'` is the modern replacement for
 # X-Frame-Options; `form-action 'self'` blocks a injected form posting
@@ -161,7 +185,7 @@ _CONTENT_SECURITY_POLICY: Final = (
 )
 
 
-def apply_security_headers(response: Response, *, enable_csp: bool) -> None:
+def apply_security_headers(response: Response, *, enable_csp: bool, no_store: bool = False) -> None:
     """Attach the hardening headers to one response.
 
     Extracted from the middleware so that the catch-all exception handler can
@@ -184,6 +208,9 @@ def apply_security_headers(response: Response, *, enable_csp: bool) -> None:
     if enable_csp:
         response.headers.setdefault("Content-Security-Policy", _CONTENT_SECURITY_POLICY)
 
+    if no_store:
+        response.headers.setdefault("Cache-Control", "no-store")
+
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Add hardening headers to every response.
@@ -202,5 +229,9 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         response = await call_next(request)
-        apply_security_headers(response, enable_csp=self._enable_csp)
+        apply_security_headers(
+            response,
+            enable_csp=self._enable_csp,
+            no_store=requires_no_store(request.url.path),
+        )
         return response

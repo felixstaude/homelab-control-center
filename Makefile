@@ -151,7 +151,8 @@ dev-server: ## Run the backend with hot reload on :8000
 	@cd $(SERVER_DIR) && HCC_DATABASE_URL="$(DEV_DATABASE_URL)" \
 		HCC_CORS_ORIGINS='["http://localhost:5173"]' \
 		.venv/bin/uvicorn --factory hcc.app:create_app \
-			--reload --host 127.0.0.1 --port 8000 --log-config /dev/null
+			--reload --host 127.0.0.1 --port 8000 --log-config /dev/null \
+			--no-server-header
 
 .PHONY: dev-web
 dev-web: ## Run the frontend dev server on :5173

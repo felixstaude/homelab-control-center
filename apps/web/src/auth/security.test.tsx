@@ -5,7 +5,7 @@
  * because breaking it produces no visible symptom.
  */
 
-import { screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -89,6 +89,88 @@ describe('the password does not linger', () => {
     });
     expect(screen.getByLabelText('Password')).toHaveValue('');
     expect(document.body.outerHTML).not.toContain(PASSWORD);
+  });
+});
+
+describe('one deliberate action sends one request', () => {
+  it('does not submit twice when the button is clicked twice before a re-render', async () => {
+    // `fireEvent` rather than `userEvent`: userEvent awaits between events,
+    // which gives React time to re-render and apply `disabled`, so it cannot
+    // reproduce this. Two clicks in one tick is what a real double-click
+    // delivers, and it is what sent two login requests before the handler
+    // took a synchronous guard — creating a second session nobody would
+    // revoke and spending a second attempt from the user's throttle budget.
+    backend = installFakeBackend({ session: null });
+    renderApp('/login');
+    await waitForAuthToResolve();
+
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText('Username'), 'FelixAdmin');
+    await user.type(screen.getByLabelText('Password'), PASSWORD);
+
+    const submit = screen.getByRole('button', { name: 'Sign in' });
+    fireEvent.click(submit);
+    fireEvent.click(submit);
+    fireEvent.click(submit);
+
+    await waitFor(() => {
+      expect(screen.getByRole('navigation', { name: 'Primary' })).toBeInTheDocument();
+    });
+    expect(backend.requestsFor('/auth/login')).toHaveLength(1);
+  });
+
+  it('does not submit twice when Enter is pressed repeatedly', async () => {
+    backend = installFakeBackend({ session: null });
+    renderApp('/login');
+    await waitForAuthToResolve();
+
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText('Username'), 'FelixAdmin');
+    const passwordField = screen.getByLabelText('Password');
+    await user.type(passwordField, PASSWORD);
+
+    const form = passwordField.closest('form');
+    expect(form).not.toBeNull();
+    fireEvent.submit(form!);
+    fireEvent.submit(form!);
+
+    await waitFor(() => {
+      expect(screen.getByRole('navigation', { name: 'Primary' })).toBeInTheDocument();
+    });
+    expect(backend.requestsFor('/auth/login')).toHaveLength(1);
+  });
+
+  it('leaves the form usable after a failed attempt', async () => {
+    // The guard must be released on failure as well as success: a guard that
+    // only cleared on success would turn one wrong password into a form that
+    // never submits again.
+    backend = installFakeBackend({
+      session: null,
+      loginFailure: {
+        status: 401,
+        code: 'invalid_credentials',
+        message: 'Invalid username or password.',
+      },
+    });
+    renderApp('/login');
+    await waitForAuthToResolve();
+
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText('Username'), 'FelixAdmin');
+    await user.type(screen.getByLabelText('Password'), 'wrong one');
+    await user.click(screen.getByRole('button', { name: 'Sign in' }));
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeInTheDocument();
+    });
+
+    backend.state.loginFailure = null;
+    await user.type(screen.getByLabelText('Password'), PASSWORD);
+    await user.click(screen.getByRole('button', { name: 'Sign in' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('navigation', { name: 'Primary' })).toBeInTheDocument();
+    });
+    expect(backend.requestsFor('/auth/login')).toHaveLength(2);
   });
 });
 

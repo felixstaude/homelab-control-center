@@ -16,6 +16,11 @@
 #   make db-up            # PostgreSQL must be running
 #   ./scripts/e2e.sh
 #   ./scripts/e2e.sh --headed    # watch it happen
+#   ./scripts/e2e.sh e2e/session.spec.ts -g 'expired'   # one test
+#
+# Arguments are passed straight through to Playwright. Note that the suites
+# run serially against one installation, so selecting a subset can skip the
+# bootstrap the later files depend on.
 #
 # Safety
 # ------
@@ -45,6 +50,14 @@ E2E_DB_URL="postgresql://hcc:hcc_local_dev@127.0.0.1:5432/$E2E_DB"
 # Not 8000/5173: a running dev stack must not be mistaken for this one.
 BACKEND_PORT=8201
 PREVIEW_PORT=4173
+
+# The throttle window, shortened for the suite.
+#
+# The budgets stay at their production defaults, so the rate-limiting test
+# exercises the real limit — but a 300-second window would mean every test
+# after it ran against a throttled address. Two seconds is long enough for the
+# test to spend a budget inside one window and short enough to wait out.
+THROTTLE_WINDOW_SECONDS=2
 BACKEND_URL="http://127.0.0.1:$BACKEND_PORT"
 PREVIEW_URL="http://127.0.0.1:$PREVIEW_PORT"
 
@@ -175,6 +188,7 @@ info "== Control plane =="
     HCC_ENVIRONMENT=development \
     HCC_LOG_FORMAT=json \
     HCC_CORS_ORIGINS="[\"$PREVIEW_URL\"]" \
+    HCC_LOGIN_RATE_LIMIT_WINDOW_SECONDS="$THROTTLE_WINDOW_SECONDS" \
     .venv/bin/python -m hcc.main
 ) >/tmp/hcc-e2e-server.log 2>&1 &
 SERVER_PID=$!
@@ -224,10 +238,10 @@ wait_for "$PREVIEW_URL/" "preview server" || {
 # ---------------------------------------------------------------------------
 info "== Browser tests =="
 
-PLAYWRIGHT_ARGS=()
-if [[ "${1:-}" == "--headed" ]]; then
-  PLAYWRIGHT_ARGS+=(--headed)
-fi
+# Every argument is forwarded to Playwright, so the usual selectors work:
+#   ./scripts/e2e.sh --headed
+#   ./scripts/e2e.sh e2e/session.spec.ts -g 'expired session'
+PLAYWRIGHT_ARGS=("$@")
 
 (
   cd "$WEB_DIR"
@@ -236,6 +250,7 @@ fi
     E2E_BACKEND_URL="$BACKEND_URL" \
     E2E_DATABASE_URL="$E2E_DB_URL" \
     E2E_SERVER_DIR="$REPO_ROOT/$SERVER_DIR" \
+    E2E_THROTTLE_WINDOW_SECONDS="$THROTTLE_WINDOW_SECONDS" \
     npx playwright test "${PLAYWRIGHT_ARGS[@]}"
 )
 

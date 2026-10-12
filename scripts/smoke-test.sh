@@ -204,6 +204,23 @@ else
   bad "X-Request-ID header missing"
 fi
 
+# No server banner. uvicorn adds one by default; `hcc.main` turns it off,
+# which only a real server can demonstrate.
+if curl -sSI "$BASE/healthz" | grep -qi '^server:'; then
+  bad "Server header present (names the server software)"
+else
+  ok "No Server banner"
+fi
+
+# Nothing per-session may be stored by a cache the operator does not own.
+for path in /healthz /readyz /api/v1/setup/status /api/v1/info; do
+  if curl -sSI "$BASE$path" | grep -qi '^cache-control:.*no-store'; then
+    ok "Cache-Control: no-store on $path"
+  else
+    bad "Cache-Control: no-store missing on $path"
+  fi
+done
+
 # Structured JSON logging.
 if grep -q '"event": *"startup"' /tmp/hcc-smoke-server.log; then
   ok "Structured JSON startup log emitted"

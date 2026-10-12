@@ -32,6 +32,11 @@ def main() -> None:
         # uvicorn's own dictConfig is disabled to avoid two handler chains.
         log_config=None,
         access_log=False,
+        # No `Server: uvicorn` banner. It names the software to anyone who
+        # asks, which ADR-032's "disclose as little as possible" rules out and
+        # which a client has no use for. A version-less banner is only a small
+        # help to an attacker, but it is a free one to withhold.
+        server_header=False,
     )
 
 
