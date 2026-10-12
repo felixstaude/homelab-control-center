@@ -250,6 +250,117 @@
         "title": "AuditListResponse",
         "type": "object"
       },
+      "ConfigSyncResponse": {
+        "description": "Desired versus applied.\n\nThe distinction \u00a723 insists on: a configuration the controller has saved is\nnot thereby active. ``status`` describes the gap.",
+        "properties": {
+          "acknowledged_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the agent confirmed applying the newest revision.",
+            "title": "Acknowledged At"
+          },
+          "desired_checksum": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Desired Checksum"
+          },
+          "desired_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Newest revision the controller has generated.",
+            "title": "Desired Version"
+          },
+          "generated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generated At"
+          },
+          "rejected_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rejected At"
+          },
+          "rejection_problems": {
+            "description": "Every problem the agent reported, bounded. Empty unless rejected.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Rejection Problems",
+            "type": "array"
+          },
+          "reported_checksum": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reported Checksum"
+          },
+          "reported_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the agent says it is running. Null means it has not said.",
+            "title": "Reported Version"
+          },
+          "status": {
+            "description": "none | up_to_date | pending | rejected | stale. 'pending' is not a problem on its own \u2014 an agent has up to one heartbeat interval to notice. 'stale' is.",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "desired_version",
+          "desired_checksum",
+          "reported_version",
+          "reported_checksum",
+          "acknowledged_at",
+          "rejected_at",
+          "rejection_problems",
+          "generated_at"
+        ],
+        "title": "ConfigSyncResponse",
+        "type": "object"
+      },
       "CurrentUserResponse": {
         "description": "The authenticated identity.\n\nCarries no password material and no session token. ``csrf_token`` is\nincluded because the client needs it to make state-changing requests, and\nit is useless without the session cookie.",
         "properties": {
@@ -301,6 +412,49 @@
           "csrf_token"
         ],
         "title": "CurrentUserResponse",
+        "type": "object"
+      },
+      "EffectiveModuleResponse": {
+        "description": "One module's effective configuration on one host, with its provenance.\n\nBoth stored layers are reported alongside the resolved value, because\n\"inherited from the global default of 10 s\" and \"overridden on this host to\n10 s\" are identical in the value and are different facts.",
+        "properties": {
+          "enabled": {
+            "$ref": "#/components/schemas/ResolvedEnabledResponse"
+          },
+          "global_default": {
+            "$ref": "#/components/schemas/StoredSettingResponse"
+          },
+          "host_override": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StoredSettingResponse"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The host's own override, or null when this host has none at all."
+          },
+          "module_id": {
+            "title": "Module Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "schedule": {
+            "$ref": "#/components/schemas/ResolvedScheduleResponse"
+          }
+        },
+        "required": [
+          "module_id",
+          "name",
+          "enabled",
+          "schedule",
+          "global_default",
+          "host_override"
+        ],
+        "title": "EffectiveModuleResponse",
         "type": "object"
       },
       "EnrollRequest": {
@@ -479,6 +633,65 @@
         "title": "ErrorResponse",
         "type": "object"
       },
+      "GlobalDefaultResponse": {
+        "description": "A global default, keyed by module.",
+        "properties": {
+          "module_id": {
+            "title": "Module Id",
+            "type": "string"
+          },
+          "setting": {
+            "$ref": "#/components/schemas/StoredSettingResponse"
+          }
+        },
+        "required": [
+          "module_id",
+          "setting"
+        ],
+        "title": "GlobalDefaultResponse",
+        "type": "object"
+      },
+      "GlobalDefaultSavedResponse": {
+        "description": "What a global-default save did, including how far it reached.",
+        "properties": {
+          "hosts_changed": {
+            "description": "How many hosts' effective configuration this changed. Not every host: one that overrides this module is unaffected, and saying so lets the interface report '12 of 30 changed' rather than implying the whole fleet moved.",
+            "title": "Hosts Changed",
+            "type": "integer"
+          },
+          "module_id": {
+            "title": "Module Id",
+            "type": "string"
+          },
+          "setting": {
+            "$ref": "#/components/schemas/StoredSettingResponse"
+          }
+        },
+        "required": [
+          "module_id",
+          "setting",
+          "hosts_changed"
+        ],
+        "title": "GlobalDefaultSavedResponse",
+        "type": "object"
+      },
+      "GlobalDefaultsResponse": {
+        "description": "Every global default.\n\nModules with nothing configured are present with both fields null, so the\ninterface renders the full catalogue from one response and \"nothing has\nbeen said about this module\" is a value rather than a missing key.",
+        "properties": {
+          "defaults": {
+            "items": {
+              "$ref": "#/components/schemas/GlobalDefaultResponse"
+            },
+            "title": "Defaults",
+            "type": "array"
+          }
+        },
+        "required": [
+          "defaults"
+        ],
+        "title": "GlobalDefaultsResponse",
+        "type": "object"
+      },
       "HostConnectivity": {
         "description": "Whether an agent is attached *right now*.\n\nThree states, not two, and the third is the one that makes this honest.",
         "enum": [
@@ -588,6 +801,41 @@
           "offset"
         ],
         "title": "HostListResponse",
+        "type": "object"
+      },
+      "HostMonitoringResponse": {
+        "description": "A host's full monitoring configuration.",
+        "properties": {
+          "host_id": {
+            "title": "Host Id",
+            "type": "string"
+          },
+          "modules": {
+            "items": {
+              "$ref": "#/components/schemas/EffectiveModuleResponse"
+            },
+            "title": "Modules",
+            "type": "array"
+          },
+          "problems": {
+            "description": "Adjustments the controller made on the operator's behalf \u2014 an interval raised to a module's current floor, configuration for a module this release no longer has. Not errors: the configuration is valid and in use. Shown so a setting that does something other than what it says cannot do so silently.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Problems",
+            "type": "array"
+          },
+          "sync": {
+            "$ref": "#/components/schemas/ConfigSyncResponse"
+          }
+        },
+        "required": [
+          "host_id",
+          "modules",
+          "sync",
+          "problems"
+        ],
+        "title": "HostMonitoringResponse",
         "type": "object"
       },
       "HostResponse": {
@@ -768,6 +1016,40 @@
         "title": "HostResponse",
         "type": "object"
       },
+      "HostSettingSavedResponse": {
+        "description": "What a host-override save did.",
+        "properties": {
+          "module_id": {
+            "title": "Module Id",
+            "type": "string"
+          },
+          "revision_created": {
+            "description": "False when the save changed nothing the agent would notice \u2014 a setting written back identical to what it already was. The configuration is correct either way; this says whether a new revision was minted.",
+            "title": "Revision Created",
+            "type": "boolean"
+          },
+          "revision_version": {
+            "description": "The revision this produced, or the existing one.",
+            "title": "Revision Version",
+            "type": "integer"
+          },
+          "setting": {
+            "$ref": "#/components/schemas/StoredSettingResponse"
+          },
+          "sync": {
+            "$ref": "#/components/schemas/ConfigSyncResponse"
+          }
+        },
+        "required": [
+          "module_id",
+          "setting",
+          "revision_version",
+          "revision_created",
+          "sync"
+        ],
+        "title": "HostSettingSavedResponse",
+        "type": "object"
+      },
       "HostUpdateRequest": {
         "additionalProperties": false,
         "description": "Change a host's labels.\n\nEvery field is optional, and \"absent\" is distinguished from \"null\":\nomitting ``description`` leaves it alone, sending ``null`` clears it.\nPydantic cannot express that with a plain default, so\n:meth:`to_service_update` consults ``model_fields_set`` \u2014 the set of keys\nthe client actually sent.\n\nLabels only. ``lifecycle``, ``is_enabled`` and every connectivity column\nare deliberately absent: enrollment state is changed by enrolling or\nrevoking, administrative state by the enable and disable endpoints, and\nconnectivity by an agent connecting. A field here that could set any of\nthem would let an administrator type a host into a state the system had\nnot reached.",
@@ -865,6 +1147,193 @@
         "title": "LogoutResponse",
         "type": "object"
       },
+      "MetricResponse": {
+        "description": "One series a module produces, declared before any sample arrives.\n\nThe interface needs units and labels up front, so that an enabled module\nwith no data yet renders as \"no data\" rather than as nothing at all.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "description": "gauge | counter. A counter is never averaged.",
+            "title": "Kind",
+            "type": "string"
+          },
+          "label_keys": {
+            "description": "Dimensions this metric is broken down by \u2014 'core' for per-core CPU, 'window' for the three load averages. Empty means one series per host.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Label Keys",
+            "type": "array"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "unit": {
+            "description": "percent | bytes | seconds | count | load.",
+            "title": "Unit",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "unit",
+          "kind",
+          "label_keys"
+        ],
+        "title": "MetricResponse",
+        "type": "object"
+      },
+      "ModuleCatalogueResponse": {
+        "description": "Everything that can be configured, and the limits that apply to all of it.",
+        "properties": {
+          "document_version": {
+            "description": "Version of the configuration document shape.",
+            "title": "Document Version",
+            "type": "integer"
+          },
+          "max_interval_seconds": {
+            "description": "Global interval ceiling.",
+            "title": "Max Interval Seconds",
+            "type": "integer"
+          },
+          "min_interval_seconds": {
+            "description": "Global interval floor, across every module.",
+            "title": "Min Interval Seconds",
+            "type": "integer"
+          },
+          "modules": {
+            "items": {
+              "$ref": "#/components/schemas/ModuleResponse"
+            },
+            "title": "Modules",
+            "type": "array"
+          },
+          "registry_version": {
+            "description": "Version of the catalogue as a whole. Distinct from the protocol version: adding a module must not force a fleet upgrade.",
+            "title": "Registry Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "registry_version",
+          "document_version",
+          "min_interval_seconds",
+          "max_interval_seconds",
+          "modules"
+        ],
+        "title": "ModuleCatalogueResponse",
+        "type": "object"
+      },
+      "ModuleResponse": {
+        "description": "A module as the interface needs to present it.",
+        "properties": {
+          "allows_duplicate_runs": {
+            "title": "Allows Duplicate Runs",
+            "type": "boolean"
+          },
+          "data_schema_version": {
+            "title": "Data Schema Version",
+            "type": "integer"
+          },
+          "default_interval_seconds": {
+            "description": "The interval offered when an operator enables this module. NOT a default to run: every module ships disabled.",
+            "title": "Default Interval Seconds",
+            "type": "integer"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "metrics": {
+            "items": {
+              "$ref": "#/components/schemas/MetricResponse"
+            },
+            "title": "Metrics",
+            "type": "array"
+          },
+          "min_interval_seconds": {
+            "description": "The floor. Collecting faster is refused.",
+            "title": "Min Interval Seconds",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "platform": {
+            "title": "Platform",
+            "type": "string"
+          },
+          "requires_privileges": {
+            "title": "Requires Privileges",
+            "type": "boolean"
+          },
+          "schedule_kinds": {
+            "description": "Which scheduling kinds this module accepts. Enforced on save.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Schedule Kinds",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "description",
+          "platform",
+          "schedule_kinds",
+          "min_interval_seconds",
+          "default_interval_seconds",
+          "data_schema_version",
+          "requires_privileges",
+          "allows_duplicate_runs",
+          "metrics"
+        ],
+        "title": "ModuleResponse",
+        "type": "object"
+      },
+      "ModuleSettingRequest": {
+        "additionalProperties": false,
+        "description": "A change to one module at one layer.\n\n``model_fields_set`` distinguishes absent from null, which is the whole\nreason this is not two optional fields with ``None`` defaults \u2014 see the\nmodule docstring.",
+        "properties": {
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "True to collect, false not to, null to inherit the layer above. Omit the field entirely to leave it unchanged.",
+            "title": "Enabled"
+          },
+          "schedule": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A schedule document \u2014 {'kind': 'interval', 'interval_seconds': N} or a calendar schedule \u2014 or null to inherit. Omit to leave unchanged. Validated against the module's permitted kinds and its interval floor; every problem is returned at once.",
+            "title": "Schedule"
+          }
+        },
+        "title": "ModuleSettingRequest",
+        "type": "object"
+      },
       "PasswordChangeRequest": {
         "additionalProperties": false,
         "description": "Change the caller's own password.\n\nConfirmation of the new password is deliberately **not** a field. It is a\nclient-side guard against a typo in a masked input, and the server has\nnothing to compare it against that the client does not already have \u2014 so\nsending it would mean transmitting the new password twice for no gain. The\ninterface enforces the match before submitting.",
@@ -934,6 +1403,175 @@
           "status"
         ],
         "title": "ReadinessResponse",
+        "type": "object"
+      },
+      "ResolvedEnabledResponse": {
+        "description": "Whether a module collects on this host, and which layer decided.",
+        "properties": {
+          "source": {
+            "description": "default | global | host. 'default' means nothing is configured, which resolves to off. The source is why an interface can answer 'why is this host collecting every five seconds?'.",
+            "title": "Source",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "value",
+          "source"
+        ],
+        "title": "ResolvedEnabledResponse",
+        "type": "object"
+      },
+      "ResolvedScheduleResponse": {
+        "description": "The schedule a module runs on, and which layer decided.",
+        "properties": {
+          "next_runs": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "For a calendar schedule, the next few executions as ISO-8601 instants. Null for an interval schedule, where the next run is arithmetic rather than a calculation worth previewing.",
+            "title": "Next Runs"
+          },
+          "source": {
+            "description": "default | global | host.",
+            "title": "Source",
+            "type": "string"
+          },
+          "value": {
+            "additionalProperties": true,
+            "description": "The fully resolved schedule, exactly as the agent receives it. Every value is concrete \u2014 `jitter_seconds` is resolved, never omitted \u2014 because the agent merges nothing.",
+            "title": "Value",
+            "type": "object"
+          }
+        },
+        "required": [
+          "value",
+          "source"
+        ],
+        "title": "ResolvedScheduleResponse",
+        "type": "object"
+      },
+      "RevisionListResponse": {
+        "description": "A page of a host's configuration history, newest first.",
+        "properties": {
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "revisions": {
+            "items": {
+              "$ref": "#/components/schemas/RevisionResponse"
+            },
+            "title": "Revisions",
+            "type": "array"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revisions",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "title": "RevisionListResponse",
+        "type": "object"
+      },
+      "RevisionResponse": {
+        "description": "One historical configuration, without its document.\n\nThe document is several kilobytes and is not included in a list: a page of\ntwenty would be most of a megabyte, and the interface needs the versions\nand their outcomes rather than the bytes.",
+        "properties": {
+          "acknowledged_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acknowledged At"
+          },
+          "checksum": {
+            "title": "Checksum",
+            "type": "string"
+          },
+          "created_by_user_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By User Id"
+          },
+          "generated_at": {
+            "title": "Generated At",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "rejected_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rejected At"
+          },
+          "rejection_problems": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Rejection Problems",
+            "type": "array"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "checksum",
+          "generated_at",
+          "reason",
+          "created_by_user_id",
+          "acknowledged_at",
+          "rejected_at",
+          "rejection_problems"
+        ],
+        "title": "RevisionResponse",
         "type": "object"
       },
       "RevocationResponse": {
@@ -1051,6 +1689,42 @@
           "initialized"
         ],
         "title": "SetupStatus",
+        "type": "object"
+      },
+      "StoredSettingResponse": {
+        "description": "One layer's stored opinion. ``null`` means that layer inherits.",
+        "properties": {
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "True, false, or null meaning this layer does not say.",
+            "title": "Enabled"
+          },
+          "schedule": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The stored schedule document, or null meaning this layer does not say.",
+            "title": "Schedule"
+          }
+        },
+        "required": [
+          "enabled",
+          "schedule"
+        ],
+        "title": "StoredSettingResponse",
         "type": "object"
       },
       "UserCreateRequest": {
@@ -2663,6 +3337,292 @@
         ]
       }
     },
+    "/api/v1/hosts/{host_id}/monitoring": {
+      "get": {
+        "description": "Every module's resolved settings for one host, with provenance.\n\nReports the resolved value *and* both stored layers, because the question\nan operator asks is not \"what is the interval\" but \"why is it that\".",
+        "operationId": "get_host_monitoring_api_v1_hosts__host_id__monitoring_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "host_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Host Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostMonitoringResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "No such host."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "A host's effective monitoring configuration",
+        "tags": [
+          "monitoring"
+        ]
+      }
+    },
+    "/api/v1/hosts/{host_id}/monitoring/modules/{module_id}": {
+      "delete": {
+        "description": "Remove this host's override, so it inherits again.\n\nA ``DELETE`` rather than a ``PUT`` of all-nulls: \"stop overriding this\nmodule entirely\" is one intention and should be one request. Idempotent \u2014\nresetting a module that was already inherited succeeds, and is recorded,\nbecause \"did anyone try to change this?\" is a question the audit trail\nshould be able to answer.\n\n**200 with a body**, not 204. The caller needs the resulting revision and\nsync status in order to show what the reset actually did, and a 204 would\nmake that a second request against state that may already have moved.",
+        "operationId": "reset_host_override_api_v1_hosts__host_id__monitoring_modules__module_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "host_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Host Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "A module identifier from GET /api/v1/monitoring/modules.",
+            "in": "path",
+            "name": "module_id",
+            "required": true,
+            "schema": {
+              "description": "A module identifier from GET /api/v1/monitoring/modules.",
+              "maxLength": 32,
+              "title": "Module Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostSettingSavedResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "No such host, or no such module."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "Make a host inherit the global default for one module",
+        "tags": [
+          "monitoring"
+        ]
+      },
+      "put": {
+        "description": "Make this host differ from the global default for one module.\n\nThe response reports ``revision_created`` and the sync status rather than\njust success, because \u00a723 draws a line this endpoint sits exactly on: a\nconfiguration the controller has saved is **not** thereby active. The\nagent has to receive it, validate it and apply it, and until it does the\nstatus is ``pending``.",
+        "operationId": "set_host_override_api_v1_hosts__host_id__monitoring_modules__module_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "host_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Host Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "A module identifier from GET /api/v1/monitoring/modules.",
+            "in": "path",
+            "name": "module_id",
+            "required": true,
+            "schema": {
+              "description": "A module identifier from GET /api/v1/monitoring/modules.",
+              "maxLength": 32,
+              "title": "Module Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ModuleSettingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostSettingSavedResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "No such host, or no such module."
+          },
+          "422": {
+            "description": "The schedule was refused; every problem is listed."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "Set or clear one module's override on one host",
+        "tags": [
+          "monitoring"
+        ]
+      }
+    },
+    "/api/v1/hosts/{host_id}/monitoring/revisions": {
+      "get": {
+        "description": "Every configuration this host has been given, newest first.\n\nOffset pagination, unlike the audit log's keyset. The justification is the\nscale: a host accumulates a revision per configuration change, which is\noperator-paced rather than event-paced, so the deep-offset degradation\nkeyset pagination exists to avoid is not reachable here. The audit log,\nwhich grows per request, genuinely needs keyset.\n\nThe documents themselves are not included \u2014 see\n:class:`RevisionResponse`.",
+        "operationId": "list_revisions_api_v1_hosts__host_id__monitoring_revisions_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "host_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Host Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 50,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RevisionListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "No such host."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "A host's configuration history",
+        "tags": [
+          "monitoring"
+        ]
+      }
+    },
     "/api/v1/info": {
       "get": {
         "description": "Return metadata about the running control plane.\n\nAuthenticated, not public. The release version and environment name are of\nno use to a legitimate anonymous caller and of obvious use to someone\nmatching the deployment against known vulnerabilities.",
@@ -2702,6 +3662,162 @@
         "summary": "API version metadata",
         "tags": [
           "meta"
+        ]
+      }
+    },
+    "/api/v1/monitoring/defaults": {
+      "get": {
+        "description": "What every host does unless it overrides it.\n\nEvery module in the catalogue appears, including those with nothing\nconfigured \u2014 both fields null \u2014 so the interface renders the whole list\nfrom one response and does not have to treat a missing key as a value.",
+        "operationId": "get_global_defaults_api_v1_monitoring_defaults_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GlobalDefaultsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "The global module defaults",
+        "tags": [
+          "monitoring"
+        ]
+      }
+    },
+    "/api/v1/monitoring/defaults/{module_id}": {
+      "put": {
+        "description": "Change the fleet-wide default for one module.\n\n**200, not 201.** Nothing addressable is created: the resource is the\nmodule's default, which exists conceptually whether or not a row backs it,\nand this endpoint is idempotent \u2014 sending the same body twice leaves the\nsame state and mints no second revision.\n\nRegenerates the affected hosts' configuration revisions in the same\ntransaction, so a host's desired configuration cannot lag the default it\nis supposed to inherit. Bounded: past\n:data:`hcc.services.monitoring.MAX_EAGER_REGENERATION` hosts the remainder\npick the change up on their next connection, which regenerates anyway.",
+        "operationId": "set_global_default_api_v1_monitoring_defaults__module_id__put",
+        "parameters": [
+          {
+            "description": "A module identifier from GET /api/v1/monitoring/modules.",
+            "in": "path",
+            "name": "module_id",
+            "required": true,
+            "schema": {
+              "description": "A module identifier from GET /api/v1/monitoring/modules.",
+              "maxLength": 32,
+              "title": "Module Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ModuleSettingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GlobalDefaultSavedResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "No such module."
+          },
+          "422": {
+            "description": "The schedule was refused; every problem is listed."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "Set or clear a global module default",
+        "tags": [
+          "monitoring"
+        ]
+      }
+    },
+    "/api/v1/monitoring/modules": {
+      "get": {
+        "description": "The closed catalogue, with the limits that bound every schedule.\n\nStatic for a given release \u2014 it is the registry, which is code \u2014 so it\ntakes no database session and does no query. Served from an authenticated\nroute rather than a public one anyway: the module list describes what this\ndeployment is capable of collecting, which is of no use to an anonymous\ncaller and of some use to someone profiling the deployment.",
+        "operationId": "list_modules_api_v1_monitoring_modules_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModuleCatalogueResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "Every monitoring module this controller supports",
+        "tags": [
+          "monitoring"
         ]
       }
     },

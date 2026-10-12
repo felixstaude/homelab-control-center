@@ -680,7 +680,15 @@ describe('public surface', () => {
       '/api/v1/hosts/{host_id}/enable',
       '/api/v1/hosts/{host_id}/enrollment',
       '/api/v1/hosts/{host_id}/enrollment/revoke',
+      // Phase 2. Reads are open to every role, writes administrator-only —
+      // asserted behaviourally in the backend suite, not inferable from here.
+      '/api/v1/hosts/{host_id}/monitoring',
+      '/api/v1/hosts/{host_id}/monitoring/modules/{module_id}',
+      '/api/v1/hosts/{host_id}/monitoring/revisions',
       '/api/v1/info',
+      '/api/v1/monitoring/defaults',
+      '/api/v1/monitoring/defaults/{module_id}',
+      '/api/v1/monitoring/modules',
       '/api/v1/setup/status',
       '/api/v1/users',
       '/api/v1/users/{user_id}',

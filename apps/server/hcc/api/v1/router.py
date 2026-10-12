@@ -43,7 +43,7 @@ from pydantic import BaseModel, Field
 
 from hcc import __version__
 from hcc.api.deps import SettingsDep, get_current_session, require_min_role
-from hcc.api.v1 import account, agents, audit, auth, hosts, setup, users
+from hcc.api.v1 import account, agents, audit, auth, hosts, monitoring, setup, users
 from hcc.models.user import UserRole
 
 #: Paths under ``/api/v1`` reachable without a session, with the reason.
@@ -130,10 +130,16 @@ _protected.include_router(account.router)
 # could mint enrollment credentials could enroll a machine of their own and
 # feed the installation fabricated metrics. See hcc/api/v1/hosts.py.
 _protected.include_router(hosts.read_router)
+# Phase 2, split across the same two gates and for the same reason: a viewer
+# who cannot see which modules are collecting cannot interpret a chart, and an
+# operator who could enable collection could start gathering data about
+# somebody's machine without an administrator. See hcc/api/v1/monitoring.py.
+_protected.include_router(monitoring.read_router)
 
 _admin.include_router(users.router)
 _admin.include_router(audit.router)
 _admin.include_router(hosts.router)
+_admin.include_router(monitoring.router)
 
 _agents.include_router(agents.router)
 

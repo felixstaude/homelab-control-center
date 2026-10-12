@@ -34,6 +34,7 @@ from hcc.services.account import AccountService
 from hcc.services.audit import AuditQueryService
 from hcc.services.enrollment import AgentEnrollmentService
 from hcc.services.hosts import HostService
+from hcc.services.monitoring import MonitoringConfigService
 from hcc.services.users import UserService
 
 if TYPE_CHECKING:
@@ -237,6 +238,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         heartbeat_grace_seconds=settings.agent_heartbeat_grace_seconds,
     )
     app.state.agent_enrollment_service = AgentEnrollmentService(audit=app.state.audit_service)
+    # Phase 2. Shares the audit service rather than holding its own, so a
+    # configuration change and the host mutation beside it land in one
+    # transaction and one trail.
+    app.state.monitoring_config_service = MonitoringConfigService(audit=app.state.audit_service)
     # Per *process*, not per application and not shared across workers. This
     # is the honest statement of a real limitation rather than a cache: the
     # connections a worker holds are its own, and connectivity is derived from
