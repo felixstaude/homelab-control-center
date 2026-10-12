@@ -86,6 +86,7 @@ from hcc.api.deps import (
 )
 from hcc.errors import InvalidCredentialsError, RateLimitedError
 from hcc.logging import get_logger
+from hcc.models.user import UserRole
 from hcc.security.authentication import (
     AuthenticationFailedError,
     LoginRateLimitedError,
@@ -147,7 +148,12 @@ class CurrentUserResponse(BaseModel):
 
     user_id: str
     username: str = Field(description="Display form, as the user entered it.")
-    role: str
+    # The enum, not `str`: it puts the closed role set into the OpenAPI schema,
+    # so a client can be typed against the three roles that exist rather than
+    # against "some string". ADR-013 makes adding a role a reviewed migration;
+    # this makes it a visible API change too. The wire format is unchanged —
+    # `UserRole` is a `StrEnum`, so it still serialises as `"viewer"`.
+    role: UserRole
     is_active: bool
     session_expires_at: str = Field(description="ISO-8601 absolute session expiry.")
     csrf_token: str = Field(description="Send as the X-CSRF-Token header.")
@@ -300,7 +306,7 @@ async def login(
     return CurrentUserResponse(
         user_id=str(authenticated.user.id),
         username=authenticated.user.username,
-        role=authenticated.user.role.value,
+        role=authenticated.user.role,
         is_active=authenticated.user.is_active,
         session_expires_at=issued.expires_at.isoformat(),
         csrf_token=issued.csrf_token,
@@ -354,7 +360,7 @@ async def me(current: CurrentSessionDep) -> CurrentUserResponse:
     return CurrentUserResponse(
         user_id=str(current.user.id),
         username=current.user.username,
-        role=current.user.role.value,
+        role=current.user.role,
         is_active=current.user.is_active,
         session_expires_at=current.session.expires_at.isoformat(),
         csrf_token=current.csrf_token,

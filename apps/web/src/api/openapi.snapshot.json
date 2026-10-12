@@ -1,0 +1,562 @@
+{
+  "components": {
+    "schemas": {
+      "ApiInfo": {
+        "description": "Metadata describing this API version.",
+        "properties": {
+          "api_version": {
+            "description": "API major version served under this prefix.",
+            "title": "Api Version",
+            "type": "string"
+          },
+          "environment": {
+            "description": "Deployment environment name.",
+            "title": "Environment",
+            "type": "string"
+          },
+          "server_version": {
+            "description": "Control plane release version.",
+            "title": "Server Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "api_version",
+          "server_version",
+          "environment"
+        ],
+        "title": "ApiInfo",
+        "type": "object"
+      },
+      "CurrentUserResponse": {
+        "description": "The authenticated identity.\n\nCarries no password material and no session token. ``csrf_token`` is\nincluded because the client needs it to make state-changing requests, and\nit is useless without the session cookie.",
+        "properties": {
+          "csrf_token": {
+            "description": "Send as the X-CSRF-Token header.",
+            "title": "Csrf Token",
+            "type": "string"
+          },
+          "is_active": {
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "role": {
+            "$ref": "#/components/schemas/UserRole"
+          },
+          "session_expires_at": {
+            "description": "ISO-8601 absolute session expiry.",
+            "title": "Session Expires At",
+            "type": "string"
+          },
+          "user_id": {
+            "title": "User Id",
+            "type": "string"
+          },
+          "username": {
+            "description": "Display form, as the user entered it.",
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "username",
+          "role",
+          "is_active",
+          "session_expires_at",
+          "csrf_token"
+        ],
+        "title": "CurrentUserResponse",
+        "type": "object"
+      },
+      "ErrorDetail": {
+        "description": "The ``error`` member of an error response.",
+        "properties": {
+          "code": {
+            "description": "Stable machine-readable error code.",
+            "title": "Code",
+            "type": "string"
+          },
+          "details": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional structured context, e.g. field validation errors.",
+            "title": "Details"
+          },
+          "message": {
+            "description": "Human-readable description. Safe to display.",
+            "title": "Message",
+            "type": "string"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Correlates this response with server-side logs.",
+            "title": "Request Id"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "ErrorDetail",
+        "type": "object"
+      },
+      "ErrorResponse": {
+        "description": "The complete body of any non-2xx API response.",
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorDetail"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "title": "ErrorResponse",
+        "type": "object"
+      },
+      "LivenessResponse": {
+        "description": "Deliberately minimal: this endpoint is public.",
+        "properties": {
+          "status": {
+            "const": "ok",
+            "default": "ok",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "title": "LivenessResponse",
+        "type": "object"
+      },
+      "LoginPayload": {
+        "additionalProperties": false,
+        "description": "Login request body.\n\nBounded by Pydantic so oversized input is refused before any of our code\nsees it. ``model_config`` forbids extra fields: a typo'd key should be an\nerror, not something silently dropped.",
+        "properties": {
+          "password": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Password",
+            "type": "string"
+          },
+          "username": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "username",
+          "password"
+        ],
+        "title": "LoginPayload",
+        "type": "object"
+      },
+      "LogoutResponse": {
+        "properties": {
+          "status": {
+            "const": "logged_out",
+            "default": "logged_out",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "title": "LogoutResponse",
+        "type": "object"
+      },
+      "ReadinessResponse": {
+        "description": "Aggregate only: this endpoint is public.\n\nWhich dependency failed, and why, is logged server-side rather than\nreturned \u2014 see the module docstring.",
+        "properties": {
+          "status": {
+            "enum": [
+              "ready",
+              "not_ready"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "ReadinessResponse",
+        "type": "object"
+      },
+      "SetupStatus": {
+        "description": "Whether this installation has been initialized.\n\nDeliberately one field. See the module docstring for what is excluded and\nwhy.",
+        "properties": {
+          "initialized": {
+            "description": "True once an initial administrator has been created. False means the operator must run `hcc bootstrap-admin` on the controller host; there is no way to do it over HTTP.",
+            "title": "Initialized",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "initialized"
+        ],
+        "title": "SetupStatus",
+        "type": "object"
+      },
+      "UserRole": {
+        "description": "Roles a user account may hold.\n\nA closed set matching the authorization model in docs/ARCHITECTURE.md \u00a74.3.\nAdding a member requires a migration (``ALTER TYPE user_role ADD VALUE``),\nwhich is intentional: a new role changes the authorization surface and\nshould be a reviewed change rather than a configuration edit. See ADR-013.",
+        "enum": [
+          "viewer",
+          "operator",
+          "admin"
+        ],
+        "title": "UserRole",
+        "type": "string"
+      }
+    }
+  },
+  "info": {
+    "description": "Control plane API for Homelab Control Center \u2014 a self-hosted platform for\nmonitoring and managing Linux hosts, Docker containers and network devices.\n\nThis is a Phase 0 foundation release: the API surface is intentionally limited\nto operational endpoints and version metadata.",
+    "title": "Homelab Control Center",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v1/auth/login": {
+      "post": {
+        "description": "Verify credentials and issue a session.\n\nSession fixation is impossible by construction: the token is generated\nserver-side from a CSPRNG and nothing the client sends influences it. Any\nsession already presented is revoked before the new one is issued, so a\ntoken planted in the browser before login cannot survive it.",
+        "operationId": "login_api_v1_auth_login_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CurrentUserResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Invalid credentials. Identical for every cause."
+          },
+          "429": {
+            "description": "Too many attempts. Carries Retry-After."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "Authenticate and start a session",
+        "tags": [
+          "authentication"
+        ]
+      }
+    },
+    "/api/v1/auth/logout": {
+      "post": {
+        "description": "Revoke the current session server-side and clear its cookies.\n\nRequires a valid session and a valid CSRF token: without the CSRF check, a\ncross-site request could log a user out, which is a minor but real\nnuisance attack.\n\nRevocation is server-side and immediate. The cookie clearing is a\ncourtesy \u2014 the session is dead whether or not the client complies.",
+        "operationId": "logout_api_v1_auth_logout_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogoutResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "No valid session."
+          },
+          "403": {
+            "description": "CSRF validation failed."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "End the current session",
+        "tags": [
+          "authentication"
+        ]
+      }
+    },
+    "/api/v1/auth/me": {
+      "get": {
+        "description": "Return the current user, and the CSRF token for subsequent requests.\n\nThis is how a client that has a session cookie but no in-memory state \u2014\nafter a page reload, say \u2014 recovers both its identity and its CSRF token.",
+        "operationId": "me_api_v1_auth_me_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CurrentUserResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "No valid session."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "The authenticated identity",
+        "tags": [
+          "authentication"
+        ]
+      }
+    },
+    "/api/v1/info": {
+      "get": {
+        "description": "Return metadata about the running control plane.\n\nAuthenticated, not public. The release version and environment name are of\nno use to a legitimate anonymous caller and of obvious use to someone\nmatching the deployment against known vulnerabilities.",
+        "operationId": "api_info_api_v1_info_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiInfo"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "API version metadata",
+        "tags": [
+          "meta"
+        ]
+      }
+    },
+    "/api/v1/setup/status": {
+      "get": {
+        "description": "Report whether an initial administrator exists.\n\nReads the installation row rather than counting users, matching the\ninvariant bootstrap itself enforces (ADR-033): an installation stays\ninitialized even if every account is later removed, so this must not start\nreporting \"setup required\" when the last user is deleted.",
+        "operationId": "setup_status_api_v1_setup_status_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetupStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "Whether first-run setup is complete",
+        "tags": [
+          "setup"
+        ]
+      }
+    },
+    "/healthz": {
+      "get": {
+        "description": "Return 200 whenever the process is able to serve requests.\n\nPublic and intentionally uninformative. The version is available to an\nauthenticated caller at ``GET /api/v1/info``.",
+        "operationId": "liveness_healthz_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LivenessResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "Liveness probe",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/readyz": {
+      "get": {
+        "description": "Verify every dependency required to serve traffic.\n\nPublic, so the response is an aggregate. Which dependency failed and why\ngoes to the log, not to an anonymous caller.",
+        "operationId": "readiness_readyz_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadinessResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadinessResponse"
+                }
+              }
+            },
+            "description": "A dependency is unavailable."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "Readiness probe",
+        "tags": [
+          "operations"
+        ]
+      }
+    }
+  }
+}

@@ -46,6 +46,7 @@ pytestmark = pytest.mark.integration
 
 PASSWORD = "correct horse battery staple"
 LOGIN = "/api/v1/auth/login"
+SETUP_STATUS = "/api/v1/setup/status"
 
 #: Pseudo-method marking a WebSocket route in the enumeration, so one walk
 #: describes both protocols.
@@ -60,6 +61,9 @@ EXPECTED_PUBLIC_PATHS = {
     "/healthz",
     "/readyz",
     "/api/v1/auth/login",
+    # The web client needs this before it has a credential. One boolean, and
+    # safe to disclose only because bootstrap has no public path — ADR-036.
+    "/api/v1/setup/status",
     # FastAPI's own documentation endpoints. Public outside production and
     # absent inside it. They were missing from this list until milestone 1.5,
     # because the schema-based scan could not see them —
@@ -153,6 +157,24 @@ async def run_sql(client: AsyncClient, statement: str) -> None:
     async with client.app_state.database.session_factory() as db:  # type: ignore[attr-defined]
         await db.execute(text(statement))
         await db.commit()
+
+
+async def bootstrap(client: AsyncClient, *, username: str = "admin") -> None:
+    """Initialize the installation the way the CLI does.
+
+    Calls the same service the command calls, rather than reimplementing the
+    insert, so these tests cannot pass against a different invariant than the
+    one bootstrap actually enforces.
+    """
+    from hcc.security.bootstrap import bootstrap_administrator
+
+    async with client.app_state.database.session_factory() as db:  # type: ignore[attr-defined]
+        await bootstrap_administrator(
+            db,
+            username=username,
+            password=PASSWORD,
+            hasher=client.app_state.password_hasher,  # type: ignore[attr-defined]
+        )
 
 
 async def login_as(client: AsyncClient, username: str) -> str:
@@ -640,7 +662,7 @@ class TestDocumentationEndpoints:
             assert (await client.get("/docs")).status_code == 404
             assert (await client.get("/openapi.json")).status_code == 404
 
-    async def test_the_production_public_surface_is_only_the_three_product_paths(
+    async def test_the_production_public_surface_is_only_the_product_paths(
         self, api_factory: ApiFactory
     ) -> None:
         # The claim docs/SECURITY.md makes, asserted where it is true.
@@ -655,7 +677,103 @@ class TestDocumentationEndpoints:
                 if (await client.request(method, path)).status_code != 401:
                     reachable.add(path)
 
-            assert reachable == {"/healthz", "/readyz", "/api/v1/auth/login"}
+            assert reachable == {
+                "/healthz",
+                "/readyz",
+                "/api/v1/auth/login",
+                "/api/v1/setup/status",
+            }
+
+
+# ---------------------------------------------------------------------------
+# First-run setup status (milestone 1.6)
+# ---------------------------------------------------------------------------
+
+
+class TestSetupStatus:
+    """The one public endpoint added in 1.6.
+
+    It exists so the web client can distinguish "needs initializing" from
+    "log in" before any credential exists. Being public, what it discloses is
+    the whole question — so these assert the shape exactly, not merely that it
+    works.
+    """
+
+    async def test_reports_not_initialized_on_a_fresh_installation(
+        self, api_factory: ApiFactory
+    ) -> None:
+        async with api_factory() as client:
+            response = await client.get(SETUP_STATUS)
+
+            assert response.status_code == 200
+            assert response.json() == {"initialized": False}
+
+    async def test_reports_initialized_after_bootstrap(self, api_factory: ApiFactory) -> None:
+        async with api_factory() as client:
+            await bootstrap(client)
+
+            response = await client.get(SETUP_STATUS)
+
+            assert response.status_code == 200
+            assert response.json() == {"initialized": True}
+
+    async def test_is_reachable_without_a_session(self, api_factory: ApiFactory) -> None:
+        # The whole point: the client has no credential at this stage.
+        async with api_factory() as client:
+            assert (await client.get(SETUP_STATUS)).status_code == 200
+
+    async def test_discloses_exactly_one_field(self, api_factory: ApiFactory) -> None:
+        """The disclosure budget, asserted rather than trusted.
+
+        A later change that adds `initialized_at`, a user count or a username
+        here would be a new unauthenticated disclosure, so the response shape
+        is pinned.
+        """
+        async with api_factory() as client:
+            await bootstrap(client, username="SomeAdministrator")
+
+            response = await client.get(SETUP_STATUS)
+
+            assert set(response.json()) == {"initialized"}
+            rendered = response.text.lower()
+            assert "someadministrator" not in rendered
+            assert "initialized_at" not in rendered
+            assert "count" not in rendered
+
+    async def test_stays_initialized_after_every_user_is_deleted(
+        self, api_factory: ApiFactory
+    ) -> None:
+        # It reads the installation row, not a user count — matching the
+        # invariant bootstrap enforces (ADR-033). Reporting "setup required"
+        # here would invite an operator to try a bootstrap that is refused.
+        async with api_factory() as client:
+            await bootstrap(client)
+            await run_sql(client, "DELETE FROM users")
+
+            assert (await client.get(SETUP_STATUS)).json() == {"initialized": True}
+
+    async def test_is_listed_in_the_public_inventory_with_a_reason(self) -> None:
+        assert SETUP_STATUS in PUBLIC_PATHS
+        reason = PUBLIC_PATHS[SETUP_STATUS]
+        assert "before any credential" in reason
+        assert len(reason) > 40
+
+    async def test_state_changing_methods_are_not_offered(
+        self, api_factory: ApiFactory
+    ) -> None:
+        # Public *and* mutating would be the setup endpoint ADR-033 refuses.
+        async with api_factory() as client:
+            for method in ("POST", "PUT", "PATCH", "DELETE"):
+                response = await client.request(method, SETUP_STATUS)
+                assert response.status_code == 405, method
+
+    async def test_no_other_setup_route_exists(self, api_factory: ApiFactory) -> None:
+        # Guards against a future "convenience" endpoint appearing alongside
+        # it: /setup/status is the only path under /setup.
+        async with api_factory() as client:
+            setup_paths = {path for _, path in iter_operations(client) if "/setup" in path}
+
+            assert setup_paths == {SETUP_STATUS}
 
 
 class TestPublicEndpointDisclosure:

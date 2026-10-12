@@ -37,7 +37,7 @@ from pydantic import BaseModel, Field
 
 from hcc import __version__
 from hcc.api.deps import SettingsDep, get_current_session
-from hcc.api.v1 import auth
+from hcc.api.v1 import auth, setup
 
 #: Paths under ``/api/v1`` reachable without a session, with the reason.
 #: Mirrored by an explicit expected set in the authorization tests, so
@@ -45,9 +45,14 @@ from hcc.api.v1 import auth
 PUBLIC_V1_PATHS: Final[dict[str, str]] = {
     "/api/v1/auth/login": (
         "Authentication has to be reachable before a session exists. Protected "
-        "instead by credentials, by per-address and per-username throttling "
-        "applied before any password verification, and by a bounded request "
-        "body."
+        "instead by credentials, by three throttling budgets applied before "
+        "any password verification, and by a bounded request body."
+    ),
+    "/api/v1/setup/status": (
+        "The web client must distinguish 'needs initializing' from 'log in' "
+        "before any credential exists. Returns one boolean and nothing else, "
+        "and is safe to disclose because there is no public path to claim an "
+        "uninitialized installation — see hcc/api/v1/setup.py and ADR-036."
     ),
 }
 
@@ -81,6 +86,7 @@ async def api_info(settings: SettingsDep) -> ApiInfo:
 
 
 _public.include_router(auth.public_router)
+_public.include_router(setup.public_router)
 _protected.include_router(auth.router)
 
 router.include_router(_public)
