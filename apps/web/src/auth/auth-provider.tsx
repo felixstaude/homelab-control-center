@@ -29,10 +29,10 @@
  */
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import { fetchCurrentUser, fetchSetupStatus, login, logout } from '@/api/auth';
-import { ApiError, isApiError, isSessionExpired } from '@/api/errors';
+import { ApiError, isApiError, isPermissionDenied, isSessionExpired } from '@/api/errors';
 import type { CurrentUser, LoginCredentials } from '@/api/types';
 import { AuthContext, type AuthContextValue } from '@/auth/auth-context';
 import { type AuthState, type UnauthenticatedReason } from '@/auth/auth-state';
@@ -51,6 +51,16 @@ const SESSION_STALE_TIME_MS = 30_000;
 
 /** Setup status changes once in the lifetime of an installation. */
 const SETUP_STALE_TIME_MS = 5 * 60_000;
+
+/**
+ * Shortest gap between session refetches triggered by a permission denial.
+ *
+ * A guard against a burst: a page with several admin-only queries can produce
+ * three 403s in one render pass, and each one asking for the session back
+ * would be three identical requests. Short enough that a genuine role change
+ * is picked up on the next interaction, long enough that a storm is one call.
+ */
+const ROLE_RECHECK_THROTTLE_MS = 2_000;
 
 /**
  * Resolve the session, treating "no session" as data.
@@ -132,6 +142,74 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (JSON.stringify(event.query.queryKey) !== key) return;
       if (event.query.state.data) setEverAuthenticated(true);
     });
+  }, [queryClient]);
+
+  /**
+   * Revalidate the cached identity when the server refuses a request.
+   *
+   * The scenario this exists for: an administrator changes an operator into a
+   * viewer while that operator has the console open. The backend enforces the
+   * new role on the operator's very next privileged request — the role is read
+   * from the user row every time, never cached from login (ADR-028) — so
+   * nothing is *granted* by the stale client state. What goes wrong without
+   * this is the interface: it keeps offering administrative controls that now
+   * answer 403, so the user is told "you do not have permission" by a screen
+   * that is still inviting them to try.
+   *
+   * A 403 is therefore read as evidence that the cached identity may be out of
+   * date, and the session is re-fetched. Deliberately **not** a sign-out: 403
+   * means the session is fine and the role is not sufficient, and
+   * `isSessionExpired` stays 401-only for exactly that reason.
+   *
+   * A **401** from any request gets the same treatment, and that half closes a
+   * real gap. The session had previously resolved, so something ended it
+   * elsewhere — an administrator revoked it, the account was deactivated, it
+   * expired. The refetch resolves to `null`, which moves the state to
+   * `unauthenticated` and sends the user to the login page with an
+   * explanation. Without it the console kept rendering the authenticated shell
+   * until the session query happened to go stale, so a deactivated user sat
+   * looking at a page where nothing worked and nothing said why.
+   *
+   * The two cases take the same action for different reasons and that is
+   * deliberate: both mean "ask the server who I am", and the *answer* is what
+   * distinguishes them. Nothing here decides to sign anybody out — the
+   * refetched identity does, which keeps one authority over that decision.
+   *
+   * A cache subscription rather than a global `onError`, because the
+   * `QueryClient` is not constructible with a handler that can reach back into
+   * it, and because both queries and mutations have to be covered — a denied
+   * mutation is the more likely trigger, since that is what an operator was
+   * trying to do.
+   *
+   * Why not polling: a timer that re-checks the role every few seconds would
+   * spend requests continuously to catch an event that happens about never,
+   * and the backend is already authoritative on every request. Why not a
+   * WebSocket: a socket for role synchronisation alone is the kind of
+   * machinery `docs/ARCHITECTURE.md` §3.3 exists to keep out.
+   */
+  const lastRoleRecheck = useRef(0);
+  useEffect(() => {
+    const recheck = (error: unknown) => {
+      if (!isPermissionDenied(error) && !isSessionExpired(error)) return;
+      const now = Date.now();
+      if (now - lastRoleRecheck.current < ROLE_RECHECK_THROTTLE_MS) return;
+      lastRoleRecheck.current = now;
+      void queryClient.invalidateQueries({ queryKey: queryKeys.session.currentUser() });
+    };
+
+    const unsubscribeQueries = queryClient.getQueryCache().subscribe((event) => {
+      if (event.type !== 'updated') return;
+      recheck(event.query.state.error);
+    });
+    const unsubscribeMutations = queryClient.getMutationCache().subscribe((event) => {
+      if (event.type !== 'updated') return;
+      recheck(event.mutation.state.error);
+    });
+
+    return () => {
+      unsubscribeQueries();
+      unsubscribeMutations();
+    };
   }, [queryClient]);
 
   const signInMutation = useMutation({

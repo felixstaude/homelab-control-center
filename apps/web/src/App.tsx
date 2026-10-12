@@ -16,7 +16,12 @@ import { LogsPage } from '@/routes/logs';
 import { NetworkPage } from '@/routes/network';
 import { NotFoundPage } from '@/routes/not-found';
 import { OverviewPage } from '@/routes/overview';
-import { SettingsPage } from '@/routes/settings';
+import { SettingsAccount } from '@/routes/settings/account';
+import { SettingsAudit } from '@/routes/settings/audit';
+import { SettingsGeneral } from '@/routes/settings/general';
+import { SettingsLayout } from '@/routes/settings/layout';
+import { SettingsSessions } from '@/routes/settings/sessions';
+import { SettingsUsers } from '@/routes/settings/users';
 import { SetupPage } from '@/routes/setup';
 
 /**
@@ -86,7 +91,28 @@ export function App() {
                 <Route path="logs" element={<LogsPage />} />
                 <Route path="network" element={<NetworkPage />} />
                 <Route path="alerts" element={<AlertsPage />} />
-                <Route path="settings" element={<SettingsPage />} />
+
+                {/*
+                 * Settings is nested, so each section is a URL: linkable,
+                 * reloadable, and navigable with the browser's own Back
+                 * button. See `routes/settings/layout.tsx` for why that beats
+                 * tab state held in a component.
+                 *
+                 * The administrative sections are inside the same guard as
+                 * everything else and are not separately gated here. Placing
+                 * them behind a client-side role check would imply the client
+                 * is the boundary; it is not, and each panel explains the
+                 * refusal the server is already making
+                 * (`docs/SECURITY.md`).
+                 */}
+                <Route path="settings" element={<SettingsLayout />}>
+                  <Route index element={<SettingsGeneral />} />
+                  <Route path="users" element={<SettingsUsers />} />
+                  <Route path="account" element={<SettingsAccount />} />
+                  <Route path="sessions" element={<SettingsSessions />} />
+                  <Route path="audit" element={<SettingsAudit />} />
+                </Route>
+
                 {/* Legacy-friendly alias so /overview does not 404. */}
                 <Route path="overview" element={<Navigate to="/" replace />} />
                 <Route path="*" element={<NotFoundPage />} />

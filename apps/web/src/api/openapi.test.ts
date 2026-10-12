@@ -25,7 +25,22 @@ import { describe, expect, it } from 'vitest';
 
 import schema from '@/api/openapi.snapshot.json';
 import { API_BASE_PATH } from '@/api/client';
-import type { ApiInfo, CurrentUser, LogoutResult, SetupStatus, UserRole } from '@/api/types';
+import type {
+  AccountDetails,
+  ApiInfo,
+  AuditEvent,
+  AuditEventList,
+  CurrentUser,
+  LogoutResult,
+  ManagedUser,
+  OwnSession,
+  OwnSessionList,
+  PasswordChangeResult,
+  SessionRevocationResult,
+  SetupStatus,
+  UserListResult,
+  UserRole,
+} from '@/api/types';
 
 type JsonSchema = {
   type?: string;
@@ -90,9 +105,18 @@ function typesOf(property: JsonSchema): string[] {
  * `/setup/status` shows — reaches the browser without anyone deciding it
  * should.
  */
+/**
+ * The JSON Schema type names this file compares against.
+ *
+ * `integer` is distinct from `number` in JSON Schema and FastAPI emits it for
+ * every `int` field, so collapsing the two here would make a count that became
+ * a float pass unnoticed.
+ */
+type SchemaKind = 'string' | 'boolean' | 'number' | 'integer' | 'array' | 'object';
+
 function expectContract(
   schemaUnderTest: JsonSchema,
-  expected: Record<string, 'string' | 'boolean' | 'number'>,
+  expected: Record<string, SchemaKind>,
 ): void {
   const actual = schemaUnderTest.properties ?? {};
 
@@ -123,6 +147,7 @@ describe('GET /auth/me contract', () => {
     const contract: Record<keyof CurrentUser, 'string' | 'boolean'> = {
       user_id: 'string',
       username: 'string',
+      display_name: 'string',
       role: 'string',
       is_active: 'boolean',
       session_expires_at: 'string',
@@ -220,16 +245,290 @@ describe('role enum', () => {
   });
 });
 
+/* -------------------------------------------------------------------------
+ * User administration, account and audit (milestone 1.7)
+ * ---------------------------------------------------------------------- */
+
+describe('GET /users contract', () => {
+  it('matches UserListResult', () => {
+    const contract: Record<keyof UserListResult, SchemaKind> = {
+      items: 'array',
+      // `integer`, not `number`: FastAPI emits the distinction and the
+      // assertion keeps it, so a count that quietly became a float would fail
+      // here rather than render as "2.0 accounts".
+      total: 'integer',
+      limit: 'integer',
+      offset: 'integer',
+    };
+
+    expectContract(responseSchema('/api/v1/users', 'get'), contract);
+  });
+
+  it('returns exactly the fields ManagedUser declares, and no others', () => {
+    // The response model is an allow-list rather than a serialised row, and
+    // this is the client-side half of keeping it that way: an added server
+    // field — a password hash, a canonical username — fails here before it
+    // can reach a browser.
+    const contract: Record<keyof ManagedUser, SchemaKind> = {
+      user_id: 'string',
+      username: 'string',
+      display_name: 'string',
+      role: 'string',
+      is_active: 'boolean',
+      created_at: 'string',
+      last_login_at: 'string',
+      active_session_count: 'integer',
+    };
+
+    expectContract(resolve('#/components/schemas/UserResponse'), contract);
+  });
+
+  it('never advertises a password or a canonical username', () => {
+    const properties = Object.keys(
+      resolve('#/components/schemas/UserResponse').properties ?? {},
+    );
+
+    expect(properties).not.toContain('password');
+    expect(properties).not.toContain('password_hash');
+    expect(properties).not.toContain('username_canonical');
+  });
+
+  it('accepts the filters the client sends', () => {
+    // The client builds a query string by hand, so a renamed parameter would
+    // silently stop filtering rather than fail — the list would just look
+    // wrong.
+    const parameters = (
+      document.paths['/api/v1/users']?.get as unknown as {
+        parameters?: { name: string }[];
+      }
+    ).parameters;
+    const names = (parameters ?? []).map((parameter) => parameter.name);
+
+    expect(names).toEqual(
+      expect.arrayContaining(['search', 'role', 'is_active', 'limit', 'offset']),
+    );
+  });
+});
+
+describe('POST /users contract', () => {
+  it('accepts exactly the fields the client sends', () => {
+    const ref =
+      document.paths['/api/v1/users']?.post?.requestBody?.content?.['application/json']
+        ?.schema?.$ref;
+    expect(ref).toBeDefined();
+
+    const body = resolve(ref!);
+
+    expect(Object.keys(body.properties ?? {}).sort()).toEqual([
+      'display_name',
+      'is_active',
+      'password',
+      'role',
+      'username',
+    ]);
+    // Only the two that have no sensible default are required; the client
+    // relies on the server defaulting the role to viewer.
+    expect((body.required ?? []).sort()).toEqual(['password', 'username']);
+  });
+
+  it('creates with 201, not 200', () => {
+    // The client does not branch on it, but a change here would mean the
+    // helper's declared return type no longer matched a 200-only contract.
+    const responses = Object.keys(document.paths['/api/v1/users']?.post?.responses ?? {});
+
+    expect(responses).toContain('201');
+  });
+});
+
+describe('PATCH /users/{id} contract', () => {
+  it('accepts only the three mutable fields', () => {
+    // `username` must be absent: usernames are immutable (ADR-041), and a
+    // field appearing here would mean that decision had been reversed without
+    // the client being told.
+    const ref =
+      document.paths['/api/v1/users/{user_id}']?.patch?.requestBody?.content?.[
+        'application/json'
+      ]?.schema?.$ref;
+    expect(ref).toBeDefined();
+
+    const body = resolve(ref!);
+
+    expect(Object.keys(body.properties ?? {}).sort()).toEqual([
+      'display_name',
+      'is_active',
+      'role',
+    ]);
+    // Nothing is required: a partial update names only what it changes.
+    expect(body.required ?? []).toEqual([]);
+  });
+});
+
+describe('session revocation contract', () => {
+  it('reports a count, so the interface can state what happened', () => {
+    const contract: Record<keyof SessionRevocationResult, 'integer'> = {
+      sessions_revoked: 'integer',
+    };
+
+    expectContract(
+      responseSchema('/api/v1/users/{user_id}/sessions/revoke', 'post'),
+      contract,
+    );
+  });
+});
+
+describe('GET /account contract', () => {
+  it('matches AccountDetails and carries no CSRF token', () => {
+    const contract: Record<keyof AccountDetails, 'string' | 'boolean'> = {
+      user_id: 'string',
+      username: 'string',
+      display_name: 'string',
+      role: 'string',
+      is_active: 'boolean',
+      created_at: 'string',
+      last_login_at: 'string',
+    };
+
+    expectContract(responseSchema('/api/v1/account', 'get'), contract);
+  });
+});
+
+describe('GET /account/sessions contract', () => {
+  it('matches OwnSessionList', () => {
+    const contract: Record<keyof OwnSessionList, SchemaKind> = {
+      items: 'array',
+      current_session_id: 'string',
+    };
+
+    expectContract(responseSchema('/api/v1/account/sessions', 'get'), contract);
+  });
+
+  it('returns exactly the session fields the client renders', () => {
+    const contract: Record<keyof OwnSession, 'string' | 'boolean'> = {
+      session_id: 'string',
+      is_current: 'boolean',
+      created_at: 'string',
+      last_seen_at: 'string',
+      expires_at: 'string',
+      created_ip: 'string',
+      user_agent: 'string',
+    };
+
+    expectContract(resolve('#/components/schemas/SessionResponse'), contract);
+  });
+
+  it('never advertises a session token or a CSRF value', () => {
+    // The id is safe to expose and the token is not; a field named like the
+    // latter appearing here would be a credential on the wire.
+    const properties = Object.keys(
+      resolve('#/components/schemas/SessionResponse').properties ?? {},
+    );
+
+    expect(properties).not.toContain('token');
+    expect(properties).not.toContain('token_hash');
+    expect(properties).not.toContain('csrf_token');
+  });
+});
+
+describe('POST /account/password contract', () => {
+  it('accepts the current and new password, and no confirmation', () => {
+    // Confirmation is a client-side guard against a typo; sending it would
+    // transmit the new password twice for nothing.
+    const ref =
+      document.paths['/api/v1/account/password']?.post?.requestBody?.content?.[
+        'application/json'
+      ]?.schema?.$ref;
+    expect(ref).toBeDefined();
+
+    const body = resolve(ref!);
+
+    expect(Object.keys(body.properties ?? {}).sort()).toEqual([
+      'current_password',
+      'new_password',
+    ]);
+  });
+
+  it('matches PasswordChangeResult and returns no token', () => {
+    const contract: Record<keyof PasswordChangeResult, SchemaKind> = {
+      status: 'string',
+      other_sessions_revoked: 'integer',
+      session_expires_at: 'string',
+    };
+
+    expectContract(responseSchema('/api/v1/account/password', 'post'), contract);
+  });
+
+  it('documents 422 rather than 401 for a wrong current password', () => {
+    // Load-bearing: the client treats 401 as an expired session and signs the
+    // user out, so a 401 here would eject someone for a typo.
+    const responses = Object.keys(
+      document.paths['/api/v1/account/password']?.post?.responses ?? {},
+    );
+
+    expect(responses).toContain('422');
+    expect(responses).not.toContain('401x');
+  });
+});
+
+describe('GET /audit/events contract', () => {
+  it('matches AuditEventList', () => {
+    const contract: Record<keyof AuditEventList, SchemaKind> = {
+      items: 'array',
+      next_cursor: 'string',
+      total: 'integer',
+      limit: 'integer',
+    };
+
+    expectContract(responseSchema('/api/v1/audit/events', 'get'), contract);
+  });
+
+  it('returns exactly the event fields the client renders', () => {
+    const contract: Record<keyof AuditEvent, SchemaKind> = {
+      event_id: 'string',
+      occurred_at: 'string',
+      action: 'string',
+      outcome: 'string',
+      actor: 'object',
+      target: 'object',
+      request_id: 'string',
+      details: 'object',
+    };
+
+    expectContract(resolve('#/components/schemas/AuditEventResponse'), contract);
+  });
+
+  it('types the action as an open string, not a closed enum', () => {
+    // ADR-038: the vocabulary grows with every milestone that records
+    // something new, so a client must render an unrecognised value rather
+    // than fail on it. An enum appearing here would break that promise.
+    const action = resolve('#/components/schemas/AuditEventResponse').properties?.action;
+
+    expect(action?.enum).toBeUndefined();
+    expect(typesOf(action!)).toContain('string');
+  });
+});
+
 describe('public surface', () => {
   it('advertises only the endpoints the client expects', () => {
     // A guard against the schema growing an endpoint the client has not been
     // taught about — which, for anything public, is also a disclosure change.
     expect(Object.keys(document.paths).sort()).toEqual([
+      '/api/v1/account',
+      '/api/v1/account/password',
+      '/api/v1/account/sessions',
+      '/api/v1/account/sessions/revoke-others',
+      '/api/v1/account/sessions/{session_id}/revoke',
+      '/api/v1/audit/actions',
+      '/api/v1/audit/events',
       '/api/v1/auth/login',
       '/api/v1/auth/logout',
       '/api/v1/auth/me',
       '/api/v1/info',
       '/api/v1/setup/status',
+      '/api/v1/users',
+      '/api/v1/users/{user_id}',
+      '/api/v1/users/{user_id}/deactivate',
+      '/api/v1/users/{user_id}/reactivate',
+      '/api/v1/users/{user_id}/sessions/revoke',
       '/healthz',
       '/readyz',
     ]);

@@ -40,5 +40,69 @@ export const queryKeys = {
     currentUser: () => ['session', 'current-user'] as const,
     /** Authenticated server metadata. */
     apiInfo: () => ['session', 'api-info'] as const,
+
+    /* --- User administration (milestone 1.7) --- */
+
+    /**
+     * The root for every user-administration query.
+     *
+     * Invalidating this one key refreshes the list on whatever page, filter
+     * and search the operator is looking at, plus any open detail view. That
+     * is what mutations do, and it is why the parameters are *inside* the key
+     * rather than being a separate cache: a create or a role change has to
+     * invalidate the page the operator is on, and nothing knows which page
+     * that is except the cache itself.
+     */
+    users: () => ['session', 'users'] as const,
+    /**
+     * One page of the user list.
+     *
+     * The parameter object is part of the key, so two different filters are
+     * two cache entries rather than one entry that thrashes. Spelled as an
+     * object rather than positional arguments because adding a filter must
+     * not silently change the key of every existing entry.
+     */
+    userList: (params: UserListKeyParams) => ['session', 'users', 'list', params] as const,
+    user: (userId: string) => ['session', 'users', 'detail', userId] as const,
+
+    /* --- Own account (milestone 1.7) --- */
+
+    /** The caller's own account details. */
+    account: () => ['session', 'account'] as const,
+    /** The caller's own live sessions. */
+    accountSessions: () => ['session', 'account', 'sessions'] as const,
+
+    /* --- Audit trail (milestone 1.7) --- */
+
+    audit: () => ['session', 'audit'] as const,
+    auditEvents: (params: AuditEventKeyParams) =>
+      ['session', 'audit', 'events', params] as const,
+    auditActions: () => ['session', 'audit', 'actions'] as const,
   },
 } as const;
+
+/**
+ * The parts of the user-list query that identify a cache entry.
+ *
+ * Declared here rather than reusing `UserListParams` from `api/types.ts`, and
+ * the difference matters: a key must be **serialisable and stable**, and
+ * TanStack Query hashes it structurally. Re-using the request type would
+ * invite `undefined`-valued keys, which hash differently from an absent key in
+ * some orderings — producing a second entry that nothing ever invalidates.
+ * These are all required, with explicit "no filter" values supplied by the
+ * caller.
+ */
+export type UserListKeyParams = {
+  search: string;
+  role: string;
+  status: string;
+  limit: number;
+  offset: number;
+};
+
+/** The same reasoning, for the audit list. */
+export type AuditEventKeyParams = {
+  action: string;
+  cursor: string;
+  limit: number;
+};
