@@ -27,10 +27,9 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import { useAuth } from '@/auth/use-auth';
-import { Brand } from '@/components/layout/brand';
+import { FullPagePanel } from '@/components/layout/full-page-panel';
 import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
 import { Separator } from '@/components/ui/separator';
 import { Spinner } from '@/components/ui/spinner';
 
@@ -86,105 +85,96 @@ export function SetupPage() {
   };
 
   return (
-    <div className="bg-surface-base flex min-h-dvh flex-col items-center justify-center px-4 py-10">
-      <div className="bg-grid pointer-events-none fixed inset-0 opacity-60" aria-hidden="true" />
+    <FullPagePanel
+      width="lg"
+      footer={
+        <>
+          See <span className="font-mono">docs/DEVELOPMENT.md</span> for the full first-run
+          walkthrough.
+        </>
+      }
+    >
+      {initialized ? (
+        /*
+         * Reached when setup completed — here, or in another browser, or
+         * in a second tab. No restart is involved: the status query is
+         * re-read and this page becomes a link onward.
+         */
+        <>
+          <div className="text-status-ok flex items-center gap-2">
+            <CheckCircle2 className="size-4" aria-hidden="true" />
+            <h1 className="text-sm font-semibold">Setup complete</h1>
+          </div>
+          <p className="text-text-muted mt-2 text-xs">
+            An administrator account exists. You can sign in now.
+          </p>
+          <Button asChild variant="primary" size="lg" className="mt-5 w-full">
+            <Link to="/login">Continue to sign in</Link>
+          </Button>
+        </>
+      ) : (
+        <>
+          <h1 className="text-text-primary text-base font-semibold">
+            Finish setting up this installation
+          </h1>
+          <p className="text-text-muted mt-1.5 text-xs leading-relaxed">
+            This control plane has no administrator yet. Create one by running a
+            command on the host, then return here.
+          </p>
 
-      <div className="relative w-full max-w-xl">
-        <div className="mb-6 flex justify-center">
-          <Brand />
-        </div>
+          <Alert variant="info" title="Why not a form on this page?" className="mt-4">
+            Creating the first administrator requires access to this server, not
+            just access to this page. A setup form reachable over the network would
+            let anyone who found it first claim the installation.
+          </Alert>
 
-        <Card>
-          <CardContent className="pt-5">
-            {initialized ? (
-              /*
-               * Reached when setup completed — here, or in another browser, or
-               * in a second tab. No restart is involved: the status query is
-               * re-read and this page becomes a link onward.
-               */
-              <>
-                <div className="text-status-ok flex items-center gap-2">
-                  <CheckCircle2 className="size-4" aria-hidden="true" />
-                  <h1 className="text-sm font-semibold">Setup complete</h1>
+          <Separator className="my-5" />
+
+          <div className="flex flex-col gap-4">
+            {COMMANDS.map((entry) => (
+              <div key={entry.label}>
+                <div className="mb-1.5 flex items-center gap-2">
+                  <Terminal className="text-text-faint size-3.5" aria-hidden="true" />
+                  <span className="text-text-secondary text-xs font-medium">
+                    {entry.label}
+                  </span>
                 </div>
-                <p className="text-text-muted mt-2 text-xs">
-                  An administrator account exists. You can sign in now.
-                </p>
-                <Button asChild variant="primary" size="lg" className="mt-5 w-full">
-                  <Link to="/login">Continue to sign in</Link>
-                </Button>
+                <CommandBlock command={entry.command} />
+                <p className="text-text-faint mt-1 text-[11px]">{entry.hint}</p>
+              </div>
+            ))}
+          </div>
+
+          <p className="text-text-faint mt-4 text-[11px] leading-relaxed">
+            The command prompts for a password twice and never accepts one as an
+            argument. It can only be run once per installation.
+          </p>
+
+          <Separator className="my-5" />
+
+          <Button
+            onClick={() => {
+              void handleRecheck();
+            }}
+            variant="secondary"
+            size="lg"
+            disabled={checking}
+            className="w-full"
+          >
+            {checking ? (
+              <>
+                <Spinner />
+                Checking…
               </>
             ) : (
               <>
-                <h1 className="text-text-primary text-base font-semibold">
-                  Finish setting up this installation
-                </h1>
-                <p className="text-text-muted mt-1.5 text-xs leading-relaxed">
-                  This control plane has no administrator yet. Create one by running a
-                  command on the host, then return here.
-                </p>
-
-                <Alert variant="info" title="Why not a form on this page?" className="mt-4">
-                  Creating the first administrator requires access to this server, not
-                  just access to this page. A setup form reachable over the network would
-                  let anyone who found it first claim the installation.
-                </Alert>
-
-                <Separator className="my-5" />
-
-                <div className="flex flex-col gap-4">
-                  {COMMANDS.map((entry) => (
-                    <div key={entry.label}>
-                      <div className="mb-1.5 flex items-center gap-2">
-                        <Terminal className="text-text-faint size-3.5" aria-hidden="true" />
-                        <span className="text-text-secondary text-xs font-medium">
-                          {entry.label}
-                        </span>
-                      </div>
-                      <CommandBlock command={entry.command} />
-                      <p className="text-text-faint mt-1 text-[11px]">{entry.hint}</p>
-                    </div>
-                  ))}
-                </div>
-
-                <p className="text-text-faint mt-4 text-[11px] leading-relaxed">
-                  The command prompts for a password twice and never accepts one as an
-                  argument. It can only be run once per installation.
-                </p>
-
-                <Separator className="my-5" />
-
-                <Button
-                  onClick={() => {
-                    void handleRecheck();
-                  }}
-                  variant="secondary"
-                  size="lg"
-                  disabled={checking}
-                  className="w-full"
-                >
-                  {checking ? (
-                    <>
-                      <Spinner />
-                      Checking…
-                    </>
-                  ) : (
-                    <>
-                      <RefreshCw />
-                      I have created the administrator
-                    </>
-                  )}
-                </Button>
+                <RefreshCw />
+                I have created the administrator
               </>
             )}
-          </CardContent>
-        </Card>
-
-        <p className="text-text-faint mt-5 text-center text-[11px] leading-relaxed">
-          See <span className="font-mono">docs/DEVELOPMENT.md</span> for the full
-          first-run walkthrough.
-        </p>
-      </div>
-    </div>
+          </Button>
+        </>
+      )}
+    </FullPagePanel>
   );
 }

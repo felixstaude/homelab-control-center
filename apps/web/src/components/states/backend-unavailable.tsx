@@ -2,9 +2,8 @@ import { RefreshCw, ServerCrash } from 'lucide-react';
 import { useState } from 'react';
 
 import type { ApiError } from '@/api/errors';
-import { Brand } from '@/components/layout/brand';
+import { FullPagePanel } from '@/components/layout/full-page-panel';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
 import { Spinner } from '@/components/ui/spinner';
 
 /**
@@ -44,61 +43,51 @@ export function BackendUnavailable({
   };
 
   return (
-    <div className="bg-surface-base flex min-h-dvh flex-col items-center justify-center px-4 py-10">
-      <div className="relative w-full max-w-md">
-        <div className="mb-6 flex justify-center">
-          <Brand />
-        </div>
-
-        <Card>
-          <CardContent className="pt-5">
-            <div className="text-status-critical flex items-center gap-2">
-              <ServerCrash className="size-4" aria-hidden="true" />
-              <h1 className="text-sm font-semibold">Control plane unreachable</h1>
-            </div>
-
-            <p className="text-text-secondary mt-2 text-xs leading-relaxed">
-              {/*
-               * The client's fixed message for the failure kind, never the
-               * browser's own exception text — which varies and can contain
-               * the internal URL.
-               */}
-              {error.message}
-            </p>
-
-            <p className="text-text-faint mt-3 text-[11px] leading-relaxed">
-              Your session has not been ended. Check that the control plane is running
-              and reachable, then retry.
-            </p>
-
-            {error.requestId ? (
-              <p className="text-text-faint mt-3 font-mono text-[11px]">
-                Request {error.requestId}
-              </p>
-            ) : null}
-
-            <Button
-              onClick={handleRetry}
-              variant="secondary"
-              size="lg"
-              disabled={retrying}
-              className="mt-5 w-full"
-            >
-              {retrying ? (
-                <>
-                  <Spinner />
-                  Retrying…
-                </>
-              ) : (
-                <>
-                  <RefreshCw />
-                  Retry
-                </>
-              )}
-            </Button>
-          </CardContent>
-        </Card>
+    <FullPagePanel width="md">
+      <div className="text-status-critical flex items-center gap-2">
+        <ServerCrash className="size-4" aria-hidden="true" />
+        <h1 className="text-sm font-semibold">Control plane unreachable</h1>
       </div>
-    </div>
+
+      <p className="text-text-secondary mt-2 text-xs leading-relaxed">
+        {/*
+         * The client's fixed message for the failure kind, never the
+         * browser's own exception text — which varies and can contain
+         * the internal URL.
+         */}
+        {error.message}
+      </p>
+
+      <p className="text-text-faint mt-3 text-[11px] leading-relaxed">
+        Your session has not been ended. Check that the control plane is running
+        and reachable, then retry.
+      </p>
+
+      {error.requestId ? (
+        <p className="text-text-faint mt-3 font-mono text-[11px]">
+          Request {error.requestId}
+        </p>
+      ) : null}
+
+      <Button
+        onClick={handleRetry}
+        variant="secondary"
+        size="lg"
+        disabled={retrying}
+        className="mt-5 w-full"
+      >
+        {retrying ? (
+          <>
+            <Spinner />
+            Retrying…
+          </>
+        ) : (
+          <>
+            <RefreshCw />
+            Retry
+          </>
+        )}
+      </Button>
+    </FullPagePanel>
   );
 }

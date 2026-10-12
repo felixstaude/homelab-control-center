@@ -14,10 +14,9 @@ import { useLocation, useNavigate } from 'react-router-dom';
 
 import { isApiError } from '@/api/errors';
 import { useAuth } from '@/auth/use-auth';
-import { Brand } from '@/components/layout/brand';
+import { FullPagePanel } from '@/components/layout/full-page-panel';
 import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
 import { Field } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { Spinner } from '@/components/ui/spinner';
@@ -147,152 +146,143 @@ export function LoginPage() {
   const rateLimited = isApiError(failure) && failure.kind === 'rate_limited';
 
   return (
-    <div className="bg-surface-base flex min-h-dvh flex-col items-center justify-center px-4 py-10">
-      <div className="bg-grid pointer-events-none fixed inset-0 opacity-60" aria-hidden="true" />
-
-      <div className="relative w-full max-w-sm">
-        <div className="mb-6 flex justify-center">
-          <Brand />
-        </div>
-
-        <Card>
-          <CardContent className="pt-5">
-            <h1 className="text-text-primary text-base font-semibold">Sign in</h1>
-            <p className="text-text-muted mt-1 text-xs">
-              Use the administrator account created during setup.
-            </p>
-
-            {notice ? (
-              <Alert variant={notice.variant} title={notice.title} className="mt-4">
-                {notice.body}
-              </Alert>
-            ) : null}
-
-            {failure ? (
-              <Alert
-                variant={rateLimited ? 'warn' : 'critical'}
-                title={rateLimited ? 'Too many attempts' : 'Sign-in failed'}
-                className="mt-4"
-              >
-                {/*
-                 * The server's message, verbatim. For bad credentials it is
-                 * deliberately identical for a wrong password, an unknown
-                 * username and a disabled account, so this page cannot be
-                 * used to discover which usernames exist.
-                 */}
-                {failure.message}
-                {rateLimited && failure.retryAfterSeconds !== null ? (
-                  <> Try again in about {failure.retryAfterSeconds} seconds.</>
-                ) : null}
-              </Alert>
-            ) : null}
-
-            <form
-              onSubmit={(event) => {
-                void handleSubmit(event);
-              }}
-              className="mt-5 flex flex-col gap-4"
-              noValidate
-            >
-              <Field
-                id={usernameId}
-                label="Username"
-                error={usernameMissing ? 'Enter your username.' : null}
-              >
-                {(controlProps) => (
-                  <Input
-                    {...controlProps}
-                    ref={usernameRef}
-                    name="username"
-                    value={username}
-                    onChange={(event) => {
-                      setUsername(event.target.value);
-                    }}
-                    // Lets a password manager recognise and fill the pair.
-                    autoComplete="username"
-                    autoCapitalize="none"
-                    autoCorrect="off"
-                    spellCheck={false}
-                    required
-                    disabled={isSigningIn}
-                  />
-                )}
-              </Field>
-
-              <Field
-                id={passwordId}
-                label="Password"
-                error={passwordMissing ? 'Enter your password.' : null}
-              >
-                {(controlProps) => (
-                  <div className="relative">
-                    <Input
-                      {...controlProps}
-                      name="password"
-                      type={passwordVisible ? 'text' : 'password'}
-                      value={password}
-                      onChange={(event) => {
-                        setPassword(event.target.value);
-                      }}
-                      autoComplete="current-password"
-                      required
-                      disabled={isSigningIn}
-                      className="pr-10"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setPasswordVisible((visible) => !visible);
-                      }}
-                      // The control's purpose and its current state, so a
-                      // screen reader announces both.
-                      aria-label={passwordVisible ? 'Hide password' : 'Show password'}
-                      aria-pressed={passwordVisible}
-                      className={cnToggle}
-                      disabled={isSigningIn}
-                    >
-                      {passwordVisible ? (
-                        <EyeOff className="size-4" aria-hidden="true" />
-                      ) : (
-                        <Eye className="size-4" aria-hidden="true" />
-                      )}
-                    </button>
-                  </div>
-                )}
-              </Field>
-
-              <Button
-                type="submit"
-                variant="primary"
-                size="lg"
-                // Disabled while in flight so a second Enter cannot spend
-                // another attempt from the throttle budget.
-                disabled={isSigningIn}
-                className="mt-1 w-full"
-              >
-                {isSigningIn ? (
-                  <>
-                    <Spinner />
-                    Signing in…
-                  </>
-                ) : (
-                  <>
-                    <LogIn />
-                    Sign in
-                  </>
-                )}
-              </Button>
-            </form>
-          </CardContent>
-        </Card>
-
-        <p className="text-text-faint mt-5 text-center text-[11px] leading-relaxed">
+    <FullPagePanel
+      width="sm"
+      footer={
+        <>
           Homelab Control Center · self-hosted
           <br />
           Sessions are server-side and revoked on sign-out.
-        </p>
-      </div>
-    </div>
+        </>
+      }
+    >
+      <h1 className="text-text-primary text-base font-semibold">Sign in</h1>
+      <p className="text-text-muted mt-1 text-xs">
+        Use the administrator account created during setup.
+      </p>
+
+      {notice ? (
+        <Alert variant={notice.variant} title={notice.title} className="mt-4">
+          {notice.body}
+        </Alert>
+      ) : null}
+
+      {failure ? (
+        <Alert
+          variant={rateLimited ? 'warn' : 'critical'}
+          title={rateLimited ? 'Too many attempts' : 'Sign-in failed'}
+          className="mt-4"
+        >
+          {/*
+           * The server's message, verbatim. For bad credentials it is
+           * deliberately identical for a wrong password, an unknown
+           * username and a disabled account, so this page cannot be
+           * used to discover which usernames exist.
+           */}
+          {failure.message}
+          {rateLimited && failure.retryAfterSeconds !== null ? (
+            <> Try again in about {failure.retryAfterSeconds} seconds.</>
+          ) : null}
+        </Alert>
+      ) : null}
+
+      <form
+        onSubmit={(event) => {
+          void handleSubmit(event);
+        }}
+        className="mt-5 flex flex-col gap-4"
+        noValidate
+      >
+        <Field
+          id={usernameId}
+          label="Username"
+          error={usernameMissing ? 'Enter your username.' : null}
+        >
+          {(controlProps) => (
+            <Input
+              {...controlProps}
+              ref={usernameRef}
+              name="username"
+              value={username}
+              onChange={(event) => {
+                setUsername(event.target.value);
+              }}
+              // Lets a password manager recognise and fill the pair.
+              autoComplete="username"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              required
+              disabled={isSigningIn}
+            />
+          )}
+        </Field>
+
+        <Field
+          id={passwordId}
+          label="Password"
+          error={passwordMissing ? 'Enter your password.' : null}
+        >
+          {(controlProps) => (
+            <div className="relative">
+              <Input
+                {...controlProps}
+                name="password"
+                type={passwordVisible ? 'text' : 'password'}
+                value={password}
+                onChange={(event) => {
+                  setPassword(event.target.value);
+                }}
+                autoComplete="current-password"
+                required
+                disabled={isSigningIn}
+                className="pr-10"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  setPasswordVisible((visible) => !visible);
+                }}
+                // The control's purpose and its current state, so a
+                // screen reader announces both.
+                aria-label={passwordVisible ? 'Hide password' : 'Show password'}
+                aria-pressed={passwordVisible}
+                className={cnToggle}
+                disabled={isSigningIn}
+              >
+                {passwordVisible ? (
+                  <EyeOff className="size-4" aria-hidden="true" />
+                ) : (
+                  <Eye className="size-4" aria-hidden="true" />
+                )}
+              </button>
+            </div>
+          )}
+        </Field>
+
+        <Button
+          type="submit"
+          variant="primary"
+          size="lg"
+          // Disabled while in flight so a second Enter cannot spend
+          // another attempt from the throttle budget.
+          disabled={isSigningIn}
+          className="mt-1 w-full"
+        >
+          {isSigningIn ? (
+            <>
+              <Spinner />
+              Signing in…
+            </>
+          ) : (
+            <>
+              <LogIn />
+              Sign in
+            </>
+          )}
+        </Button>
+      </form>
+    </FullPagePanel>
   );
 }
 

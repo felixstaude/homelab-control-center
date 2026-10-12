@@ -289,6 +289,84 @@ else
 fi
 
 # --------------------------------------------------------------------------
+info "== Development entry point =="
+
+# `make dev-server` is the command the README and DEVELOPMENT.md tell a
+# contributor to run first, and nothing used to exercise it: every gate here
+# and in CI starts the server through `hcc.main` without `--reload`, or
+# through the ASGI app directly. It was broken for exactly that reason — the
+# target passed `--log-config /dev/null`, which Python 3.14 rejects as an
+# empty file — and a clean checkout would have failed on its first command.
+#
+# This starts the reloading form the same way the target does, on a port of
+# its own, and checks it serves.
+RELOAD_PORT=8199
+RELOAD_BASE="http://127.0.0.1:$RELOAD_PORT"
+RELOAD_PID=""
+
+if curl -sS -o /dev/null --max-time 2 "$RELOAD_BASE/healthz" 2>/dev/null; then
+  bad "Port $RELOAD_PORT is already in use; cannot check the reloading entry point"
+else
+  # `setsid`, so the reloader and the child it spawns get a process group of
+  # their own. Without it they share this script's group, and tearing them
+  # down by group would kill the script as well — which is exactly what the
+  # first version of this check did.
+  (
+    cd "$SERVER_DIR"
+    exec setsid env \
+      HCC_DATABASE_URL="$DATABASE_URL" \
+      HCC_PORT="$RELOAD_PORT" \
+      HCC_ENVIRONMENT=development \
+      .venv/bin/python -m hcc.main --reload
+  ) >/tmp/hcc-smoke-reload.log 2>&1 &
+  RELOAD_PID=$!
+
+  reload_up=false
+  for _ in $(seq 1 75); do
+    if curl -sS -o /dev/null "$RELOAD_BASE/healthz" 2>/dev/null; then
+      reload_up=true
+      break
+    fi
+    sleep 0.2
+  done
+
+  if [[ "$reload_up" == true ]]; then
+    ok "python -m hcc.main --reload serves (the form 'make dev-server' uses)"
+  else
+    bad "python -m hcc.main --reload did not come up"
+    tail -20 /tmp/hcc-smoke-reload.log
+  fi
+
+  # The reloader is a second process, and its own messages only appear if
+  # logging is configured in the parent. Without them a failed reload is
+  # silent, which is the one moment a developer needs to see output.
+  if grep -qi 'reloader process' /tmp/hcc-smoke-reload.log; then
+    ok "Reloader logs through the application's own logging"
+  else
+    bad "Reloader messages missing (parent process has no logging configured)"
+  fi
+
+  # The reloader spawns a child, so the whole group goes. `setsid` above made
+  # that group distinct from this script's.
+  if [[ -n "$RELOAD_PID" ]]; then
+    reload_pgid="$(ps -o pgid= -p "$RELOAD_PID" 2>/dev/null | tr -d ' ')"
+    if [[ -n "$reload_pgid" && "$reload_pgid" != "$$" ]]; then
+      kill -TERM -- "-$reload_pgid" 2>/dev/null || true
+    fi
+    wait "$RELOAD_PID" 2>/dev/null || true
+    for _ in $(seq 1 25); do
+      curl -sS -o /dev/null --max-time 1 "$RELOAD_BASE/healthz" 2>/dev/null || break
+      sleep 0.2
+    done
+    if curl -sS -o /dev/null --max-time 1 "$RELOAD_BASE/healthz" 2>/dev/null; then
+      bad "Reloading server did not shut down"
+    else
+      ok "Reloading server shut down"
+    fi
+  fi
+fi
+
+# --------------------------------------------------------------------------
 info "== Operator CLI (milestone 1.5) =="
 
 if "$SERVER_DIR/.venv/bin/hcc" --version 2>/dev/null | grep -q "hcc "; then

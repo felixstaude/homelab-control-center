@@ -228,6 +228,69 @@ jobs:
           done
 
   # ==========================================================================
+  # Smoke test: a real process, on the newest supported Python
+  # ==========================================================================
+  smoke:
+    name: Smoke (real server)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: hcc
+          POSTGRES_PASSWORD: hcc_local_dev
+          POSTGRES_DB: hcc
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U hcc -d hcc"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          # Deliberately **not** PYTHON_VERSION. The other jobs pin the oldest
+          # supported interpreter (3.12), which is the right floor to test
+          # against — but development happens on the newest, and a behaviour
+          # change there is invisible to a suite that only runs the floor.
+          # `make dev-server` was broken for exactly that reason: it passed
+          # `--log-config /dev/null`, which 3.14 rejects as an empty file and
+          # 3.12 accepts. One job on the ceiling covers that class of break
+          # without doubling the whole matrix.
+          python-version: '3.14'
+          cache: pip
+          cache-dependency-path: apps/server/pyproject.toml
+
+      - name: Install the backend
+        run: |
+          python -m venv apps/server/.venv
+          apps/server/.venv/bin/pip install --quiet --upgrade pip
+          apps/server/.venv/bin/pip install --quiet -e 'apps/server[dev]'
+
+      - name: Run the smoke test
+        # The only gate that starts a real uvicorn process and probes it over
+        # HTTP: response headers, the reloading entry point the documentation
+        # tells a contributor to use, shutdown, and the configuration
+        # refusals. Every other suite talks to the ASGI app in-process.
+        run: ./scripts/smoke-test.sh
+
+      - name: Upload the server log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-failure
+          path: /tmp/hcc-smoke-*.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # ==========================================================================
   # Browser end-to-end
   # ==========================================================================
   e2e:

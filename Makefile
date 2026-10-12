@@ -150,9 +150,8 @@ bootstrap: ## Create the initial administrator (prompts for a password)
 dev-server: ## Run the backend with hot reload on :8000
 	@cd $(SERVER_DIR) && HCC_DATABASE_URL="$(DEV_DATABASE_URL)" \
 		HCC_CORS_ORIGINS='["http://localhost:5173"]' \
-		.venv/bin/uvicorn --factory hcc.app:create_app \
-			--reload --host 127.0.0.1 --port 8000 --log-config /dev/null \
-			--no-server-header
+		HCC_HOST=127.0.0.1 HCC_PORT=8000 \
+		.venv/bin/python -m hcc.main --reload
 
 .PHONY: dev-web
 dev-web: ## Run the frontend dev server on :5173
