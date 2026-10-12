@@ -20,6 +20,21 @@ import { defineConfig, devices } from '@playwright/test';
  * Playwright therefore starts no servers itself. `webServer` is deliberately
  * unused: reproducing the migration and bootstrap sequence here would
  * duplicate the script, and the two would drift.
+ *
+ * ## Why the files are numbered
+ *
+ * The suites share one installation, and two of them assert *first-run* state
+ * that cannot be restored once consumed: `10-auth-journey.spec.ts` tests the
+ * uninitialised installation and spends its one-shot bootstrap, and
+ * `20-host-journey.spec.ts` asserts an empty host registry. Everything after
+ * them bootstraps tolerantly and creates whatever it needs.
+ *
+ * Playwright runs files in path order, so that ordering is a real contract.
+ * It used to hold by alphabetical accident, until a file whose name sorted
+ * before `auth-journey` was added and quietly broke both assertions. The
+ * numeric prefixes make the order a declared property instead of a lucky one,
+ * and `scripts/e2e.sh` refuses to run if a spec file is missing its prefix.
+ * Gaps of ten leave room to insert a suite without renumbering.
  */
 
 /** Where `scripts/e2e.sh` serves the built client. */

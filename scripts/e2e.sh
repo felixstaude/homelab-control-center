@@ -16,7 +16,7 @@
 #   make db-up            # PostgreSQL must be running
 #   ./scripts/e2e.sh
 #   ./scripts/e2e.sh --headed    # watch it happen
-#   ./scripts/e2e.sh e2e/session.spec.ts -g 'expired'   # one test
+#   ./scripts/e2e.sh e2e/60-session.spec.ts -g 'expired'   # one test
 #
 # Arguments are passed straight through to Playwright. Note that the suites
 # run serially against one installation, so selecting a subset can skip the
@@ -171,6 +171,25 @@ if [[ ! -d "$WEB_DIR/node_modules/@playwright/test" ]]; then
 fi
 green "  ✓ toolchain present"
 
+# The suites share one installation and the first two assert first-run state
+# that cannot be restored once spent, so Playwright's path ordering is a
+# contract rather than a detail — see apps/web/playwright.config.ts. This
+# refuses an unnumbered spec file instead of letting it sort wherever its name
+# happens to fall, which is how `30-agent-security.spec.ts` once silently
+# consumed the bootstrap that `10-auth-journey.spec.ts` needed.
+unnumbered=""
+for spec in "$WEB_DIR"/e2e/*.spec.ts; do
+  base="$(basename "$spec")"
+  [[ "$base" =~ ^[0-9][0-9]- ]] || unnumbered+=" $base"
+done
+if [[ -n "$unnumbered" ]]; then
+  red "Spec files must start with a two-digit order prefix (e.g. 80-thing.spec.ts):"
+  red " $unnumbered"
+  red "See apps/web/playwright.config.ts for why the order matters."
+  exit 1
+fi
+green "  ✓ every spec file declares its run order"
+
 require_free_port "$BACKEND_PORT"
 require_free_port "$PREVIEW_PORT"
 green "  ✓ ports $BACKEND_PORT and $PREVIEW_PORT are free"
@@ -235,8 +254,8 @@ info "== Linux agent =="
 #
 # Go is optional. A contributor without a toolchain still gets every other
 # suite, and the host journey skips with a stated reason rather than passing
-# vacuously — `host-journey.spec.ts` fails if the binary is missing and
-# HCC_E2E_REQUIRE_AGENT is set, which is what CI sets.
+# vacuously — `20-host-journey.spec.ts` fails if the binary is missing and
+# E2E_REQUIRE_AGENT is set, which is what CI sets.
 AGENT_BINARY=""
 AGENT_STATE_DIR="$(mktemp -d /tmp/hcc-e2e-agent-XXXXXX)"
 # 0700, because the agent refuses a credential whose directory other local
@@ -291,7 +310,7 @@ info "== Browser tests =="
 
 # Every argument is forwarded to Playwright, so the usual selectors work:
 #   ./scripts/e2e.sh --headed
-#   ./scripts/e2e.sh e2e/session.spec.ts -g 'expired session'
+#   ./scripts/e2e.sh e2e/60-session.spec.ts -g 'expired session'
 PLAYWRIGHT_ARGS=("$@")
 
 (

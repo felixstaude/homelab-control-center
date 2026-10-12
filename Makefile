@@ -223,8 +223,10 @@ openapi: ## Regenerate the OpenAPI snapshot the web client's types are checked a
 
 .PHONY: test-integration
 test-integration: ## Run backend integration tests (requires make db-up)
-	@cd $(SERVER_DIR) && HCC_TEST_DATABASE_URL="$(DEV_DATABASE_URL)" \
-		.venv/bin/python -m pytest -m integration
+# Creates its own disposable database, so the suite's truncations and
+# migrations never touch the development installation — see
+# scripts/test-integration.sh.
+	@./scripts/test-integration.sh
 
 # --- Frontend ---
 

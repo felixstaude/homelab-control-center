@@ -56,7 +56,7 @@ export function bootstrapAdministrator(): string {
 /**
  * Make sure an administrator exists, whoever got here first.
  *
- * `auth-journey.spec.ts` bootstraps as part of testing the first-run
+ * `10-auth-journey.spec.ts` bootstraps as part of testing the first-run
  * sequence, so in a full run this is a no-op that exits 3. It exists so that
  * every other suite can be run on its own — a file that silently depended on
  * another file having run first would be reported as a product failure the
@@ -251,7 +251,7 @@ function credentialPath(): string {
  * Plain `http://127.0.0.1` is deliberate and is the one case the agent
  * permits without TLS: a controller on loopback is reached over a socket no
  * other machine can see. Any other host over http is refused at startup,
- * which `security.spec.ts` asserts.
+ * which `50-security.spec.ts` asserts.
  */
 function agentEnv(extra: Record<string, string> = {}): Record<string, string> {
   return {

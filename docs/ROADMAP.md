@@ -90,7 +90,7 @@ enrolment credential shown exactly once, an agent-facing enrolment endpoint
 and an authenticated outbound WebSocket — and a **real Go agent** that enrols,
 connects, heartbeats, reconnects and is cut off when revoked. Verified by
 driving the actual binary against the actual controller from a real browser
-(`apps/web/e2e/host-journey.spec.ts`), not by rendering a fixture.
+(`apps/web/e2e/20-host-journey.spec.ts`), not by rendering a fixture.
 
 The decisions worth knowing about, each recorded as an ADR:
 

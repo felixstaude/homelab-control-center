@@ -51,7 +51,7 @@ import {
 
 test.describe.configure({ mode: 'serial' });
 
-// Runnable on its own: in a full run `auth-journey.spec.ts` has already
+// Runnable on its own: in a full run `10-auth-journey.spec.ts` has already
 // bootstrapped and this exits 3, which is tolerated.
 test.beforeAll(() => {
   ensureAdministrator();

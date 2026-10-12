@@ -532,7 +532,7 @@ an account as locked.
 the load-bearing one. A browser session is not an agent credential and an
 agent credential is not a session — the second would turn one compromised host
 into an account on the control plane. Both directions are attempted and must
-fail in `apps/web/e2e/agent-security.spec.ts`, along with replay in each
+fail in `apps/web/e2e/30-agent-security.spec.ts`, along with replay in each
 direction between the two endpoints.
 
 Design points, every one implemented and tested:

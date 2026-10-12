@@ -351,21 +351,33 @@ Backend tests come in two tiers:
 #### Browser end-to-end tests
 
 ```bash
-make e2e                                  # the whole suite
-./scripts/e2e.sh e2e/session.spec.ts      # one file
-./scripts/e2e.sh -g 'expired session'     # one test
-./scripts/e2e.sh --headed                 # watch it happen
+make e2e                                   # the whole suite
+./scripts/e2e.sh e2e/60-session.spec.ts    # one file
+./scripts/e2e.sh -g 'expired session'      # one test
+./scripts/e2e.sh --headed                  # watch it happen
+E2E_REQUIRE_AGENT=1 make e2e               # fail, don't skip, without Go
 ```
 
-Arguments are forwarded to Playwright. Four suites run serially against one
-installation:
+Arguments are forwarded to Playwright. Seven suites run serially against one
+installation, **in the order their filenames declare**:
 
 | Suite | What it covers |
 | --- | --- |
-| `auth-journey.spec.ts` | First run, bootstrap, sign in, navigate, reload, sign out |
-| `responsive.spec.ts` | The same screens at 1920×1080, 1440×900, 768×1024 and 390×844 — overflow, target sizes, reachable navigation, layout shift, keyboard order, password-manager compatibility |
-| `security.spec.ts` | Session fixation, login CSRF from a foreign origin, borrowed CSRF tokens, rejected `Origin` shapes, CORS, back-button disclosure, enumeration, the live routed surface |
-| `session.spec.ts` | Expiry, server-side revocation, forged cookies, client restart, 401 versus 403, an unreachable backend and recovery, real throttling |
+| `10-auth-journey.spec.ts` | First run, bootstrap, sign in, navigate, reload, sign out |
+| `20-host-journey.spec.ts` | Host registration, enrollment, the real Go agent connecting, heartbeats, reconnection, revocation |
+| `30-agent-security.spec.ts` | Enrollment hijacking, credential replay, WebSocket authentication bypass, TLS downgrade, reconnect storms, revocation races — each as an attempt that must fail |
+| `40-responsive.spec.ts` | The same screens at 1920×1080, 1440×900, 768×1024 and 390×844 — overflow, target sizes, reachable navigation, layout shift, keyboard order, password-manager compatibility |
+| `50-security.spec.ts` | Session fixation, login CSRF from a foreign origin, borrowed CSRF tokens, rejected `Origin` shapes, CORS, back-button disclosure, enumeration, the live routed surface |
+| `60-session.spec.ts` | Expiry, server-side revocation, forged cookies, client restart, 401 versus 403, an unreachable backend and recovery, real throttling |
+| `70-user-management.spec.ts` | Creating accounts, role changes taking effect on live sessions, deactivation, password changes, the audit trail, last-administrator protection |
+
+The numeric prefixes are load-bearing. `10-auth-journey` tests an
+*uninitialised* installation and spends its one-shot bootstrap, and
+`20-host-journey` asserts an *empty* host registry; neither state can be
+restored once consumed, so both must run before anything that creates an
+administrator or a host. Everything from `30-` on bootstraps tolerantly.
+`scripts/e2e.sh` refuses to run if a spec file has no prefix, because this
+contract previously held by alphabetical accident and a new file broke it.
 
 
 `scripts/e2e.sh` owns the whole fixture, so there is nothing to set up and
@@ -649,8 +661,9 @@ database on that server and never touches yours.
 The suites run serially against one installation and several sign in and out
 of the same account, so selecting a subset can skip something a later file
 expects. Every suite bootstraps an administrator itself if one is missing, so
-running one file is safe — but `auth-journey.spec.ts` is the only one that can
-observe the uninitialised state, and only on a fresh database.
+running one file is safe — but `10-auth-journey.spec.ts` is the only one that
+can observe the uninitialised state, and `20-host-journey.spec.ts` the only
+one that can observe an empty host registry, each only on a fresh database.
 
 **The backend starts but the frontend shows "cannot reach the control plane".**
 Check the backend is on :8000 and that `HCC_CORS_ORIGINS` includes

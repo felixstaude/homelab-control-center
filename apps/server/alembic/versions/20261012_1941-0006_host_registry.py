@@ -108,9 +108,7 @@ def upgrade() -> None:
         # dashboard would report healthy connectivity for a fleet connected to
         # nothing. Connectivity is derived from these two columns (ADR-043).
         sa.Column("current_connection_id", sa.Uuid(), nullable=True),
-        sa.Column(
-            "connection_epoch", sa.BigInteger(), server_default=sa.text("0"), nullable=False
-        ),
+        sa.Column("connection_epoch", sa.BigInteger(), server_default=sa.text("0"), nullable=False),
         sa.Column("last_connected_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("last_disconnected_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("last_heartbeat_at", sa.DateTime(timezone=True), nullable=True),
@@ -184,9 +182,7 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_agent_credentials")),
     )
-    op.create_index(
-        "ix_agent_credentials_host_id", "agent_credentials", ["host_id"], unique=False
-    )
+    op.create_index("ix_agent_credentials_host_id", "agent_credentials", ["host_id"], unique=False)
     # "At most one live credential per host", as a database guarantee. See the
     # module docstring for what goes wrong without it.
     op.create_index(
