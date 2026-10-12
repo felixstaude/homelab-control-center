@@ -290,3 +290,181 @@ export type AuditEventParams = {
   cursor?: string | undefined;
   limit?: number | undefined;
 };
+
+/* -------------------------------------------------------------------------
+ * Host registry (milestone 1.8)
+ * ---------------------------------------------------------------------- */
+
+/**
+ * How far through enrollment a host record is.
+ *
+ * Independent of connectivity and of administrative state — three orthogonal
+ * axes, and conflating any two of them is the mistake the host schema is
+ * shaped to avoid. A `revoked` host is not `registered`: the record has been
+ * used, and re-enrolling it is a different operator decision from enrolling
+ * one for the first time.
+ */
+export type HostLifecycle = 'registered' | 'enrolled' | 'revoked';
+
+/**
+ * Whether an agent is attached right now.
+ *
+ * **Derived by the server**, never a stored flag — so a controller crash
+ * reports `stale` rather than leaving every host claiming to be connected
+ * forever. `stale` is the honest third state: a connection is recorded and the
+ * heartbeats stopped, and the controller genuinely cannot tell whether the
+ * agent died or the network did.
+ */
+export type HostConnectivity = 'offline' | 'connected' | 'stale';
+
+/**
+ * One host, as `GET /api/v1/hosts` and `GET /api/v1/hosts/{id}` return it.
+ *
+ * Every nullable field here means "we have not been told", never zero and
+ * never a placeholder date. Rendering `last_heartbeat_at: null` as a date
+ * would be inventing a measurement, which is the one thing a monitoring
+ * interface must not do.
+ *
+ * `agent_version`, `platform`, `protocol_version` and `agent_started_at` are
+ * **self-reported by the agent** and therefore untrusted: they come from a
+ * machine whose security the controller does not own. They are shown so an
+ * operator can see what is deployed where, and nothing decides anything from
+ * them.
+ */
+export type Host = {
+  host_id: string;
+  /** Display form, as the administrator typed it. */
+  name: string;
+  /** Operator's note, or `null` when there is none. */
+  description: string | null;
+  /** Free-text grouping label, or `null`. Nothing resolves against it. */
+  environment: string | null;
+  lifecycle: HostLifecycle;
+  /**
+   * Whether the operator currently wants this host connected.
+   *
+   * Orthogonal to {@link lifecycle} and {@link connectivity}: a disabled host
+   * keeps its enrollment and its history, and its agent is refused at the
+   * door.
+   */
+  is_enabled: boolean;
+  connectivity: HostConnectivity;
+  /** ISO-8601, or `null` when no agent has ever reported. */
+  last_heartbeat_at: string | null;
+  last_connected_at: string | null;
+  last_disconnected_at: string | null;
+  /** Self-reported by the agent. Advisory. */
+  agent_version: string | null;
+  /** Reported os/arch, e.g. `linux/amd64`. Advisory. */
+  platform: string | null;
+  protocol_version: number | null;
+  agent_started_at: string | null;
+  /**
+   * Whether an unused, unexpired enrollment credential exists.
+   *
+   * A boolean and nothing more. The credential itself is unrecoverable once
+   * issued — only its digest is stored — so there is no field that could
+   * carry it and no endpoint that could return it.
+   */
+  has_pending_enrollment: boolean;
+  /**
+   * When the live agent credential was issued, or `null` when there is none.
+   *
+   * Distinguishes "never enrolled" from "credential revoked" without
+   * disclosing anything about the credential.
+   */
+  credential_issued_at: string | null;
+  created_at: string;
+};
+
+/** `GET /api/v1/hosts`. */
+export type HostListResult = {
+  items: Host[];
+  /**
+   * Hosts matching the name, lifecycle and status filters, ignoring
+   * pagination.
+   *
+   * When a `connectivity` filter is supplied this counts what the *other*
+   * filters matched, because connectivity is derived and is applied to the
+   * page after it is fetched — so `items` may be shorter than `limit`. That
+   * is a documented server-side trade, not a bug to work around here.
+   */
+  total: number;
+  limit: number;
+  offset: number;
+};
+
+/** Query parameters for the host list. */
+export type HostListParams = {
+  search?: string | undefined;
+  lifecycle?: HostLifecycle | undefined;
+  isEnabled?: boolean | undefined;
+  connectivity?: HostConnectivity | undefined;
+  limit?: number | undefined;
+  offset?: number | undefined;
+};
+
+/** `POST /api/v1/hosts`. */
+export type CreateHostRequest = {
+  name: string;
+  description?: string | undefined;
+  environment?: string | undefined;
+};
+
+/**
+ * `PATCH /api/v1/hosts/{id}`. Labels only.
+ *
+ * `null` clears a label; an omitted key leaves it alone. There is deliberately
+ * no field here that could set the lifecycle, the administrative state or any
+ * connectivity column: enrollment state changes by enrolling or revoking,
+ * administrative state through the enable and disable endpoints, and
+ * connectivity by an agent connecting. A field that could set any of them
+ * would let an administrator type a host into a state the system had not
+ * reached.
+ */
+export type UpdateHostRequest = {
+  name?: string | undefined;
+  description?: string | null | undefined;
+  environment?: string | null | undefined;
+};
+
+/** `POST /api/v1/hosts/{id}/enrollment`. */
+export type IssueEnrollmentRequest = {
+  /**
+   * Required to issue a credential for a host that already has an enrolled
+   * agent, because consuming the new credential revokes the existing one and
+   * disconnects that agent.
+   */
+  allow_reenrollment?: boolean | undefined;
+};
+
+/**
+ * `POST /api/v1/hosts/{id}/enrollment`.
+ *
+ * **The only response in this API that contains a secret.** The credential is
+ * not stored — only its digest is — so this body cannot be reproduced by any
+ * later request, including a retry of this one. The interface has to show it
+ * once and say so, and must not keep it anywhere it could outlive the dialog.
+ */
+export type IssuedEnrollment = {
+  enrollment_id: string;
+  /** Plaintext, shown once, never retrievable again. */
+  credential: string;
+  expires_at: string;
+  /** Computed server-side, so a countdown does not depend on the browser's clock. */
+  expires_in_seconds: number;
+  /**
+   * How many previously-pending credentials this issuance revoked.
+   *
+   * Non-zero means an earlier credential for this host has just stopped
+   * working, which an administrator needs to be told rather than discover by
+   * watching an agent fail.
+   */
+  superseded: number;
+};
+
+/** `POST /api/v1/hosts/{id}/enrollment/revoke`. */
+export type HostRevocationResult = {
+  /** Zero means there was nothing to revoke — the request changed nothing. */
+  revoked: number;
+};

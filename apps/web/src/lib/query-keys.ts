@@ -78,6 +78,22 @@ export const queryKeys = {
     auditEvents: (params: AuditEventKeyParams) =>
       ['session', 'audit', 'events', params] as const,
     auditActions: () => ['session', 'audit', 'actions'] as const,
+
+    /* --- Host registry (milestone 1.8) --- */
+
+    /**
+     * The root for every host query.
+     *
+     * Invalidating this one key refreshes the list on whatever page, filter
+     * and search the operator is looking at, plus any open detail view. That
+     * is what every host mutation does, and it matters more here than for
+     * users: enabling a host changes its connectivity a second later as the
+     * agent reconnects, so a mutation that invalidated only the detail view
+     * would leave the list showing a state that is already false.
+     */
+    hosts: () => ['session', 'hosts'] as const,
+    hostList: (params: HostListKeyParams) => ['session', 'hosts', 'list', params] as const,
+    host: (hostId: string) => ['session', 'hosts', 'detail', hostId] as const,
   },
 } as const;
 
@@ -105,4 +121,21 @@ export type AuditEventKeyParams = {
   action: string;
   cursor: string;
   limit: number;
+};
+
+/**
+ * The same reasoning, for the host list.
+ *
+ * `connectivity` is in the key even though the server applies that filter
+ * after fetching the page: two different connectivity filters really are two
+ * different results, and sharing one cache entry between them would make
+ * switching the filter show the previous answer.
+ */
+export type HostListKeyParams = {
+  search: string;
+  lifecycle: string;
+  enabled: string;
+  connectivity: string;
+  limit: number;
+  offset: number;
 };

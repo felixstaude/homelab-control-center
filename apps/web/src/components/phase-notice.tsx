@@ -25,9 +25,12 @@ export function PhaseNotice() {
         </Badge>
       </TooltipTrigger>
       <TooltipContent>
-        Identity, in progress. The shell, design system, authentication and
-        user management are in place and real — the data is not. No agents,
-        metrics, logs or notifications are implemented yet.
+        Identity, in progress. The shell, design system, authentication, user
+        management and the host registry are in place and real — and so is the
+        agent connection: an enrolled host&rsquo;s connectivity on the Hosts
+        page is measured, not sampled. Metrics, logs and notifications are not
+        implemented yet, and the Overview page is still fixtures behind a
+        banner.
       </TooltipContent>
     </Tooltip>
   );

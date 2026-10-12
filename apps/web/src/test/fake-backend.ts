@@ -35,6 +35,7 @@ import { CSRF_COOKIE_NAME } from '@/api/client';
 import type {
   AuditEvent,
   CurrentUser,
+  Host,
   ManagedUser,
   OwnSession,
   UserRole,
@@ -108,6 +109,38 @@ export function makeAuditEvent(overrides: Partial<AuditEvent> = {}): AuditEvent 
   };
 }
 
+/**
+ * A host as the registry would return one (milestone 1.8).
+ *
+ * Defaults to a host that has been registered and nothing more: not enrolled,
+ * offline, every agent-reported field null. That is the state a host is
+ * actually in for the minute between somebody creating it and somebody
+ * enrolling it, and a fixture that defaulted to "connected with metrics"
+ * would make the empty-state rendering the untested path.
+ */
+export function makeHost(overrides: Partial<Host> = {}): Host {
+  return {
+    host_id: '7a1f0c10-0000-4000-8000-000000000001',
+    name: 'homeserver',
+    description: null,
+    environment: null,
+    lifecycle: 'registered',
+    is_enabled: true,
+    connectivity: 'offline',
+    last_heartbeat_at: null,
+    last_connected_at: null,
+    last_disconnected_at: null,
+    agent_version: null,
+    platform: null,
+    protocol_version: null,
+    agent_started_at: null,
+    has_pending_enrollment: false,
+    credential_issued_at: null,
+    created_at: '2026-10-01T09:00:00+00:00',
+    ...overrides,
+  };
+}
+
 /** One recorded request, for asserting on headers and bodies. */
 export type RecordedRequest = {
   method: string;
@@ -161,6 +194,19 @@ export type FakeBackendState = {
   routeFailures: Record<string, { status: number; code: string; message: string }>;
   /** The current password `POST /account/password` will accept. */
   currentPassword: string;
+
+  /* --- Milestone 1.8 --- */
+
+  /** The host registry the host endpoints read and write. */
+  hosts: Host[];
+  /**
+   * The credential the next issuance returns.
+   *
+   * Fixed rather than random so a test can assert the value reached the
+   * screen — and distinctive enough that a test asserting its *absence*
+   * elsewhere cannot pass by coincidence.
+   */
+  enrollmentCredential: string;
 };
 
 export type FakeBackend = {
@@ -258,6 +304,8 @@ export function installFakeBackend(initial: Partial<FakeBackendState> = {}): Fak
     nextFailure: null,
     routeFailures: {},
     currentPassword: 'correct horse battery staple',
+    hosts: [],
+    enrollmentCredential: 'TEST-ENROLMENT-CREDENTIAL-0000000000000000',
     ...initial,
   };
 
@@ -699,6 +747,152 @@ export function installFakeBackend(initial: Partial<FakeBackendState> = {}): Fak
         total: matching.length,
         limit,
       });
+    }
+
+    /* --- Hosts (milestone 1.8) ---------------------------------------- */
+
+    if (path.endsWith('/hosts') && method === 'GET') {
+      // Any authenticated role, deliberately: a Viewer who cannot see the
+      // fleet cannot use a monitoring product. The gate on the mutations
+      // below is the administrator one.
+      const refused = requireSession();
+      if (refused) return refused;
+
+      const params = new URLSearchParams(query);
+      const search = fold(params.get('search') ?? '');
+      const lifecycle = params.get('lifecycle');
+      const connectivity = params.get('connectivity');
+      const isEnabled = params.get('is_enabled');
+      const limit = Number(params.get('limit') ?? '25');
+      const offset = Number(params.get('offset') ?? '0');
+
+      const matching = state.hosts
+        .filter((host) => (search ? fold(host.name).includes(search) : true))
+        .filter((host) => (lifecycle ? host.lifecycle === lifecycle : true))
+        .filter((host) =>
+          isEnabled === null ? true : host.is_enabled === (isEnabled === 'true'),
+        )
+        .slice()
+        .sort((left, right) => fold(left.name).localeCompare(fold(right.name)));
+
+      // The connectivity filter is applied to the *page*, after slicing, and
+      // the total counts the other filters — exactly as the server does, so a
+      // test cannot pass against a fake that is kinder than the real thing.
+      const page = matching
+        .slice(offset, offset + limit)
+        .filter((host) => (connectivity ? host.connectivity === connectivity : true));
+
+      return json({ items: page, total: matching.length, limit, offset });
+    }
+
+    const hostDetail = /\/hosts\/([^/]+)$/.exec(path);
+    if (hostDetail && method === 'GET') {
+      const refused = requireSession();
+      if (refused) return refused;
+
+      const host = state.hosts.find((candidate) => candidate.host_id === captured(hostDetail));
+      if (!host) return envelope(404, 'not_found', 'That host does not exist.');
+      return json(host);
+    }
+
+    if (path.endsWith('/hosts') && method === 'POST') {
+      const refused = requireAdmin() ?? requireCsrf(headers) ?? forcedFailure();
+      if (refused) return refused;
+
+      const payload = body as {
+        name?: string;
+        description?: string;
+        environment?: string;
+      };
+      const name = payload.name?.trim() ?? '';
+      if (name === '') {
+        return envelope(422, 'validation_failed', 'host name must not be empty');
+      }
+      if (state.hosts.some((host) => fold(host.name) === fold(name))) {
+        return envelope(
+          409,
+          'host_name_taken',
+          `The host name '${name}' is already in use. Host names are ` +
+            'case-insensitive, so a different capitalisation is still the same host.',
+        );
+      }
+
+      const host = makeHost({
+        host_id: `host-${String(state.hosts.length + 1)}`,
+        name,
+        description: blankToNull(payload.description),
+        environment: blankToNull(payload.environment),
+      });
+      state.hosts.push(host);
+      return json(host, 201);
+    }
+
+    const hostAction = /\/hosts\/([^/]+)\/(disable|enable|enrollment|enrollment\/revoke|credential\/revoke)$/.exec(
+      path,
+    );
+    if (hostAction && method === 'POST') {
+      const refused = requireAdmin() ?? requireCsrf(headers) ?? forcedFailure();
+      if (refused) return refused;
+
+      const host = state.hosts.find((candidate) => candidate.host_id === captured(hostAction));
+      if (!host) return envelope(404, 'not_found', 'That host does not exist.');
+      const action = hostAction[2];
+
+      if (action === 'disable' || action === 'enable') {
+        host.is_enabled = action === 'enable';
+        if (action === 'disable') {
+          // The server clears the recorded connection, so a disabled host
+          // reads as offline immediately rather than claiming an agent is
+          // still attached.
+          host.connectivity = 'offline';
+          host.last_disconnected_at = '2026-10-12T19:00:00+00:00';
+        }
+        return json(host);
+      }
+
+      if (action === 'enrollment') {
+        const payload = (body ?? {}) as { allow_reenrollment?: boolean };
+        if (host.credential_issued_at !== null && payload.allow_reenrollment !== true) {
+          return envelope(
+            409,
+            'host_already_enrolled',
+            'This host already has an enrolled agent. Issuing a new enrolment ' +
+              'credential will revoke the existing one and disconnect that agent ' +
+              'until it is re-enrolled. Confirm re-enrollment to proceed.',
+          );
+        }
+        const superseded = host.has_pending_enrollment ? 1 : 0;
+        host.has_pending_enrollment = true;
+        return json(
+          {
+            enrollment_id: 'enrolment-1',
+            credential: state.enrollmentCredential,
+            expires_at: '2026-10-12T19:15:00+00:00',
+            expires_in_seconds: 900,
+            superseded,
+          },
+          201,
+        );
+      }
+
+      if (action === 'enrollment/revoke') {
+        const revoked = host.has_pending_enrollment ? 1 : 0;
+        host.has_pending_enrollment = false;
+        return json({ revoked });
+      }
+
+      // credential/revoke
+      if (host.credential_issued_at === null) {
+        return envelope(
+          409,
+          'no_live_credential',
+          'This host has no active agent credential, so there is nothing to revoke.',
+        );
+      }
+      host.credential_issued_at = null;
+      host.lifecycle = 'revoked';
+      host.connectivity = 'offline';
+      return json(host);
     }
 
     return envelope(404, 'not_found', 'The requested resource does not exist.');

@@ -66,3 +66,52 @@ export function formatDate(value: string | null | undefined): string {
 export function machineDateTime(value: string | null | undefined): string | undefined {
   return parse(value) === null ? undefined : (value ?? undefined);
 }
+
+/**
+ * Elapsed time, for a liveness fact rather than an absolute one.
+ *
+ * The exception the module docstring above anticipated, and it is worth being
+ * explicit about why it is one. "3 months ago" is useless for "when was this
+ * account created", where the operator wants a date they can compare against a
+ * change they remember. It is the *only* useful answer for "when did we last
+ * hear from this host", where the question is how stale the data is and the
+ * absolute time is arithmetic the reader would have to do themselves.
+ *
+ * So: relative here, absolute everywhere else, and the absolute value is kept
+ * in the `title` and `dateTime` attributes at the call sites so nothing is
+ * lost.
+ *
+ * Three behaviours worth stating:
+ *
+ * - **Under a minute reads "just now"**, not "0 minutes ago". A heartbeat
+ *   arriving every thirty seconds would otherwise flicker between "0 minutes
+ *   ago" and "1 minute ago" on every poll.
+ * - **A future timestamp reads "just now"** rather than "in 4 minutes". The
+ *   server stamps every timestamp with its own clock, so a future value means
+ *   the *viewer's* clock is behind — and telling an operator their host will
+ *   heartbeat in the future is a confusing way to report a correct connection.
+ * - **A missing value is {@link ABSENT}**, never "55 years ago".
+ */
+export function relativeTime(value: string | null | undefined): string {
+  const parsed = parse(value);
+  if (parsed === null) return ABSENT;
+
+  const seconds = Math.round((Date.now() - parsed.getTime()) / 1000);
+  if (seconds < 60) return 'just now';
+
+  const units: readonly (readonly [Intl.RelativeTimeFormatUnit, number])[] = [
+    ['year', 31_536_000],
+    ['month', 2_592_000],
+    ['day', 86_400],
+    ['hour', 3600],
+    ['minute', 60],
+  ];
+  for (const [unit, size] of units) {
+    if (seconds >= size) {
+      return RELATIVE.format(-Math.floor(seconds / size), unit);
+    }
+  }
+  return 'just now';
+}
+
+const RELATIVE = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });

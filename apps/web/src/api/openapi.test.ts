@@ -31,6 +31,12 @@ import type {
   AuditEvent,
   AuditEventList,
   CurrentUser,
+  Host,
+  HostConnectivity,
+  HostLifecycle,
+  HostListResult,
+  HostRevocationResult,
+  IssuedEnrollment,
   LogoutResult,
   ManagedUser,
   OwnSession,
@@ -79,13 +85,21 @@ function resolve(ref: string): JsonSchema {
   return resolved!;
 }
 
-/** The 200-response schema for an operation. */
-function responseSchema(path: string, method: string): JsonSchema {
+/** The success-response schema for an operation, at a given status. */
+function responseSchemaAt(path: string, method: string, status: string): JsonSchema {
   const operation = document.paths[path]?.[method];
   expect(operation, `${method.toUpperCase()} ${path} is not in the schema`).toBeDefined();
-  const ref = operation?.responses['200']?.content?.['application/json']?.schema?.$ref;
-  expect(ref, `${method.toUpperCase()} ${path} has no 200 JSON schema`).toBeDefined();
+  const ref = operation?.responses[status]?.content?.['application/json']?.schema?.$ref;
+  expect(
+    ref,
+    `${method.toUpperCase()} ${path} has no ${status} JSON schema`,
+  ).toBeDefined();
   return resolve(ref!);
+}
+
+/** The 200-response schema for an operation. */
+function responseSchema(path: string, method: string): JsonSchema {
+  return responseSchemaAt(path, method, '200');
 }
 
 /** Flatten `anyOf` so a nullable field reports its underlying types. */
@@ -507,6 +521,138 @@ describe('GET /audit/events contract', () => {
   });
 });
 
+describe('host registry contract (milestone 1.8)', () => {
+  it('returns every field Host declares, and no others', () => {
+    const contract: Record<keyof Host, SchemaKind> = {
+      host_id: 'string',
+      name: 'string',
+      description: 'string',
+      environment: 'string',
+      lifecycle: 'string',
+      is_enabled: 'boolean',
+      connectivity: 'string',
+      last_heartbeat_at: 'string',
+      last_connected_at: 'string',
+      last_disconnected_at: 'string',
+      agent_version: 'string',
+      platform: 'string',
+      protocol_version: 'integer',
+      agent_started_at: 'string',
+      has_pending_enrollment: 'boolean',
+      credential_issued_at: 'string',
+      created_at: 'string',
+    };
+
+    expectContract(responseSchema('/api/v1/hosts/{host_id}', 'get'), contract);
+  });
+
+  it('declares the same shape for a list item as for the detail', () => {
+    // Two endpoints, one type in the client. If the server ever narrowed the
+    // list response — a tempting optimisation — this is what would catch it,
+    // and the list page would otherwise render blanks for the fields it
+    // dropped.
+    const list = responseSchema('/api/v1/hosts', 'get');
+    const items = list.properties?.items;
+
+    expect(items?.type).toBe('array');
+    const contract: Record<keyof HostListResult, SchemaKind> = {
+      items: 'array',
+      total: 'integer',
+      limit: 'integer',
+      offset: 'integer',
+    };
+    expectContract(list, contract);
+  });
+
+  it('pins the lifecycle vocabulary, because the client switches on it', () => {
+    // Unlike the audit action vocabulary — which is deliberately open
+    // (ADR-038) — this one is closed, and the client's badge and prose maps
+    // are exhaustive over it. A fourth value appearing server-side would
+    // render as `undefined` in the interface, so it has to fail here.
+    const lifecycle = responseSchema('/api/v1/hosts/{host_id}', 'get').properties?.lifecycle;
+    const resolved = lifecycle?.$ref ? resolve(lifecycle.$ref) : lifecycle;
+    const expected: HostLifecycle[] = ['registered', 'enrolled', 'revoked'];
+
+    expect(resolved?.enum?.slice().sort()).toEqual([...expected].sort());
+  });
+
+  it('pins the connectivity vocabulary for the same reason', () => {
+    const connectivity = responseSchema('/api/v1/hosts/{host_id}', 'get').properties
+      ?.connectivity;
+    const resolved = connectivity?.$ref ? resolve(connectivity.$ref) : connectivity;
+    const expected: HostConnectivity[] = ['offline', 'connected', 'stale'];
+
+    expect(resolved?.enum?.slice().sort()).toEqual([...expected].sort());
+  });
+
+  it('returns a credential from exactly the two operations that must', () => {
+    // The security story of the enrollment flow, as one assertion. Two
+    // schemas carry a secret and both are deliberate:
+    //
+    //   EnrollmentResponse — the one-time credential an administrator is
+    //     shown once, from POST /hosts/{id}/enrollment.
+    //   EnrollResponse     — the durable agent credential, from
+    //     POST /agents/enroll, handed to the agent that spent the first one.
+    //
+    // A *third* would mean a secret had grown a second way out of the API,
+    // which is exactly how a "shown once, unrecoverable" promise quietly
+    // stops being true. This test is the only thing that would notice.
+    const bearers = Object.entries(document.components.schemas)
+      .filter(([, value]) => value.properties && 'credential' in value.properties)
+      .map(([name]) => name)
+      .sort();
+
+    expect(bearers).toEqual(['EnrollResponse', 'EnrollmentResponse']);
+  });
+
+  it('declares the issued credential the client expects', () => {
+    // 201, not 200: issuing mints something that did not exist. The status is
+    // spelled out rather than assumed, because a helper defaulting to 200
+    // would have reported this endpoint as missing from the schema.
+    const contract: Record<keyof IssuedEnrollment, SchemaKind> = {
+      enrollment_id: 'string',
+      credential: 'string',
+      expires_at: 'string',
+      expires_in_seconds: 'integer',
+      superseded: 'integer',
+    };
+
+    expectContract(
+      responseSchemaAt('/api/v1/hosts/{host_id}/enrollment', 'post', '201'),
+      contract,
+    );
+  });
+
+  it('reports a revocation count rather than a bare success', () => {
+    // "Revoked" and "there was nothing to revoke" are different answers, and
+    // the count is how the interface tells them apart. A server that replaced
+    // this with `{"status": "ok"}` would make the interface claim success for
+    // a revocation that revoked nothing.
+    const contract: Record<keyof HostRevocationResult, SchemaKind> = { revoked: 'integer' };
+
+    expectContract(
+      responseSchema('/api/v1/hosts/{host_id}/enrollment/revoke', 'post'),
+      contract,
+    );
+  });
+
+  it('never exposes a digest or a canonical name', () => {
+    // `name_canonical` is an internal uniqueness key and the digests are the
+    // lookup keys for the credentials. None of the three should be reachable
+    // from any schema in the API.
+    const leaked: string[] = [];
+    for (const [name, value] of Object.entries(document.components.schemas)) {
+      for (const field of Object.keys(value.properties ?? {})) {
+        if (/token_hash|name_canonical|credential_hash/.test(field)) {
+          leaked.push(`${name}.${field}`);
+        }
+      }
+    }
+
+    expect(leaked).toEqual([]);
+  });
+});
+
 describe('public surface', () => {
   it('advertises only the endpoints the client expects', () => {
     // A guard against the schema growing an endpoint the client has not been
@@ -517,11 +663,23 @@ describe('public surface', () => {
       '/api/v1/account/sessions',
       '/api/v1/account/sessions/revoke-others',
       '/api/v1/account/sessions/{session_id}/revoke',
+      // Agent-facing, authenticated by a per-host credential rather than a
+      // session (milestone 1.8). In the schema and deliberately *not* in the
+      // browser client: a browser must never hold an agent credential, and an
+      // agent must never hold a session.
+      '/api/v1/agents/enroll',
       '/api/v1/audit/actions',
       '/api/v1/audit/events',
       '/api/v1/auth/login',
       '/api/v1/auth/logout',
       '/api/v1/auth/me',
+      '/api/v1/hosts',
+      '/api/v1/hosts/{host_id}',
+      '/api/v1/hosts/{host_id}/credential/revoke',
+      '/api/v1/hosts/{host_id}/disable',
+      '/api/v1/hosts/{host_id}/enable',
+      '/api/v1/hosts/{host_id}/enrollment',
+      '/api/v1/hosts/{host_id}/enrollment/revoke',
       '/api/v1/info',
       '/api/v1/setup/status',
       '/api/v1/users',

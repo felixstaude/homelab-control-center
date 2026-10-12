@@ -11,6 +11,7 @@ import { createQueryClient } from '@/lib/query-client';
 import { AlertsPage } from '@/routes/alerts';
 import { DockerPage } from '@/routes/docker';
 import { HostsPage } from '@/routes/hosts';
+import { HostDetailPage } from '@/routes/hosts/host-detail';
 import { LoginPage } from '@/routes/login';
 import { LogsPage } from '@/routes/logs';
 import { NetworkPage } from '@/routes/network';
@@ -87,6 +88,16 @@ export function App() {
               >
                 <Route index element={<OverviewPage />} />
                 <Route path="hosts" element={<HostsPage />} />
+                {/*
+                 * The host id is in the path, which is correct: a host *is* a
+                 * place worth linking to and returning to, unlike a filter
+                 * halfway through being typed. No secret ever goes here —
+                 * the enrollment credential lives in one response body and in
+                 * a dialog's local state, never in a URL that the browser's
+                 * history, the `Referer` header and every proxy in between
+                 * would record (milestone 1.8).
+                 */}
+                <Route path="hosts/:hostId" element={<HostDetailPage />} />
                 <Route path="docker" element={<DockerPage />} />
                 <Route path="logs" element={<LogsPage />} />
                 <Route path="network" element={<NetworkPage />} />
