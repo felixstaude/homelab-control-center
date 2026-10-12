@@ -74,6 +74,20 @@ export function LoginPage() {
   const usernameMissing = submitted && username.trim() === '';
   const passwordMissing = submitted && password === '';
 
+  /**
+   * Clear the password field after an attempt.
+   *
+   * `submitted` is reset with it, and that pairing matters: without it the
+   * field this code just emptied is immediately flagged "Enter your
+   * password", so a wrong-password attempt showed the server's message *and*
+   * a validation error about a field the user had in fact filled in. Caught
+   * by `shows the server message for invalid credentials`.
+   */
+  const clearPassword = () => {
+    setPassword('');
+    setSubmitted(false);
+  };
+
   // Typed by what it uses rather than by `FormEvent`, which React 19's types
   // deprecate. The JSX below forwards the event, so inference at the call site
   // keeps this honest without naming a deprecated type.
@@ -91,7 +105,7 @@ export function LoginPage() {
       // Clear the password from component state the moment it is no longer
       // needed. It is still in memory until React drops the closure, but
       // leaving it in state keeps it in a live component tree.
-      setPassword('');
+      clearPassword();
       // `replace`, so Back does not return to the login page of a session the
       // user has just started.
       void navigate(safeRedirectTarget(location.state as RedirectState), { replace: true });
@@ -99,7 +113,7 @@ export function LoginPage() {
       // The provider has already stored the typed error for display below.
       // Nothing is logged: a failed login must not put a username, let alone
       // a password, into the console.
-      setPassword('');
+      clearPassword();
     }
   };
 

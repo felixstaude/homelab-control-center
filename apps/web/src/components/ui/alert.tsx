@@ -42,11 +42,31 @@ export type AlertProps = ComponentProps<'div'> &
     title?: string | undefined;
   };
 
+/**
+ * Live-region role per variant.
+ *
+ * `alert` is assertive: it interrupts, which is right for a failure the user
+ * must act on. `status` is polite, which is right for an informational notice
+ * that should not talk over whatever the user is doing. Getting this wrong in
+ * either direction is a real cost — an unannounced error, or a notice that
+ * barges in.
+ */
+const VARIANT_ROLES: Record<'info' | 'warn' | 'critical', 'status' | 'alert'> = {
+  info: 'status',
+  warn: 'alert',
+  critical: 'alert',
+};
+
 export function Alert({ className, variant = 'info', title, children, ...props }: AlertProps) {
-  const Icon = VARIANT_ICONS[variant ?? 'info'];
+  const resolved = variant ?? 'info';
+  const Icon = VARIANT_ICONS[resolved];
 
   return (
-    <div className={cn(alertVariants({ variant }), className)} {...props}>
+    <div
+      role={VARIANT_ROLES[resolved]}
+      className={cn(alertVariants({ variant }), className)}
+      {...props}
+    >
       <Icon className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
       <div className="min-w-0 flex-1">
         {title ? <p className="font-semibold">{title}</p> : null}

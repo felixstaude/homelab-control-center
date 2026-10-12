@@ -66,7 +66,15 @@ export function SetupPage() {
   const { state, refresh } = useAuth();
   const [checking, setChecking] = useState(false);
 
-  const initialized = state.status !== 'setup_required';
+  /*
+   * Derived from an affirmative signal, never from "not setup_required".
+   * Negating one status silently treats `checking` and `unavailable` as
+   * success — which is how an unreachable backend came to display "Setup
+   * complete". The gate above now resolves both of those before this renders,
+   * and stating the condition positively means a future state added to the
+   * machine defaults to the instructions rather than to a claim of success.
+   */
+  const initialized = state.status === 'unauthenticated' || state.status === 'authenticated';
 
   const handleRecheck = async () => {
     setChecking(true);

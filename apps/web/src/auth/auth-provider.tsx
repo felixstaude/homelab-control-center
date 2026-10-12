@@ -149,19 +149,40 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     },
   });
 
+  /**
+   * Drop local authenticated state.
+   *
+   * Only called once the server has actually revoked the session, or has told
+   * us it was already gone.
+   */
+  const clearLocalSession = useCallback(() => {
+    setReason('signed_out');
+    setSignInError(null);
+    setEverAuthenticated(false);
+    queryClient.clear();
+    queryClient.setQueryData(queryKeys.session.currentUser(), null);
+  }, [queryClient]);
+
   const signOutMutation = useMutation({
     mutationFn: () => logout(),
-    onSettled: () => {
-      // Runs on success *and* failure, deliberately. If the server-side
-      // revocation failed we must not keep showing authenticated data as
-      // though nothing happened — the local state is cleared either way,
-      // while `signOut` below still surfaces the error so nobody is told the
-      // session was revoked when it was not.
-      setReason('signed_out');
-      setSignInError(null);
-      setEverAuthenticated(false);
-      queryClient.clear();
-      queryClient.setQueryData(queryKeys.session.currentUser(), null);
+    onSuccess: clearLocalSession,
+    onError: (error: unknown) => {
+      /*
+       * A failed sign-out must **not** clear local state.
+       *
+       * Server-side revocation is the boundary (ADR-028): if the server still
+       * holds the session, the user is still signed in, and showing them the
+       * signed-out interface would be a lie about the one thing that matters
+       * here. Keeping the authenticated state also keeps the error visible —
+       * an earlier version cleared state regardless, the route guard
+       * redirected to the login page, and the explanation was unmounted
+       * before anyone could read it. The user was then told nothing and
+       * believed they had signed out of a session that was still live.
+       *
+       * The exception is a 401: that means the session is already gone, which
+       * is the outcome sign-out wanted.
+       */
+      if (isSessionExpired(error)) clearLocalSession();
     },
   });
 
@@ -171,6 +192,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const signOut = useCallback(async () => {
+    // Rejects on failure, so the caller can show it. Deliberately not
+    // swallowed: see `onError` above.
     await signOutMutation.mutateAsync();
   }, [signOutMutation]);
 

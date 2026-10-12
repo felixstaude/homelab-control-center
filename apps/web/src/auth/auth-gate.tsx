@@ -124,13 +124,35 @@ export function RequireAnonymous({ children }: { children: ReactNode }) {
  * handles the "setup just completed" transition itself.
  */
 export function AllowDuringSetup({ children }: { children: ReactNode }) {
-  const { state } = useAuth();
+  const { state, refresh } = useAuth();
 
-  if (state.status === 'checking') {
-    return <FullPageSpinner label="Checking installation status…" />;
+  switch (state.status) {
+    case 'checking':
+      return <FullPageSpinner label="Checking installation status…" />;
+
+    case 'unavailable':
+      /*
+       * Handled explicitly, and this is not a formality. Falling through to
+       * the page meant it computed "initialized" as "not setup_required" —
+       * so an unreachable control plane rendered **"Setup complete"**. That
+       * is the "never render unknown as a positive answer" rule
+       * (`PRODUCT_VISION.md` principle 2) broken in the one place where
+       * being wrong sends the operator down the wrong path entirely.
+       */
+      return (
+        <BackendUnavailable
+          error={state.error}
+          onRetry={() => {
+            void refresh();
+          }}
+        />
+      );
+
+    case 'authenticated':
+      return <Navigate to={DEFAULT_REDIRECT} replace />;
+
+    case 'setup_required':
+    case 'unauthenticated':
+      return children;
   }
-  if (state.status === 'authenticated') {
-    return <Navigate to={DEFAULT_REDIRECT} replace />;
-  }
-  return children;
 }

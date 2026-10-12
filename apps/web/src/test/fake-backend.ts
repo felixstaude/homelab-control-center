@@ -109,6 +109,14 @@ export function installFakeBackend(initial: Partial<FakeBackendState> = {}): Fak
   const requests: RecordedRequest[] = [];
   clearCookies();
 
+  // A browser holding a live session also holds the readable CSRF cookie the
+  // server set at login. Seeding it here keeps the fake faithful: without it,
+  // every test that starts signed-in would have to remember to set the cookie
+  // before a mutation, and forgetting would look like a client bug.
+  if (state.session) {
+    document.cookie = `${CSRF_COOKIE_NAME}=${state.session.csrf_token}; path=/`;
+  }
+
   const handler = async (
     input: RequestInfo | URL,
     init?: RequestInit,
