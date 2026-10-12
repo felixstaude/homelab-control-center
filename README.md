@@ -145,6 +145,16 @@ created. If you skipped `make bootstrap`, the browser shows a first-run screen
 with the command to run — it explains the command rather than performing it,
 for the reason above.
 
+Every account after the first is created in the interface, under **Settings →
+Users**: an administrator can create accounts, assign Viewer / Operator /
+Administrator, change a display name or role, deactivate and reactivate, and
+revoke another account's sessions. Each user manages their own password and
+sessions under **My account** and **Sessions**, and privileged actions are
+recorded in an append-only audit trail. The installation can never be left
+without an active administrator — that operation is refused, because
+bootstrap does not reopen. See
+[`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md#managing-accounts-milestone-17).
+
 | URL | What |
 | --- | --- |
 | http://localhost:5173 | Web client |

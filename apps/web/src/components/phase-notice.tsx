@@ -25,9 +25,9 @@ export function PhaseNotice() {
         </Badge>
       </TooltipTrigger>
       <TooltipContent>
-        Identity, in progress. The shell, design system and authentication
-        are in place and real — the data is not. No agents, metrics, logs or
-        notifications are implemented yet.
+        Identity, in progress. The shell, design system, authentication and
+        user management are in place and real — the data is not. No agents,
+        metrics, logs or notifications are implemented yet.
       </TooltipContent>
     </Tooltip>
   );

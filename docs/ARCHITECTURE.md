@@ -98,15 +98,17 @@ See [`AGENT_ARCHITECTURE.md §6`](AGENT_ARCHITECTURE.md#6-configuration-synchron
 | FastAPI app, settings, logging, error envelope | Implemented |
 | `/healthz`, `/readyz` (public), `/api/v1/info` (authenticated) | Implemented |
 | PostgreSQL connectivity, Alembic chain | Implemented |
-| `users`, `sessions`, `installation` tables | Implemented |
+| `users`, `sessions`, `installation`, `audit_events` tables | Implemented |
 | Argon2id password hashing (1.2) | Implemented |
 | Login, logout, server-side sessions, CSRF, throttling (1.3) | Implemented |
 | Default-deny authentication, role authorization (1.4) | Implemented |
 | First-run bootstrap (`hcc bootstrap-admin`), reverse-proxy origin handling (1.5) | Implemented |
+| User management, role enforcement, session administration, password change, audit foundation (1.7) | Implemented |
 | `GET /api/v1/setup/status` (public, one bit) | Implemented |
 | Per-host capability authorization | **Interface only**, fails closed |
 | React shell, design system, 7 nav sections | Implemented |
 | Typed API client, login, first-run screen, protected routing, account menu (1.6) | Implemented — authenticated against the real API |
+| Settings: users, my account, sessions, audit (1.7) | Implemented — real API; General is read-only because configuration is environment-only |
 | Overview page data | **Static fixtures** behind a banner, until 3.17 |
 | Generated OpenAPI client | **Hand-written types with schema drift detection**, generation deferred to 1.15 |
 | Go agent lifecycle, config, logging, shutdown | Implemented |
@@ -309,11 +311,14 @@ mutating WebSocket path should be treated as a design smell.
 
 ## 4. Authentication and authorization
 
-**Substantially implemented as of milestone 1.5.** User authentication,
+**Substantially implemented as of milestone 1.7.** User authentication,
 server-side sessions, CSRF, default-deny routing and the role axis are in the
-code and tested; the **capability axis** is an interface that fails closed,
-and **agent** authentication is still design. `docs/SECURITY.md` marks each
-section as implemented or design.
+code and tested, and since 1.7 the role axis has production call sites: user
+administration, session administration and the audit trail are
+Administrator-only and enforced server-side on every request. The
+**capability axis** is an interface that fails closed, and **agent**
+authentication is still design. `docs/SECURITY.md` marks each section as
+implemented or design.
 
 ### 4.1 Two distinct identity types
 
@@ -474,13 +479,14 @@ migration.
 
 ### 6.3 Schema shape
 
-`users`, `sessions` and `installation` are implemented; the rest is
-indicative:
+`users`, `sessions`, `installation` and `audit_events` are implemented; the
+rest is indicative:
 
 ```
-users                       IMPLEMENTED (1.1)
+users                       IMPLEMENTED (1.1, display_name 1.7)
 sessions                    IMPLEMENTED (1.3)
 installation                IMPLEMENTED (1.5) — one row; first-run invariant
+audit_events                IMPLEMENTED (1.7) — append-only; ADR-038
 hosts ── agent_credentials
       ├─ host_metrics       (time-series, partitioned by time)
       ├─ containers ── container_metrics
@@ -489,8 +495,11 @@ network_devices ── device_checks ── device_relationships
 notification_rules ── rule_conditions (nested)
 notification_destinations
 events ── notifications_sent
-audit_log                   (append-only)
 ```
+
+The `audit_log` this section previously anticipated shipped early, as
+`audit_events`, with the operations that made it worth having — see ADR-038 for
+why that was a deliberate scope change and what milestone 1.14 still owns.
 
 High-volume tables (`host_metrics`, `container_metrics`, `log_entries`) are
 declaratively partitioned by time, which makes retention a matter of dropping
@@ -1984,6 +1993,224 @@ validate against yesterday's contract — so CI regenerates it from the backend
 and fails if it differs from the committed copy. The types still have to be
 edited by hand until 1.15; the test narrows that to a mechanical, detected
 task rather than a silent one.
+
+---
+
+### ADR-038: The audit trail is a database table with an open action vocabulary
+
+**Decision.** Privileged operations are recorded in an append-only
+`audit_events` table from milestone **1.7**, not 1.14. `action` is a
+`varchar` carrying dotted identifiers (`user.role_changed`), with the
+vocabulary defined in Python (`AuditAction`) and **not** constrained by the
+database. `outcome` is a `varchar` constrained by a CHECK to `success`,
+`denied` or `failure`. Neither `actor_user_id` nor `target_user_id` carries a
+foreign key. **No cryptographic tamper evidence is claimed or implemented.**
+
+**Why now, rather than in 1.14.** The roadmap reserved an append-only
+`audit_log` for 1.14, and 1.7 is the milestone that creates the operations
+worth auditing: an administrator can now change somebody's role, end their
+access, and invalidate their sessions. Shipping those with only a structured
+log line would mean the first privileged operations in the product are also
+the only ones never recorded in a queryable trail — and retrofitting the
+record later cannot recover what happened in between.
+
+So this is a deliberate scope change rather than drift, and it is bounded: a
+table, a write path, and one read endpoint. What 1.14 still owns is everything
+that makes an audit *system* — retention, export, the login and enrolment
+events, and whatever integrity story is decided on. The shape here is chosen so
+those are additive.
+
+**Why the action vocabulary is not a native enum, when `role` is.** ADR-013
+made `user_role` a PostgreSQL enum precisely so that adding a member is a
+reviewed migration, because a new role changes the authorization surface.
+Applying that reasoning here would be cargo-culting it:
+
+* A new audit action changes nothing about what anybody may do. It records
+  something the system already did.
+* The vocabulary is *expected* to grow with almost every future milestone, and
+  Alembic cannot autogenerate enum-member changes — so each addition would be
+  a hand-written `ALTER TYPE` for no review benefit.
+* An unrecognised value read back is harmless. The reader renders it verbatim;
+  there is no decision to fail closed. The client's types say `string` for the
+  same reason, and a test asserts the schema does not narrow it to an enum.
+
+`outcome` is the half that genuinely is closed — three states with no growth
+pressure — so a CHECK does the work a native enum would, without a second
+custom type in the schema.
+
+**Why no foreign key.** `ON DELETE CASCADE` would delete the record of what
+was done to an account along with the account, which is exactly backwards: the
+record is most valuable once the account is gone. `ON DELETE SET NULL` keeps
+the row and discards the attribution, which is nearly as bad. This is the same
+reasoning that keeps `installation.initialized_by_user_id` unconstrained
+(ADR-033). The read API resolves names with a `LEFT JOIN` and reports an absent
+account as absent rather than inventing a label.
+
+**Why no tamper evidence.** An attacker with database credentials can rewrite
+history, and that attacker is already out of scope in `SECURITY.md`. A hash
+chain the same process both writes and verifies would put the verifier's key
+next to the data it protects — security theatre with a maintenance cost. Said
+plainly here so nobody reads "append-only" as more than it is: the application
+has no update and no delete path, which is a property of the code, not a grant
+the database enforces.
+
+**Cost.** A table that grows and has no retention policy yet, and whose denial
+records can be produced at an authenticated caller's request rate. Both are
+recorded in `SECURITY.md` alongside the session table's equivalent, and
+retention arrives with the subsystem that owns retention.
+
+### ADR-039: The last-active-administrator invariant is held by a transaction-scoped advisory lock
+
+**Decision.** Every operation that can reduce the set of active administrators
+takes `pg_advisory_xact_lock` on one fixed key **before** reading, and holds it
+until the caller commits. All such operations funnel through
+`hcc/services/users.py`, which takes the lock on every mutating path rather
+than only the dangerous ones.
+
+**Why a count followed by an update is not enough.** The obvious
+implementation is wrong in a way that one connection cannot demonstrate:
+
+```
+SELECT count(*) FROM users WHERE role = 'admin' AND is_active;   -- 2, fine
+UPDATE users SET role = 'viewer' WHERE id = :target;             -- go ahead
+```
+
+Two administrators demoting each other simultaneously both read 2, both decide
+they are safe, and both commit. Under READ COMMITTED neither sees the other's
+uncommitted write, so there is nothing for either to notice. The installation
+ends with zero administrators and every check passed.
+
+**Why this matters more than an ordinary availability bug.** An installation
+with no administrator cannot create one: bootstrap is a one-way door that does
+not reopen (ADR-033), deliberately, so that nobody can claim an installation by
+emptying its user table. Locking yourself out is therefore permanent short of
+database access.
+
+**Why the lock works.** Because the count runs *after* the lock is held, and
+READ COMMITTED gives each statement a fresh snapshot, the second transaction's
+count sees the first's committed demotion, finds zero other active
+administrators, and refuses. Transaction-scoped means it is released by commit,
+rollback or crash, so an interrupted attempt leaves nothing to clean up — the
+same mechanism and the same lifetime as the bootstrap lock, with a distinct
+key so a bootstrap attempt does not block on a role change.
+
+The lock is taken by every mutating operation, not only those that could break
+the invariant. Two reasons: a display-name change and a role change against the
+same row would otherwise be a lost-update race, and "which operations need the
+lock?" is a question whose wrong answer is silent. Over-locking a path that
+sees a handful of operations a month costs nothing measurable.
+
+**Why not the alternatives.** A unique index cannot express "at least one row
+exists". An exclusion constraint cannot either. A statement-level trigger that
+counts has the exact race above unless it, too, serialises — at which point it
+is this mechanism, written somewhere harder to find and harder to test.
+
+**Cost, stated plainly.** The lock protects writers that take it. A raw
+`UPDATE users` issued directly against the database bypasses it. That is
+accepted rather than solved: it requires the database credentials, and an
+adversary holding those is already out of scope. Note the contrast with
+ADR-033, where the singleton primary key means correctness does not depend on
+cooperation — here it does, and the honest statement is that every application
+write path cooperates and nothing else is claimed.
+
+Proved by PostgreSQL concurrency tests rather than by argument: ten
+simultaneous demotions across ten connections leave exactly one administrator,
+and nine succeed.
+
+### ADR-040: A password change rotates the current session and revokes every other one
+
+**Decision.** `POST /api/v1/account/password` requires the current password,
+revokes **every** session for the account including the caller's own, and
+issues a replacement — so the browser stays signed in on new material while
+the token it held before the change stops working.
+
+**Why every other session.** A password is changed either as hygiene or because
+it may be known to somebody else. In the second case, leaving existing sessions
+alive means the change accomplished nothing: the attacker's session outlives
+the credential it came from, for up to the absolute session lifetime.
+
+**Why the current session is replaced rather than preserved.** This follows the
+project's existing position instead of inventing one. Login already revokes any
+presented session before issuing a new one, because a token that survives a
+credential event is a token an attacker may have planted. A password change is
+exactly such an event, and a session token that may have leaked — into a proxy
+log, a shared machine, an XSS payload — is retired by the same mechanism.
+
+Preserving it was the alternative and is cheaper to implement. It also means
+the one session an attacker is most likely to already hold is the one session
+the change does not touch.
+
+**Why the current password is required**, when the caller already holds a valid
+session: a session proves possession of a cookie, and changing a credential
+should require possession of the credential. Otherwise a stolen session can
+lock the real owner out of their own account.
+
+**Why a wrong current password is 422 and never 401.** The browser client
+treats 401 as "your session has ended" and signs the user out
+(`isSessionExpired` is 401-only, by design — ADR-030's neighbour in
+`SECURITY.md`). Returning 401 here would eject somebody from the application
+for a typo. It is not 403 either: the caller *is* permitted to change their own
+password, so "you do not have permission" would be a false statement about
+authorization. What happened is that a submitted field failed verification,
+which is what 422 means everywhere else in this API.
+
+**Concurrency.** The user row is locked `FOR UPDATE` for the duration, so two
+simultaneous changes serialise and the second verifies against the *new* hash
+and is refused. The locked read uses `populate_existing`, which is
+load-bearing and was missing in the first implementation: session resolution
+has already loaded that row, so SQLAlchemy returned the identity-map copy and
+the lock was acquired around a **stale** hash. Both changes then verified
+against the same old value and both succeeded — the one combination that looks
+correct in every single-request test.
+
+**Cost.** Two Argon2 operations per request, so roughly twice a login, on an
+authenticated endpoint. Bounded by a rate limiter keyed on the account and
+kept deliberately separate from the login budgets: sharing them would mean
+changing your password a few times spends the budget you need in order to sign
+in, which is a self-inflicted lockout created by a limiter meant to prevent
+one.
+
+### ADR-041: Usernames are immutable; the display name is the mutable label
+
+**Decision.** `users.username` and `users.username_canonical` cannot be changed
+through the API. A new nullable `users.display_name` carries the
+human-readable label, and it is administrator-managed rather than
+self-service.
+
+**Why the two were separated.** Before this, the only human-readable label an
+account had was the thing it logs in with, so correcting a typo in somebody's
+name meant changing their credential. Splitting them is what makes "rename a
+user" a safe operation at all.
+
+**Why renaming the username is not offered.** A username is an identity, and
+it is load-bearing in three places that a rename would silently re-point:
+
+* the login throttle's budget keys, which are canonical usernames (ADR-029);
+* every structured log line about that account;
+* the audit trail, which records `username_canonical` on account creation.
+
+Worse, a rename frees the old canonical name, so somebody else could register
+it and inherit the previous holder's history by eye. Supporting it properly
+means a rename history, and a reviewer able to tell which `felix` a year-old
+log line meant. That is a feature, not a field.
+
+**Why `display_name` is nullable, and why there is no empty string.** Null
+means "this account has no separate label", never "unknown" — callers render
+the username. A blank submission maps onto null, and a CHECK constraint keeps
+the empty string unstorable, so the two states cannot be confused. An empty
+cell in an administrator's user list is otherwise indistinguishable from a bug.
+
+**Why display-name editing is administrator-managed.** A judgement call rather
+than a security boundary, and it goes the conservative way: the display name is
+how an administrator reviewing the user list identifies an account, so letting
+every user rewrite their own label means the list an administrator audits is
+populated with names those users chose. The My Account screen says where the
+change is made rather than offering a field that does nothing.
+
+**Cost.** Correcting a username requires creating a new account and
+deactivating the old one, which loses that account's `created_at` and its
+session history. Accepted: it is rare, it is explicit, and the alternative
+makes an identity mutable.
 
 ---
 

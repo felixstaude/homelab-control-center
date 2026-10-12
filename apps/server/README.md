@@ -18,7 +18,15 @@ hcc/
 ├── errors.py       # AppError hierarchy, uniform error envelope, handlers
 ├── middleware.py   # request id correlation + access logging
 ├── db.py           # engine, session factory, DeclarativeBase
-├── models/         # ORM models — user.py (see the module docstring)
+├── models/         # ORM models — read the module docstrings
+│   ├── user.py           # accounts; canonical username, display name
+│   ├── session.py        # server-side sessions
+│   ├── installation.py   # the one-row first-run invariant
+│   └── audit.py          # append-only audit events
+├── services/       # business rules: invariants, refusals, orchestration
+│   ├── users.py          # user administration + the last-admin invariant
+│   ├── account.py        # self-service: password change, own sessions
+│   └── audit.py          # the audit read side, with keyset pagination
 ├── security/       # framework-free auth primitives
 │   ├── password.py       # Argon2id hashing, policy, concurrency cap
 │   ├── tokens.py         # token generation + SHA-256 storage hashing
@@ -27,6 +35,7 @@ hcc/
 │   ├── authentication.py # login: throttle, verify, issue
 │   ├── authorization.py  # roles + the fail-closed capability interface
 │   ├── bootstrap.py      # first-run: one administrator, exactly once
+│   ├── audit.py          # the audit write side, and denial records
 │   ├── forwarded.py      # trusted-proxy client address and scheme
 │   └── origins.py        # origin parsing for CSRF and CORS
 ├── cli/            # operator commands (`hcc`)
@@ -36,8 +45,12 @@ hcc/
     ├── deps.py     # dependencies: session, CSRF, Viewer/Operator/AdminDep
     ├── health.py   # /healthz, /readyz — public, minimal disclosure
     └── v1/
-        ├── router.py  # the default-deny boundary: public vs protected
-        └── auth.py    # login (public), logout + me (protected)
+        ├── router.py   # the boundary: public, protected, administrator
+        ├── auth.py     # login (public), logout + me (protected)
+        ├── setup.py    # setup status (public, one bit)
+        ├── users.py    # user administration (administrator)
+        ├── account.py  # self-service account and sessions (any role)
+        └── audit.py    # the audit trail (administrator)
 alembic/            # migration environment + versions
 tests/              # unit tests (always run) + integration tests (need Postgres)
 ```
@@ -54,8 +67,6 @@ make dev-server        # http://127.0.0.1:8000
 ```
 
 Configuration comes from the environment; copy `.env.example` to `.env` first.
-
-## Endpoints (Phase 0)
 
 ## Creating the initial administrator
 
@@ -91,17 +102,49 @@ appears in the public list below. See
 | GET | `/healthz` | Liveness. Orchestrators have no session. Returns `{"status": "ok"}` and nothing more. |
 | GET | `/readyz` | Readiness. Same reason. Returns an aggregate status; 503 when degraded. |
 | POST | `/api/v1/auth/login` | Authentication precedes any session. Throttled before password verification. |
+| GET | `/api/v1/setup/status` | The first screen a browser can reach must work with no credential. One boolean (ADR-036). |
 
 Outside production, FastAPI also serves `/docs`, `/docs/oauth2-redirect` and
 `/openapi.json` without a session. All three are **absent in production**.
 
-**Authenticated.**
+**Authenticated, any role.**
 
 | Method | Path | Requires | Purpose |
 | --- | --- | --- | --- |
 | GET | `/api/v1/info` | session | API and server version, environment. |
 | POST | `/api/v1/auth/logout` | session + CSRF | Revoke the session server-side and clear its cookies. |
 | GET | `/api/v1/auth/me` | session | The authenticated identity, and the CSRF token. |
+| GET | `/api/v1/account` | session | The caller's own account. No CSRF token — that is `/auth/me`'s job. |
+| GET | `/api/v1/account/sessions` | session | The caller's own live sessions, with the current one flagged. |
+| POST | `/api/v1/account/sessions/revoke-others` | session + CSRF | End every session except this one. |
+| POST | `/api/v1/account/sessions/{id}/revoke` | session + CSRF | End one of the caller's own. 404 for anyone else's. |
+| POST | `/api/v1/account/password` | session + CSRF | Change the caller's own password. Revokes every other session and rotates this one (ADR-040). |
+
+These need no role because each is scoped to the caller by construction: the
+user id comes from the resolved session, and no request field names an
+account.
+
+**Administrator only.** Gated on the router, not per handler, so a route added
+to `users.py` or `audit.py` is privileged by placement. Denials here are
+written to the audit trail.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/api/v1/users` | List accounts. Search, role and status filters; `limit` ≤ 100, `offset` ≤ 1,000,000; live-session count per account. Two queries per page. |
+| POST | `/api/v1/users` | Create an account. Role defaults to `viewer`. 409 `username_taken` for a case-insensitive duplicate. |
+| GET | `/api/v1/users/{id}` | One account. |
+| PATCH | `/api/v1/users/{id}` | Display name, role, status. Partial; `display_name: null` clears it. **No `username` field** — usernames are immutable (ADR-041). |
+| POST | `/api/v1/users/{id}/deactivate` | End access, keeping the row. Revokes live sessions. |
+| POST | `/api/v1/users/{id}/reactivate` | Restore the ability to sign in. Does **not** restore revoked sessions. |
+| POST | `/api/v1/users/{id}/sessions/revoke` | End every live session. Reports the count; 404 for an unknown account. |
+| GET | `/api/v1/audit/events` | The audit trail, newest first, keyset-paginated. |
+| GET | `/api/v1/audit/actions` | The action vocabulary this build writes. |
+
+Demoting or deactivating the **last active administrator** is refused with
+409 `last_administrator`, held by a transaction-scoped advisory lock rather
+than a count-then-update (ADR-039). There is deliberately no delete endpoint
+and no administrator-set-password endpoint — see
+[`docs/SECURITY.md`](../../docs/SECURITY.md#user-administration-implemented).
 
 ### Behind a reverse proxy
 
@@ -160,6 +203,17 @@ make test-integration    # requires Postgres + HCC_TEST_DATABASE_URL
 Integration tests skip with an explicit message when `HCC_TEST_DATABASE_URL` is
 unset. CI always sets it, so they never skip silently there.
 
+Some properties here can only be demonstrated with **real PostgreSQL and real
+concurrency**, and the relevant suites open genuinely separate sessions rather
+than reusing one:
+
+| Suite | What only a real database can show |
+| --- | --- |
+| `test_last_admin_integration.py` | Two administrators demoting each other both read a safe count under READ COMMITTED, because neither sees the other's uncommitted write. One connection cannot reproduce it, and a mocked repository would return whatever the test said. |
+| `test_api_account_integration.py` | Two simultaneous password changes verifying against the same hash, and the `FOR UPDATE` that stops them. |
+| `test_security_user_management_integration.py` | That the listing stays at four queries with twenty-one accounts — counted by instrumenting the engine, because one query and twenty-six look identical in a response. |
+| `test_migrations_integration.py` | That the migration chain applies, reverses and reapplies, and that `alembic check` finds no drift. |
+
 ## Conventions
 
 - Every error returns the envelope defined in `hcc/errors.py`. Raise an
@@ -195,6 +249,33 @@ unset. CI always sets it, so they never skip silently there.
 - Role checks use `require_min_role`; roles are hierarchical. If a permission
   is not monotonic in `viewer < operator < administrator`, it belongs on the
   capability axis rather than becoming a new role (ADR-023).
+- **Business rules go in `hcc/services/`, not in a handler.** "Deactivating
+  the last active administrator is refused" is neither a request validation
+  nor a constraint PostgreSQL can express, and in a route it would live
+  wherever the first caller happened to be. Services take an `AsyncSession`
+  and plain values, raise typed exceptions, and import no FastAPI.
+- **Services do not commit.** The handler does, so a mutation and the audit
+  event describing it land together or not at all. The one exception is
+  recording a *refusal*, which by definition has nothing else to commit with
+  and is documented where it happens.
+- **Every operation that can reduce the set of active administrators takes the
+  advisory lock in `hcc/services/users.py` before it reads.** A count followed
+  by an update is wrong in a way a single connection cannot show (ADR-039).
+- **A locked read needs `populate_existing`.** `SELECT … FOR UPDATE` acquires
+  the lock, but SQLAlchemy returns the identity-map copy of a row this session
+  has already loaded — and session resolution has loaded the user row on every
+  authenticated request. Without it the lock is held around stale data, which
+  looks correct in every single-request test.
+- **Request models set `extra="forbid"`** and are translated into explicit
+  field sets, so an unknown or internal field is *rejected* rather than
+  silently dropped. A client that believed it set `password_hash` finds out.
+- **Response models are allow-lists, not serialised rows.** `password_hash` is
+  not excluded from a user response; it is absent from a model that was never
+  given it.
+- **Audit events are written through `hcc/security/audit.py`**, which builds
+  `details` from named fields. There is deliberately no parameter a caller
+  could fill with a request body — that is how credential material reaches an
+  audit log in practice.
 - A role denial must not reveal the required role. Raise
   `InsufficientPermissionsError` and let the dependency log the specifics.
 - Authentication failures must stay indistinguishable. Raise

@@ -213,7 +213,7 @@ page. The rules (engineering rules 8 and 9, ADR-012):
 4. Every mock-backed card carries a `Sample` badge.
 
 The whole directory is deleted in Phase 3 (milestone 3.17), when the Overview
-page reads the real API. Milestone 1.6 wired up authentication, not
+page reads the real API. Authentication and user management are wired up, not
 monitoring data: the Overview page is still fixtures behind a banner.
 
 ## Structure
@@ -228,31 +228,46 @@ src/
 │   ├── errors.ts          ApiError and its discriminated kinds
 │   ├── types.ts           the contract, drift-checked against the schema
 │   ├── auth.ts            login / logout / me / setup-status
+│   ├── users.ts           user administration (administrator only)
+│   ├── account.ts         own account, own sessions, password change
+│   ├── audit.ts           the audit trail (administrator only)
+│   ├── meta.ts            /info, for the General settings panel
 │   └── openapi.snapshot.json
 ├── auth/                  authentication state and routing
 │   ├── auth-state.ts      the state machine
-│   ├── auth-provider.tsx  the two queries it derives from
+│   ├── auth-provider.tsx  the two queries it derives from, and the
+│   │                      identity refresh a 401 or 403 triggers
 │   ├── auth-gate.tsx      RequireAuth / RequireAnonymous
 │   ├── use-auth.ts        useAuth, usePermissions
 │   └── permissions.ts     role helpers
 ├── components/
 │   ├── ui/                design-system primitives
+│   │                      (incl. modal, select, table, pagination)
 │   ├── layout/            shell, sidebar, navigation, brand, account menu
 │   │   └── full-page-panel  chrome for every screen outside the shell
-│   ├── states/            full-page spinner, backend-unavailable
+│   ├── states/            full-page spinner, backend-unavailable,
+│   │                      panel-states (loading / empty / error / denied)
 │   ├── error-boundary      recovery screen for a render error
 │   ├── mock-data-banner   "this is not real data"
 │   ├── not-implemented    honest placeholder for unbuilt sections
 │   ├── page-header        per-page title block
 │   └── phase-notice       persistent phase marker
 ├── routes/                one module per page, plus login and setup
+│   └── settings/          nested: general, users, account, sessions, audit
 ├── mocks/                 Phase 0 fixtures (deleted in Phase 3)
 ├── test/                  the fake backend and renderApp helpers
-└── lib/                   cn(), query client, query keys, redirect validation
+└── lib/                   cn(), query client, query keys, datetime,
+                           redirect validation
 ```
 
 Navigation is driven by a single array in `components/layout/navigation.ts`, so
 a section cannot appear in the sidebar but be missing from the drawer.
+
+Settings is **nested routes**, not tab state, so each section is a URL:
+linkable, reloadable, and navigable with the browser's Back button. It also
+keeps the modules small — one Settings component would end up holding every
+section's queries, mutations and dialogs because there would be nowhere else
+to put them.
 
 ## Notes
 
@@ -263,6 +278,22 @@ a section cannot appear in the sidebar but be missing from the drawer.
   Mutations never auto-retry — a retried container stop could act on a
   container the user has since restarted, and a retried sign-in spends another
   attempt from the throttle budget.
+- **A refusal refreshes the identity.** A 403 or 401 from any request
+  invalidates the cached `/auth/me`, so an operator whose role was reduced
+  mid-session stops being offered controls the server now refuses, and a
+  deactivated user is not left looking at an authenticated shell where nothing
+  works. No polling and no socket: both would spend requests continuously to
+  catch an event that happens about never.
+- **No optimistic updates on security-sensitive actions.** Deactivation, role
+  changes and session revocation refetch rather than patching the cache in
+  place. An optimistic update that had to be rolled back would show an account
+  as deactivated when it is not, which is the single most misleading thing
+  these screens could display.
+- **Nothing in the interface is an authorization boundary.** The
+  administrative sections are hidden from other roles because a control that
+  silently vanishes is kinder than one that errors — and a user who types the
+  URL gets the panel's own explanation, because the server refuses the data
+  regardless (`docs/SECURITY.md`).
 - **`strictPort` is on.** A silent port change would break the dev proxy and
   the backend's configured CORS origin.
 - **No external requests.** No web fonts, no CDN, no analytics (ADR-009) — a

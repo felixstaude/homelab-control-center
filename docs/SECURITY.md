@@ -2,13 +2,19 @@
 
 The security model for Homelab Control Center.
 
-> **Current status (Phase 1, milestone 1.5).** An operator can now
-> **initialize a fresh installation and log in**. The initial administrator is
-> created by a local command, `hcc bootstrap-admin`
+> **Current status (Phase 1, milestone 1.7).** An operator can now
+> **initialize a fresh installation, log in, and run a multi-user
+> installation**. The initial administrator is created by a local command,
+> `hcc bootstrap-admin`
 > ([first-run bootstrap](#first-run-bootstrap-implemented)); login, logout,
 > server-side sessions, CSRF protection, login throttling, default-deny
-> authentication and role authorization are implemented and tested. Agent
-> communication, monitoring and remote management remain design only.
+> authentication and role authorization are implemented and tested. Milestone
+> 1.7 adds [user administration](#user-administration-implemented), [session
+> administration](#session-administration-implemented), [self-service password
+> change](#password-change-implemented) and an
+> [audit foundation](#audit-trail-implemented) — the first production call
+> sites for the role axis. Agent communication, monitoring and remote
+> management remain design only.
 >
 > Sections marked **(design)** describe what later milestones will build; they
 > are documented now because they constrain the architecture that *is* built.
@@ -678,6 +684,46 @@ A role grants nothing on a host whose capability is off.
 | Operator | ✓ | ✓ | ✓ | ✓ | | |
 | Administrator | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 
+### The permissions matrix as implemented (1.7)
+
+The table above is the designed model across the whole product. This is the
+part that exists today, endpoint by endpoint, with every row enforced
+server-side and covered by a test for all three roles plus an unauthenticated
+caller.
+
+| Action | Endpoint | Viewer | Operator | Administrator |
+| --- | --- | :-: | :-: | :-: |
+| View own account | `GET /api/v1/account` | ✓ | ✓ | ✓ |
+| Change own password | `POST /api/v1/account/password` | ✓ | ✓ | ✓ |
+| View own sessions | `GET /api/v1/account/sessions` | ✓ | ✓ | ✓ |
+| Revoke own session | `POST /api/v1/account/sessions/{id}/revoke` | ✓ | ✓ | ✓ |
+| Revoke own other sessions | `POST /api/v1/account/sessions/revoke-others` | ✓ | ✓ | ✓ |
+| List all users | `GET /api/v1/users` | | | ✓ |
+| Create a user | `POST /api/v1/users` | | | ✓ |
+| View another user | `GET /api/v1/users/{id}` | | | ✓ |
+| Change a display name or role | `PATCH /api/v1/users/{id}` | | | ✓ |
+| Deactivate a user | `POST /api/v1/users/{id}/deactivate` | | | ✓ |
+| Reactivate a user | `POST /api/v1/users/{id}/reactivate` | | | ✓ |
+| Revoke another user's sessions | `POST /api/v1/users/{id}/sessions/revoke` | | | ✓ |
+| Read the audit trail | `GET /api/v1/audit/events` | | | ✓ |
+
+Three structural points about how that is enforced:
+
+* **The administrator gate is on the router**, not on each handler
+  (`hcc/api/v1/router.py`), for the same reason authentication is (ADR-031): a
+  route added to `hcc/api/v1/users.py` is privileged by placement, so
+  publishing it to every authenticated user takes an explicit move rather than
+  a forgotten decorator.
+* **The self-service surface needs no role**, because every operation on it is
+  scoped to the caller by construction: the user id comes from the resolved
+  session and no request field names an account. That is a stronger guarantee
+  than an authorization check, since there is no object-level check to forget.
+  The one id it does accept is a session id, filtered by owner — so a guessed
+  id belonging to somebody else is indistinguishable from one that does not
+  exist.
+* **Denials on the administrative router are written to the audit trail**, not
+  only logged. "A Viewer tried to list every account" is a security signal.
+
 ### Authentication and authorization are separate checks
 
 Deliberately, with distinct failures:
@@ -724,6 +770,258 @@ Every management action passes through, in order:
    changed state.
 7. **Reported** — the result completes the audit record. A failed command
    always carries a reason; a failure with no reason is not auditable.
+
+---
+
+## User administration (implemented)
+
+`hcc/services/users.py`, `hcc/api/v1/users.py`. Administrator-only, and the
+first production call site for the role axis.
+
+An administrator can list, search and filter accounts; create one; change a
+display name or a role; deactivate and reactivate; and revoke another
+account's sessions. There is deliberately **no delete endpoint** and **no
+administrator-set-password endpoint** — see below for both.
+
+| Property | Choice |
+| --- | --- |
+| Username uniqueness | Case-insensitive, via the canonical column (ADR-014). A case or Unicode-compatibility variant is the same account |
+| Username mutability | **Immutable** (ADR-041). `display_name` is the mutable label |
+| Default role | `viewer`, in the service as well as the request schema, so a CLI or test caller gets it too |
+| Mass assignment | Impossible by construction: request models set `extra="forbid"` and are translated into an explicit three-field dataclass |
+| Removal | Deactivation, never deletion |
+| Password reset by an administrator | Not offered |
+| Listing bounds | `limit` capped at 100, `offset` at 1,000,000, search term at 64 characters |
+| Queries per page | Two, regardless of page size — the live-session count is a correlated subquery, not a per-row lookup |
+
+Properties that hold today, each covered by tests:
+
+- **Deactivation takes effect immediately**, because `is_active` is re-checked
+  on every request (ADR-028). The account's live sessions are also revoked, so
+  the session counts an administrator sees afterwards are accurate — the
+  revocation is not what makes deactivation effective, it is what makes the
+  display honest.
+- **Reactivation does not restore revoked sessions.** A revoked token stays
+  revoked; the account signs in again, which is also the only way the server
+  learns the password is still known to its owner.
+- **A role change takes effect on the target's next request**, with no
+  re-login and no session sweep, because the role is read from the user row
+  every time.
+- **A refused operation changes nothing.** Every refusal is evaluated before
+  anything is applied, so a request bundling a permitted change with a refused
+  one leaves the row untouched.
+- **Responses are allow-lists, not serialised rows.** `password_hash` is not
+  "excluded" from the user response; it is absent from a model that was never
+  given it. So are `username_canonical`, session tokens and CSRF tokens.
+- **Concurrent creation of one username yields one account**, guaranteed by
+  the unique constraint rather than by the check that precedes it.
+
+### Why there is no delete endpoint
+
+A deleted row cascades its sessions away and leaves the audit trail pointing
+at an id that resolves to nothing — so "who deactivated this account" would
+stop being answerable about the one account anybody asks it about.
+Deactivation ends access immediately while keeping the history intact.
+
+### Why an administrator cannot set somebody else's password
+
+Deliberate, and worth stating because its absence looks like an omission. An
+administrator who could set a password could then sign in as that user and act
+as them, with nothing in the trail distinguishing it from the owner's own
+activity. The paths that remain are: the owner changes it, or an administrator
+creates a new account and deactivates the old one. Recovery for a user who has
+genuinely lost their password is a known gap below.
+
+### The last-active-administrator invariant
+
+**An ordinary management operation can never leave the installation with no
+active administrator.** Demotion and deactivation of the last one are refused
+with `409 last_administrator`, a distinct code so the interface can explain
+what to do instead rather than showing a generic conflict.
+
+This is an availability property with a security consequence: an installation
+with no administrator cannot create one, because bootstrap is a one-way door
+that does not reopen (ADR-033). Locking yourself out is permanent short of
+database access.
+
+It is held by a **transaction-scoped advisory lock** taken before the count
+and held until commit, not by a count followed by an update — which is wrong
+in a way one connection cannot show, because two administrators demoting each
+other both read a safe count and both commit. Full reasoning, the rejected
+alternatives, and the honest limitation (a raw `UPDATE` bypasses it) are in
+ADR-039. Proved by concurrency tests against real PostgreSQL: ten simultaneous
+demotions across ten connections leave exactly one administrator.
+
+Deliberately *not* protected, because neither reduces the active-administrator
+set: promoting anybody, deactivating a non-administrator, and demoting an
+already-inactive administrator. Over-blocking would make the sole
+administrator unable to correct their own display name.
+
+## Session administration (implemented)
+
+Two surfaces, with different disclosure.
+
+**Own sessions** (`GET /api/v1/account/sessions`, any role). Each live session
+reports its id, whether it is the current one, when it was created, when it was
+last used, when it expires, the client address recorded at sign-in, and the raw
+`User-Agent`. Expired and revoked rows are not listed: they would not work, and
+showing them buries the ones that do.
+
+**Administrative** (`POST /api/v1/users/{id}/sessions/revoke`, administrator
+only). A count per account in the user list, and the ability to end all of
+them. No addresses and no user agents — an administrator needs to know *that*
+an account has live access, not from where.
+
+| Property | Choice |
+| --- | --- |
+| What identifies a session to a client | `sessions.id`, the row's `uuid4` primary key |
+| What authenticates it | The token, in the `HttpOnly` cookie, stored only as a SHA-256 digest (ADR-027) |
+| Inferred device or browser labels | **None.** The `User-Agent` is rendered verbatim, or "not recorded" |
+| Inferred location | **None.** The server stores an address and nothing else |
+| Revocation effect | Marks the row; resolution rejects it on the next request |
+| Revocation scope | One session, all others, or all — three distinct, separately named actions |
+
+### Why exposing a session id is safe
+
+It needs justifying rather than assuming. A session has two identifiers and
+they are not interchangeable. The **token** is the credential: 256 bits from a
+CSPRNG, never stored. The **id** is the row's primary key; it is not derived
+from the token and the token cannot be derived from it. Presenting an id
+authenticates nothing, and the only operation that takes one — revocation — is
+filtered by owner, so holding somebody else's id grants nothing. No separate
+opaque handle is therefore needed, and a test asserts the id appears in neither
+the token nor its digest.
+
+### Why no browser or operating-system label is shown
+
+A "Chrome on macOS" label inferred from a `User-Agent` is a guess presented as
+a fact, and it is wrong exactly for the clients worth noticing — a scripted
+client, an unusual browser, a forged header. Location is worse: it would mean
+either a third-party lookup, which ADR-009 forbids, or a fabrication.
+
+### Revocation properties
+
+Each covered by tests, including a browser test with two real contexts:
+
+- **Immediate.** Takes effect on the revoked session's next request.
+- **Durable across a restart.** Revocation is a row, not process state
+  (ADR-028), so a second application instance against the same database
+  refuses the token.
+- **Atomic and idempotent.** One `UPDATE` with a `revoked_at IS NULL` guard;
+  revoking twice returns a count of zero the second time rather than failing.
+- **Honest.** The response carries the count, and an unknown account id is a
+  404 rather than a cheerful zero. A revocation that reported success without
+  having revoked anything is the one lie this must not tell.
+- **Not dependent on the client.** Cookie clearing is a courtesy; the row is
+  the boundary.
+
+## Password change (implemented)
+
+`POST /api/v1/account/password`, any role, for the caller's own account only.
+
+| Property | Choice |
+| --- | --- |
+| Current password | **Required**, even though the caller holds a valid session |
+| Policy | The existing one (ADR-026), reported with every violation at once |
+| Hashing | Argon2id through the existing service (ADR-025) |
+| Other sessions | **All revoked** |
+| Current session | **Replaced**, with new cookies on the response (ADR-040) |
+| Wrong current password | **422**, never 401 |
+| Confirmation field | Client-side only; never transmitted |
+| Rate limiting | Per account, separate from the login budgets |
+| Concurrency | The user row is locked `FOR UPDATE`, with `populate_existing` |
+
+**Why the current password is required.** A session proves possession of a
+cookie; changing a credential should require possession of the credential.
+Otherwise a stolen session locks the real owner out of their own account.
+
+**Why 422 and never 401.** The browser client treats 401 as "your session has
+ended" and signs the user out, so a 401 here would eject somebody for a typo.
+Not 403 either: the caller *is* permitted to change their own password.
+
+**Why the session is rotated rather than preserved**, and why every other one
+is revoked: ADR-040. In short, a token that survives a credential event is a
+token an attacker may have planted, and login already takes that position.
+
+**Why the throttle is separate from login's.** Sharing it would mean changing
+your password a few times spends the budget you need in order to sign in — a
+self-inflicted lockout created by a limiter meant to prevent one. A password
+change costs two Argon2 operations, so roughly twice a login.
+
+**Concurrency, and the defect that was found.** The locked read uses
+`populate_existing`, which is load-bearing: session resolution has already
+loaded that row, so without it SQLAlchemy returned the identity-map copy and
+the lock was acquired around a **stale** hash. Two simultaneous changes then
+verified against the same old value and both succeeded. The lock was working
+and the read was not — the one combination that looks correct in every
+single-request test, and it was caught only by a concurrency test.
+
+There is deliberately **no password reset flow**: no public reset endpoint, no
+email, no recovery questions. See the known gaps.
+
+## Audit trail (implemented)
+
+`hcc/models/audit.py`, `hcc/security/audit.py`, `hcc/services/audit.py`.
+Append-only, Administrator-only to read, and a **foundation** rather than the
+finished audit system milestone 1.14 owns — ADR-038 records why it shipped
+early and what is still 1.14's.
+
+Recorded today: user created, user updated, role changed, user deactivated,
+user reactivated, sessions revoked (administrative and self-service), password
+changed, and administrative access denied. Each carries an id, a timestamp
+assigned by the database, the action, an outcome (`success`, `denied`,
+`failure`), the actor, the target where there is one, the request correlation
+id, and a small structured `details` object.
+
+**Never recorded:** passwords, password hashes, session tokens, CSRF tokens,
+cookies, or request bodies. `details` is built from named fields by the audit
+service rather than passed through from a caller, and a test scans the whole
+table after a full journey to assert none of those strings appears.
+
+| Property | Choice |
+| --- | --- |
+| Write path | Insert only. No update and no delete, anywhere in the application |
+| HTTP surface | One read endpoint. No route accepts a write, so `POST` answers 405 |
+| Success events | Committed **in the mutation's transaction** |
+| Refusals and denials | Committed in their own transaction — they have nothing else to commit with |
+| Tamper evidence | **None claimed and none implemented** |
+| Foreign keys | None, so deleting a user cannot erase the record of what was done to them |
+| Pagination | Keyset, not offset |
+
+**Transactional consistency.** A success event is staged in the same
+transaction as the change it describes, so either the role changed and the
+event exists or neither happened. There is no window in which the database
+says a role was changed and no record says who did it, and none in which the
+trail claims a change that was rolled back — asserted by making a creation fail
+on the unique constraint and checking the trail records the failure rather than
+the success.
+
+**How refusals and denials are recorded without a second failure mode.** An
+authorization failure raises before the handler runs, and the request's
+transaction is rolled back on the way out — so an event added to it would be
+the one event class that never persisted. Those are therefore written in a
+short transaction of their own, and that write **cannot weaken
+authorization**: the caller raises regardless of what happens, and a failed
+audit write is logged rather than turned into a 500, because a database hiccup
+must not convert a correct refusal into a response some clients treat as
+retryable. Losing the evidence is bad; losing the refusal would be worse.
+
+**Why the action vocabulary is an open string**, when `role` is a native enum:
+ADR-038. A new audit action changes nothing about what anybody may do, the
+vocabulary grows every milestone, and an unrecognised value read back is
+harmless — the viewer renders it verbatim, which a test pins, so a newer
+server's events are never hidden by an older client.
+
+**Audit log injection.** The one value in `details` that is attacker-influenced
+is the path on a denial record, and that is easy to miss because it looks
+server-derived: authorization runs *before* a route's path parameters are
+validated, so a caller refused at `/users/{user_id}` chose that segment. It is
+truncated on the way in, and the exposure is one slash-free segment — an
+escaped slash is decoded before route matching, so such a path answers 404
+before authorization runs. Nothing interpolates it into markup; the viewer
+renders it as text and React escapes, which a frontend test pins. The honest
+statement is that the protection is the renderer's escaping plus a writer that
+never takes caller input, not a sanitiser.
 
 ---
 
@@ -795,7 +1093,7 @@ putting any secret there.
 
 ---
 
-## Browser client (implemented, milestone 1.6)
+## Browser client (implemented, milestones 1.6 and 1.7)
 
 **The client is not a security boundary.** Its route guards and
 role-to-permission map decide what the interface *offers*; the control plane
@@ -818,6 +1116,10 @@ and not *lying to the user* — none of it is relied on for enforcement.
 | **CSRF token read per request** | From the readable `hcc_csrf` cookie at request time, never cached in a module variable. | The cookie is rotated by sign-in and sign-out; a cached token would be stale exactly when it mattered. |
 | **One deliberate action, one request** | The submit handler takes a synchronous ref guard, released in `finally`. | The `disabled` attribute only takes effect after React re-renders, and a double-click delivers its second event before that — so two sessions were created, one of which nothing would ever revoke, and two attempts were spent from the user's own throttle budget. |
 | **No public bootstrap path added** | The first-run screen displays *instructions* for `hcc bootstrap-admin` and performs no bootstrap itself. | Any screen that performed it would be the endpoint ADR-033 refuses to create. |
+| **A denial refreshes the identity rather than clearing it** (1.7) | A 403 invalidates the cached `/auth/me`, so the interface stops offering controls the server now refuses. A 401 does the same, and the refetched answer is what signs the user out. | Without it, an operator demoted mid-session keeps being invited to try things that then fail — and a deactivated user sits looking at an authenticated shell where nothing works and nothing says why. Nothing is *granted* either way: the role is read server-side on every request. |
+| **No polling and no socket for role synchronisation** (1.7) | The refresh is triggered by a refusal, with a short throttle so a burst of denials is one request. | A timer re-checking the role would spend requests continuously to catch an event that happens about never, and a WebSocket for this alone is the machinery `ARCHITECTURE.md` §3.3 exists to keep out. |
+| **No password reaches the DOM or a log** (1.7) | The create-user and change-password forms clear their fields after every attempt; tests assert the values are absent from `document.body.outerHTML`, which includes attribute values. | A controlled input that serialised its value would otherwise leave a password in the live component tree. |
+| **One deliberate action, one request** (1.7) | The create-user and change-password submit handlers take the same synchronous ref guard the login form does. | `disabled` only takes effect after a re-render, and a double-click delivers its second event first. |
 
 Fetch defaults worth stating: `credentials: 'same-origin'` (not `'include'`,
 which would additionally send cookies cross-origin), `cache: 'no-store'` (a
@@ -826,8 +1128,9 @@ cache hit after sign-out would redisplay a previous session's data) and
 credentials elsewhere).
 
 These are pinned by `apps/web/src/auth/security.test.tsx`,
-`apps/web/src/auth/auth-flow.test.tsx` and `apps/web/src/api/client.test.ts`
-on the client side, and by
+`apps/web/src/auth/auth-flow.test.tsx`,
+`apps/web/src/auth/role-consistency.test.tsx` and
+`apps/web/src/api/client.test.ts` on the client side, and by
 `apps/server/tests/test_browser_contract_integration.py` on the server side,
 which asserts the cookie contract the client depends on — CSRF cookie
 readable, session cookie `HttpOnly`, both `Path=/` with no `Domain`
@@ -1035,16 +1338,19 @@ them.
 Stated plainly rather than implied. Several of these must close before the
 authentication endpoints face an untrusted network.
 
-1. **No self-service registration, and no user management.** The initial
-   administrator is created by `hcc bootstrap-admin`
-   ([first-run bootstrap](#first-run-bootstrap-implemented)); there is no way
-   to create a *second* account yet, and no API for listing, editing or
-   deactivating accounts. Milestone 1.7.
-2. **Role authorization has no production call site yet.** The dependencies
-   are implemented and tested, and every product route requires
-   authentication — but no current endpoint needs more than "logged in",
-   because user and host management do not exist. The first real use arrives
-   with user management.
+1. ~~No self-service registration, and no user management.~~ **Closed in
+   1.7** for user management: an administrator can list, create, edit,
+   deactivate and reactivate accounts, and revoke their sessions
+   ([user administration](#user-administration-implemented)). There is still
+   **no self-service registration**, and that is permanent rather than
+   pending: accounts are created by an administrator, because a self-service
+   path on a homelab control plane is a way for whoever reaches the port to
+   get an account.
+2. ~~Role authorization has no production call site yet.~~ **Closed in 1.7.**
+   The user-administration and audit routers are Administrator-only, gated at
+   the router, with every row of
+   [the permissions matrix](#the-permissions-matrix-as-implemented-17) tested
+   for all three roles and for an unauthenticated caller.
 3. **The capability axis is not implemented.** Its interface exists and fails
    closed, so nothing can accidentally rely on it. Per-host capability
    configuration lands with host management.
@@ -1070,17 +1376,33 @@ authentication endpoints face an untrusted network.
    Browsers always send it for the cross-site requests this guards against, so
    the gap is narrow — but it is a gap. It does **not** apply to WebSocket
    handshakes, where `Origin` is required.
-8. **No audit log.** Login, logout, revocation and bootstrap are logged as
-   structured events, but there is no append-only audit table yet.
-   Milestone 1.14.
-9. **Sessions are not listed or revocable in the UI.**
-   `SessionService.revoke_all_for_user` exists and is tested, but nothing calls
-   it. Milestone 10.1.
-10. **No password change or reset flow**, so a compromised password cannot be
-    rotated by its owner — and the bootstrap command cannot be used a second
-    time to replace it. Recovery today means issuing SQL against the database,
-    which is the same authority bootstrap required. `rehash_if_needed` exists
-    for parameter upgrades but is not yet wired into login.
+8. **The audit trail covers user and session administration only.** The
+   `audit_events` table exists and is written transactionally
+   ([audit trail](#audit-trail-implemented), ADR-038), but login, logout,
+   bootstrap and agent enrolment are still only structured log events. It also
+   has **no retention policy and no pruning**, so the table grows — including
+   from denial records, which an authenticated low-privilege caller can
+   produce at their request rate. That is the same exposure the structured log
+   already has, and it is not an unauthenticated write amplifier, but it is
+   unbounded growth. Retention arrives with the subsystem that owns retention;
+   the remaining event types and any integrity story are milestone 1.14.
+9. ~~Sessions are not listed or revocable in the UI.~~ **Closed in 1.7.** A
+   user can list and revoke their own sessions, and an administrator can end
+   all of another account's
+   ([session administration](#session-administration-implemented)). What 10.1
+   still owns is the rest of the settings area — agents, retention,
+   capabilities and notification destinations.
+10. **No password *reset* flow.** Changing a password is implemented
+    ([password change](#password-change-implemented)), so a compromised
+    credential can be rotated by its owner. What is still missing is recovery
+    for somebody who has **forgotten** theirs: there is no reset endpoint, no
+    email, and no administrator-set-password path — deliberately, since an
+    administrator who could set a password could then act as that user
+    indistinguishably from them. Recovery today is for an administrator to
+    create a replacement account and deactivate the old one, or to issue SQL
+    against the database, which is the same authority bootstrap required.
+    `rehash_if_needed` exists for Argon2 parameter upgrades and is still not
+    wired into login.
 11. **Session pruning is not scheduled.** `prune_expired` exists and is
     tested; the scheduler arrives with the other periodic jobs. Until then the
     table grows with expired rows.
@@ -1100,15 +1422,30 @@ authentication endpoints face an untrusted network.
     against a configuration *without* it, so the policy is asserted as a
     header value and not as something a real page was loaded under. It needs
     the asset-serving path that arrives with packaging.
-15. **A signed-out browser keeps whatever is already on screen until the next
-    request.** Sign-out clears the local session and the query cache
-    immediately, but another tab holding a rendered page learns its session is
-    gone only when it next calls the API. Nothing authoritative is exposed —
-    the data is already in that tab's memory — and no request it makes will
-    succeed.
+15. **A signed-out browser keeps whatever is already on screen until it next
+    calls the API — narrowed in 1.7.** Any 401 or 403 from any request now
+    triggers a re-check of the identity, so a tab whose session was revoked or
+    whose role was reduced corrects itself on its next interaction rather than
+    waiting for the session query to go stale. What remains is a tab that makes
+    no requests at all: it keeps its rendered page until it does. Nothing
+    authoritative is exposed — the data is already in that tab's memory — and
+    no request it makes will succeed.
 16. **Nothing in the agent, monitoring, capability or terminal sections
     exists.** They are specified because they constrain what is being built,
     not because any of it is live.
+17. **Usernames cannot be corrected.** They are immutable (ADR-041), so fixing
+    a typo in a login name means creating a replacement account and
+    deactivating the old one — which loses that account's creation date and
+    session history. Accepted deliberately over making an identity mutable;
+    `display_name` covers the case where what needs correcting is the label.
+18. **The browser suite runs on Chromium only.** Adding Firefox is not blocked
+    by the code — there is no engine-specific behaviour in the client — but the
+    suite is serial against **one** disposable installation whose one-shot
+    bootstrap can only be observed once, so a second browser project would
+    need a second database and a restructured `scripts/e2e.sh`. Only Chromium
+    binaries are installed in CI. The cookie attributes a second engine would
+    most usefully check (`Secure`, `SameSite`, `HttpOnly`, `Path`) are asserted
+    server-side in `tests/test_browser_contract_integration.py` as well.
 
 ## Reporting a vulnerability
 

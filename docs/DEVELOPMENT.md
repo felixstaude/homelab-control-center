@@ -155,7 +155,61 @@ username and role and holds **Sign out**. Deep links work: visiting
 `/containers` afterwards.
 
 The dashboard pages themselves are still static fixtures behind a banner —
-milestone 1.6 wired up authentication, not monitoring data.
+authentication and user management are real; monitoring data is not.
+
+## Managing accounts (milestone 1.7)
+
+`hcc bootstrap-admin` creates the **first** administrator and refuses to run
+twice (ADR-033). Every account after that is created in the interface, by an
+administrator, under **Settings → Users**.
+
+```
+Settings
+  ├── General      installation facts. Read-only — the control plane is
+  │                configured by environment variables, validated at startup
+  │                and frozen, so there is nothing here to save
+  ├── Users        administrator only
+  ├── My account   any role: your details, and your password
+  ├── Sessions     any role: where you are signed in
+  └── Audit        administrator only
+```
+
+What an administrator can do, and the few things nobody can:
+
+| Operation | Notes |
+| --- | --- |
+| Create an account | Username, optional display name, password, role. The role defaults to **Viewer** |
+| Change a display name | The mutable label |
+| Change a role | Takes effect on that account's next request, with no re-login |
+| Deactivate / reactivate | Deactivation ends access immediately and revokes live sessions. Reactivation does not bring those sessions back |
+| Revoke an account's sessions | Ends access now; the account can sign in again straight away |
+| Change a **username** | **Not possible.** Usernames are immutable (ADR-041) — create a replacement account and deactivate the old one |
+| Set somebody else's password | **Not possible**, deliberately. See `SECURITY.md` |
+| Delete an account | **Not possible.** Deactivation is the removal mechanism |
+| Demote or deactivate the last active administrator | **Refused**, with a message naming the remedy. Grant the role to another active account first |
+
+Every user, at any role, can change their own password under **My account**.
+Doing so signs them out of every *other* session and replaces the current one,
+so the browser they are using stays signed in (ADR-040). A mistyped current
+password is a field error, not a sign-out.
+
+### If you lock yourself out in development
+
+`make db-reset` destroys the local volume and reapplies migrations, after
+which `make bootstrap` works again. There is deliberately no password-reset
+path — see the known gaps in `SECURITY.md`.
+
+### Two new environment variables
+
+```
+HCC_PASSWORD_CHANGE_RATE_LIMIT_PER_USER=5
+HCC_PASSWORD_CHANGE_RATE_LIMIT_WINDOW_SECONDS=300
+```
+
+A password change costs two Argon2 operations, so roughly twice a login. These
+bound that per account and are kept **separate** from the login budgets on
+purpose: sharing them would mean changing your password a few times spends the
+budget you need in order to sign in. `apps/server/.env.example` documents both.
 
 ## Quality gates
 
