@@ -340,6 +340,16 @@ jobs:
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
 
+      - name: Set up Go
+        # The browser journey drives the *real* agent, built by
+        # scripts/e2e.sh. Without a toolchain the live-host tests would skip,
+        # which is why E2E_REQUIRE_AGENT below turns a missing agent into a
+        # failure here rather than a silent gap.
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: agents/linux/go.sum
+
       - name: Install the backend
         # Into the venv path scripts/e2e.sh expects, so the script is the same
         # one a developer runs rather than a CI-only variant.
@@ -359,8 +369,14 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Run the browser journey
-        # Stands up a disposable installation, builds the client, serves it
-        # with the /api proxy, and drives it with a real browser.
+        # Stands up a disposable installation, builds the client and the
+        # agent, serves the client with the /api proxy, and drives the whole
+        # thing with a real browser.
+        env:
+          # A missing agent binary is a failure here, not a skip. The host
+          # journey is this milestone's deliverable, and a CI run that
+          # silently stopped exercising it would be worse than no CI run.
+          E2E_REQUIRE_AGENT: '1'
         run: ./scripts/e2e.sh
 
       - name: Upload failure artefacts

@@ -2214,6 +2214,236 @@ makes an identity mutable.
 
 ---
 
+### ADR-042: Agent credentials are hashed with SHA-256, not Argon2id
+
+**Decision.** Both the one-time enrollment credential and the long-lived agent
+credential are stored as an **unsalted SHA-256 digest**, through the existing
+`hcc.security.tokens` helpers. This supersedes
+[`AGENT_ARCHITECTURE.md §4.2`](AGENT_ARCHITECTURE.md#42-credential-handling-rules),
+which said Argon2id.
+
+**Why the earlier document was wrong.** It applied the password rule to a
+different kind of secret. [ADR-027](#adr-027-session-tokens-are-hashed-with-sha-256-not-argon2)
+already settled this for session tokens and the reasoning transfers exactly:
+
+- Argon2's cost exists to defeat *guessing* of low-entropy secrets. These are
+  256 bits from a CSPRNG. There is no candidate list to enumerate, no
+  dictionary and no structure, so there is nothing for a slow KDF to slow
+  down.
+- A **salted** hash cannot be looked up by index. Verifying a presented
+  credential would mean scanning every pending enrollment and every agent
+  credential, hashing each at 64 MiB and 50 ms. On the agent-reconnection
+  path — which a thousand hosts take at once after a controller restart —
+  that is not a performance note, it is an outage.
+
+**What the hashing does buy, and it is the whole threat.** A database dump,
+backup or log leak yields digests that cannot be replayed. SHA-256 addresses
+that completely.
+
+**Why unsalted is safe here.** Salts defend against precomputation across a
+*shared* keyspace. With 256-bit random values there is no shared keyspace to
+precompute, and determinism is what makes the single indexed lookup possible.
+
+**Cost.** The two documents disagreed for a while, which is how a
+security-relevant decision gets implemented twice in different ways. Resolved
+by changing the one that was wrong rather than the one that was right.
+
+---
+
+### ADR-043: Connectivity is derived, never stored as a boolean
+
+**Decision.** There is no `hosts.is_connected` column. A host's connectivity
+is computed from two stored facts — `current_connection_id` and
+`last_heartbeat_at` — into one of three states: `offline`, `connected`,
+`stale`.
+
+**Why not a boolean.** A flag set on connect and cleared on disconnect is
+wrong in the one case that matters. If the controller process dies, nothing
+runs the clearing code, and **every host stays "connected" forever** — so the
+dashboard reports healthy connectivity for a fleet connected to nothing. That
+is precisely the failure [`PRODUCT_VISION.md`](PRODUCT_VISION.md) principle 2
+forbids, and it is the failure mode that is hardest to notice because the
+interface looks fine.
+
+**Why three states and not two.** A crash leaves `current_connection_id` set
+and `last_heartbeat_at` frozen, which derives as **stale** — the honest
+answer, and visibly a problem. Collapsing that into either `connected` or
+`offline` would require the controller to guess which of two different
+incidents happened: the agent died, or the network did. It genuinely cannot
+tell, and only the host's operator can.
+
+**Why `offline` is asserted only on a cleared connection.** Clearing
+`current_connection_id` is something the controller did deliberately, on a
+clean disconnect, so it is more trustworthy than a timestamp — which is merely
+the last thing that arrived. A recorded connection with no recent heartbeat is
+therefore never reported as offline.
+
+**Connection epoch.** Each accepted connection increments
+`hosts.connection_epoch` and gets a fresh `current_connection_id`, and every
+later write by that connection carries both. Without the guard, an agent that
+reconnects while its previous socket is still draining produces a disconnect
+from the *old* connection that clears the *new* one's state — so a host that
+is in fact connected reads as offline, and a flapping link makes the dashboard
+oscillate.
+
+**Cost.** Connectivity cannot be filtered in SQL without duplicating the
+derivation as a `WHERE` clause — two implementations of the one rule that
+decides whether the dashboard claims a host is up, free to disagree. So the
+list endpoint applies that filter in Python, after the page is fetched, and
+says so: a connectivity-filtered page can return fewer rows than its limit.
+Acceptable at tens of hosts; the fix when it stops being acceptable is a
+stored projection refreshed on heartbeat, not a second copy of the rule.
+
+---
+
+### ADR-044: Host invariants are serialised per host, not installation-wide
+
+**Decision.** Every host mutation takes a **per-host** transaction-scoped
+advisory lock, `pg_advisory_xact_lock(HOST_LOCK_CLASS, hashtext(host_id))`.
+[ADR-039](#adr-039-the-last-active-administrator-invariant-is-held-by-a-transaction-scoped-advisory-lock)
+serialises every *user* mutation on one global key; this deliberately does not
+follow it.
+
+**Why the global pattern does not transfer.** Two differences, and both point
+the same way:
+
+- The invariant ADR-039 protects is installation-wide — "at least one active
+  administrator" — so any two writers can interfere. The host invariants are
+  per host: at most one live credential, at most one pending enrollment.
+  Nothing about host A's credential can affect host B's.
+- User administration is a handful of operations a month. An agent fleet
+  reconnecting after a controller restart is a burst of concurrent writes, and
+  a global lock would serialise the whole fleet behind one mutex at exactly
+  the moment it is busiest.
+
+**What the lock is and is not for.** Correctness comes from the partial unique
+index (`uq_agent_credentials_one_live_per_host`) and from conditional
+`UPDATE`s whose predicates the database evaluates against committed state. The
+lock makes the *outcome deterministic* rather than a constraint violation
+somebody has to retry. The connection-accept path takes no lock at all for
+this reason: `connection_epoch = connection_epoch + 1` in one statement is
+correct under PostgreSQL's row lock without one.
+
+**Why the object id is computed by PostgreSQL.** `hashtext(host_id::text)`,
+not a hash chosen in Python. A lock key derived differently by two callers is a
+lock that does nothing, and computing it in SQL means every participant
+derives it the same way by construction. A collision between two host ids
+costs a little unnecessary serialisation and breaks no invariant.
+
+---
+
+### ADR-045: The audit trail gains a host dimension rather than a second trail
+
+**Decision.** `audit_events` gains one nullable column, `target_host_id`, a
+sibling of `target_user_id`. The nine host actions are new `AuditAction`
+members with no schema change.
+
+**Why not a polymorphic `(target_type, target_id)` pair.** It looks tidier and
+is worse. The type would have to be checked at every read, "every event about
+this host" would be a query no index can serve without a composite on a
+low-cardinality discriminator, and a reader could not tell a host id from a
+user id without consulting another column. Two nullable, independently indexed
+columns are filterable, joinable and unambiguous.
+
+**Why not a separate host audit table.** Because then "what happened on this
+installation" is two queries whose results have to be merged and ordered in
+the application, and the merge is where events start going missing. One
+append-only trail, one ordering, one place to look.
+
+**What is deliberately not recorded.** There is no `host.agent_connected` and
+no `host.agent_disconnected`. A flapping link would write two rows a second
+and bury every administrative event in the trail, and the information already
+lives where it belongs — `last_connected_at` on the host row and the
+structured log. An audit trail answers "who did what to this system", and an
+agent reattaching after a network blip is not somebody doing something.
+
+**Failed authentications are recorded, with suppression.** A refused agent is
+recorded **only when the presented credential resolves to a known host** —
+otherwise there is nothing to attribute it to, and a row per unrecognised
+digest would make an endpoint reachable without a session into a table-growth
+amplifier. And at most once per host per minute, because a revoked agent
+retries on its own backoff forever, so one machine nobody has fixed yet would
+otherwise fill the trail.
+
+---
+
+### ADR-046: One controller process, stated rather than enforced
+
+**Decision.** The registry of live agent connections
+(`hcc.agents.registry.ConnectionRegistry`) is **per process**. The deployment
+guidance is one controller process. Nothing in the code refuses to start with
+more.
+
+**What a second worker does and does not break.** Worth being precise, because
+the tempting mistake is to treat the registry as the source of truth:
+
+- **Connectivity is unaffected.** It is derived from the `hosts` row, which
+  every worker reads and writes in the same database (ADR-043). A browser
+  asking "is homeserver connected?" gets the same answer from either.
+- **Superseding within one worker works.** Both connections are in the same
+  registry.
+- **Superseding across workers is delayed, not lost.** Worker A still holds a
+  socket whose host has reconnected onto worker B. A's next heartbeat fails
+  the epoch guard, so its write is a no-op, and it establishes the real reason
+  and closes. The state stays correct; the stale socket lingers for up to one
+  heartbeat interval.
+- **Immediate revocation becomes eventual.** An administrative request that
+  revokes a credential asks *its own* process to close the socket, which is
+  instant when that process holds it. Across workers it is bounded by the
+  heartbeat interval instead — the durable check is what makes it a guarantee
+  either way.
+- **Pushing to an agent across workers does not work at all.** Nothing in this
+  milestone pushes, so nothing depends on it.
+
+**Why it is not enforced in code.** A check that refused to start with
+`--workers 2` would be enforcing a constraint on an operator who may have
+reasons, and whose hosts would still report correctly. Refusing to start is a
+strong action to take over a property that degrades gracefully.
+
+**When this has to change.** Configuration distribution. The moment the
+controller needs to *push* to a specific agent, a second worker becomes a
+correctness question rather than a tidiness one, and the answer is a real
+channel — PostgreSQL `LISTEN`/`NOTIFY` is the obvious one, since the
+dependency is already there.
+
+---
+
+### ADR-047: The agent takes one vendored WebSocket dependency, amending ADR-011
+
+**Decision.** `agents/linux` depends on `github.com/coder/websocket`, vendored
+into the repository. [ADR-011](#adr-011-zero-third-party-dependencies-in-the-agent)'s
+"standard library only" rule is amended to "the standard library, plus
+dependency-free libraries that are vendored and reviewed", with this as the
+only entry.
+
+**Why the rule had to give.** The standard library has no WebSocket client, and
+the agent needs a persistent connection the controller can push a close frame
+down. The three options were:
+
+1. **Hand-roll RFC 6455.** Framing, masking, continuation frames, close
+   handshakes and ping/pong, written once and maintained by nobody, on the one
+   code path that parses untrusted input from the network. The worst of the
+   three by a wide margin — "no dependencies" is not a security property if
+   the thing replacing them is a protocol parser nobody reviews.
+2. **Long-poll over `net/http`.** No new dependency, and a permanently worse
+   protocol: no server-initiated frames, so a revocation could not cut an
+   agent off until its next poll.
+3. **One audited, dependency-free library.**
+
+**Why this library.** `go mod graph` shows it requiring nothing but a Go
+version — **zero transitive dependencies** — so the supply chain grows by one
+module rather than by a tree.
+
+**Why vendored.** The source that compiles is in this repository, reviewable in
+a diff, and does not depend on a module proxy being reachable or honest at
+build time. CI runs `go mod vendor` and fails on a diff, so the vendored tree
+cannot drift from `go.mod` or be edited in place.
+
+**Cost.** 200 KiB of third-party source in the repository, and a dependency to
+track for advisories. Accepted, and much the smaller cost of the three.
+
+---
+
 ## 14. Open design questions
 
 Recorded rather than silently deferred. Each needs an answer before the

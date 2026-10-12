@@ -40,6 +40,7 @@ cd "$REPO_ROOT"
 
 SERVER_DIR="apps/server"
 WEB_DIR="apps/web"
+AGENT_DIR="agents/linux"
 VENV="$SERVER_DIR/.venv"
 
 # Local development credentials, matching deploy/compose.yaml. Not a secret.
@@ -63,9 +64,14 @@ PREVIEW_URL="http://127.0.0.1:$PREVIEW_PORT"
 
 SERVER_PID=""
 PREVIEW_PID=""
+# Declared here rather than beside the build below, because `cleanup` runs on
+# every exit path including one taken before the build — and an unset variable
+# under `set -u` would turn a real failure into a confusing one.
+AGENT_STATE_DIR=""
 
 green() { printf '\033[0;32m%s\033[0m\n' "$1"; }
 red() { printf '\033[0;31m%s\033[0m\n' "$1"; }
+yellow() { printf '\033[0;33m%s\033[0m\n' "$1"; }
 info() { printf '\033[0;36m%s\033[0m\n' "$1"; }
 
 psql_super() {
@@ -100,6 +106,18 @@ cleanup() {
       wait "$pid" 2>/dev/null || true
     fi
   done
+
+  # Any agent the browser suite started. Matched on the binary's own path so
+  # the pattern cannot match this script's command line, which `pkill -f`
+  # would otherwise do — killing the very shell doing the cleanup.
+  if [[ -n "$AGENT_STATE_DIR" ]]; then
+    pkill -f "^$AGENT_STATE_DIR/hcc-agent" 2>/dev/null || true
+    # The credential the suite enrolled lives here. Removed rather than left
+    # in /tmp: it is a real secret for a real host record, even a disposable
+    # one, and a test fixture that leaves credentials behind teaches the wrong
+    # habit.
+    rm -rf "$AGENT_STATE_DIR"
+  fi
 
   # FORCE: drop even if a connection lingers, so a failed run still cleans up
   # rather than leaving a database behind on every attempt.
@@ -208,6 +226,39 @@ fi
 green "  ✓ installation is uninitialised"
 
 # ---------------------------------------------------------------------------
+info "== Linux agent =="
+
+# Built so the browser suite can drive the *real* agent against the real
+# controller. A fake would make the host journey a test of the interface's
+# ability to render fixtures, which is not the property worth proving: the
+# deliverable is a host that actually connects.
+#
+# Go is optional. A contributor without a toolchain still gets every other
+# suite, and the host journey skips with a stated reason rather than passing
+# vacuously — `host-journey.spec.ts` fails if the binary is missing and
+# HCC_E2E_REQUIRE_AGENT is set, which is what CI sets.
+AGENT_BINARY=""
+AGENT_STATE_DIR="$(mktemp -d /tmp/hcc-e2e-agent-XXXXXX)"
+# 0700, because the agent refuses a credential whose directory other local
+# users can write to — so a laxer mode here would make the suite fail for a
+# reason that had nothing to do with the product.
+chmod 700 "$AGENT_STATE_DIR"
+
+if command -v go >/dev/null 2>&1; then
+  if (cd "$AGENT_DIR" && go build -o "$AGENT_STATE_DIR/hcc-agent" ./cmd/hcc-agent) \
+    >/tmp/hcc-e2e-agent-build.log 2>&1; then
+    AGENT_BINARY="$AGENT_STATE_DIR/hcc-agent"
+    green "  ✓ built $(basename "$AGENT_BINARY")"
+  else
+    red "  ✗ agent build failed"
+    cat /tmp/hcc-e2e-agent-build.log
+    exit 1
+  fi
+else
+  yellow "  ! no Go toolchain; the host journey will skip the live agent"
+fi
+
+# ---------------------------------------------------------------------------
 info "== Web client =="
 
 (cd "$WEB_DIR" && npm run build) >/tmp/hcc-e2e-build.log 2>&1 ||
@@ -251,6 +302,8 @@ PLAYWRIGHT_ARGS=("$@")
     E2E_DATABASE_URL="$E2E_DB_URL" \
     E2E_SERVER_DIR="$REPO_ROOT/$SERVER_DIR" \
     E2E_THROTTLE_WINDOW_SECONDS="$THROTTLE_WINDOW_SECONDS" \
+    E2E_AGENT_BINARY="$AGENT_BINARY" \
+    E2E_AGENT_STATE_DIR="$AGENT_STATE_DIR" \
     npx playwright test "${PLAYWRIGHT_ARGS[@]}"
 )
 

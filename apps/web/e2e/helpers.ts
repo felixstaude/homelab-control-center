@@ -9,7 +9,8 @@
  * Not named `*.spec.ts`, so Playwright does not collect it as a suite.
  */
 
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { rmSync, writeFileSync } from 'node:fs';
 
 import { expect, type Page } from '@playwright/test';
 
@@ -207,4 +208,179 @@ export async function cookie(
     path: found.path,
     sameSite: found.sameSite,
   };
+}
+
+/* -------------------------------------------------------------------------
+ * The live agent (milestone 1.8)
+ *
+ * `scripts/e2e.sh` builds the real Go binary and passes its path in. These
+ * helpers drive it the way an operator would — `enroll`, then `run` — so the
+ * host journey proves a host genuinely connects rather than proving the
+ * interface can render a fixture.
+ *
+ * The binary is optional. A contributor without a Go toolchain gets every
+ * other suite and a stated skip; CI sets `E2E_REQUIRE_AGENT=1`, so a
+ * missing toolchain there is a failure rather than a silent gap.
+ * ---------------------------------------------------------------------- */
+
+export const AGENT_BINARY = process.env.E2E_AGENT_BINARY ?? '';
+export const AGENT_STATE_DIR = process.env.E2E_AGENT_STATE_DIR ?? '';
+
+/** Whether a live-agent test can run at all. */
+export function agentAvailable(): boolean {
+  return AGENT_BINARY !== '' && AGENT_STATE_DIR !== '';
+}
+
+/**
+ * Why a live-agent test is being skipped, as a sentence.
+ *
+ * A skip with no reason is a gap nobody notices; this one names the fix.
+ */
+export const AGENT_SKIP_REASON =
+  'no Go toolchain was available when scripts/e2e.sh ran, so the agent was ' +
+  'not built. Install Go 1.24+ and re-run to exercise the live host journey.';
+
+/** Where the agent stores the credential it is given. */
+function credentialPath(): string {
+  return `${AGENT_STATE_DIR}/credential`;
+}
+
+/**
+ * The agent's environment.
+ *
+ * Plain `http://127.0.0.1` is deliberate and is the one case the agent
+ * permits without TLS: a controller on loopback is reached over a socket no
+ * other machine can see. Any other host over http is refused at startup,
+ * which `security.spec.ts` asserts.
+ */
+function agentEnv(extra: Record<string, string> = {}): Record<string, string> {
+  return {
+    ...process.env,
+    HCC_AGENT_CONTROLLER_URL: BACKEND_URL,
+    HCC_AGENT_CREDENTIAL_FILE: credentialPath(),
+    HCC_AGENT_LOG_FORMAT: 'text',
+    // Short, so a reconnection inside a test does not outlast its timeout.
+    HCC_AGENT_RECONNECT_MIN_WAIT: '1s',
+    HCC_AGENT_RECONNECT_MAX_WAIT: '2s',
+    ...extra,
+  } as Record<string, string>;
+}
+
+/**
+ * Spend an enrollment credential, as `hcc-agent enroll` does.
+ *
+ * The credential goes into a 0600 file rather than the environment, matching
+ * what `agents/linux/deploy/README.md` tells an operator to do — so this also
+ * verifies that the documented procedure works.
+ *
+ * Returns the command's output. Throws with it attached on failure, because
+ * "enrollment failed" with no reason is the least useful possible test
+ * failure.
+ */
+export function enrollAgent(credential: string): string {
+  const tokenPath = `${AGENT_STATE_DIR}/enrolment-token`;
+  writeFileSync(tokenPath, `${credential}\n`, { mode: 0o600 });
+  try {
+    return execFileSync(AGENT_BINARY, ['enroll', '-force'], {
+      encoding: 'utf8',
+      env: agentEnv({ HCC_AGENT_ENROLLMENT_TOKEN_FILE: tokenPath }),
+    });
+  } finally {
+    // Spent, so there is no reason to leave it on disk.
+    rmSync(tokenPath, { force: true });
+  }
+}
+
+/** `hcc-agent status`, with its exit code. */
+export function agentStatus(): { code: number; output: string } {
+  const result = spawnSync(AGENT_BINARY, ['status'], {
+    encoding: 'utf8',
+    env: agentEnv(),
+  });
+  return { code: result.status ?? -1, output: `${result.stdout}${result.stderr}` };
+}
+
+/** A running agent, and the handle to stop it. */
+export type RunningAgent = {
+  /** Everything the agent has logged so far. */
+  log: () => string;
+  stop: () => void;
+  /** Whether the process is still running. */
+  alive: () => boolean;
+  /** The exit code, once it has exited. */
+  exitCode: () => number | null;
+};
+
+/**
+ * Start `hcc-agent run` in the background.
+ *
+ * Detached, so stopping it cannot leave a stray process attached to the test
+ * runner's process group — a leaked agent would keep reconnecting and make
+ * every later assertion about connectivity wrong.
+ */
+export function startAgent(): RunningAgent {
+  let output = '';
+  let exited: number | null = null;
+
+  const child = spawn(AGENT_BINARY, ['run'], {
+    env: agentEnv(),
+    stdio: ['ignore', 'pipe', 'pipe'],
+    detached: true,
+  });
+  child.stdout.on('data', (chunk: Buffer) => {
+    output += chunk.toString();
+  });
+  child.stderr.on('data', (chunk: Buffer) => {
+    output += chunk.toString();
+  });
+  child.on('exit', (code) => {
+    exited = code;
+  });
+
+  return {
+    log: () => output,
+    alive: () => exited === null && child.exitCode === null,
+    exitCode: () => exited ?? child.exitCode,
+    stop: () => {
+      if (child.exitCode === null) {
+        // SIGTERM, which is what systemd sends — so this exercises the
+        // graceful-shutdown path rather than killing the process outright.
+        try {
+          child.kill('SIGTERM');
+        } catch {
+          // Already gone.
+        }
+      }
+    },
+  };
+}
+
+/** Wait until the agent's log contains `substring`, or fail with the log. */
+export async function waitForAgentLog(
+  agent: RunningAgent,
+  substring: string,
+  timeoutMs = 15_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (agent.log().includes(substring)) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(
+    `the agent never logged ${JSON.stringify(substring)} within ${String(timeoutMs)}ms.\n` +
+      `Its log was:\n${agent.log()}`,
+  );
+}
+
+/** Wait until the agent process has exited, and return its code. */
+export async function waitForAgentExit(
+  agent: RunningAgent,
+  timeoutMs = 15_000,
+): Promise<number | null> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!agent.alive()) return agent.exitCode();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`the agent was still running after ${String(timeoutMs)}ms:\n${agent.log()}`);
 }

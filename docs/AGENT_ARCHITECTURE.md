@@ -155,32 +155,48 @@ rules.
 1. Administrator creates a host record in the UI.
        │
        ▼
-2. Controller issues a ONE-TIME enrollment token.
-   - short-lived (default 1 hour, configurable)
+2. Controller issues a ONE-TIME enrollment credential.
+   - short-lived (default 15 minutes, HCC_AGENT_ENROLLMENT_TTL_SECONDS)
    - single-use
    - scoped to that one host record
-   - stored hashed (Argon2id); the plaintext is shown once and never again
+   - revocable before use
+   - stored as a SHA-256 digest (ADR-042); the plaintext is shown once
+     and never again
        │
        ▼
-3. Administrator installs the agent and writes the token to
-   /etc/hcc-agent/token  (mode 0600, owned by the agent user).
+3. Administrator runs `hcc-agent enroll`, with the credential in a file
+   (mode 0600) rather than on the command line or in the environment.
        │
        ▼
-4. Agent starts, POSTs /api/v1/agents/enroll with the token.
+4. The agent POSTs /api/v1/agents/enroll, with the credential in an
+   Authorization: Bearer header — never in the URL.
        │
        ▼
-5. Controller validates, marks the token consumed, and returns
-   - host_id
+5. Controller consumes the credential and returns
+   - host_id and host_name
    - a long-lived agent credential
-   - the current configuration document
+   - the protocol version and heartbeat interval
+   (Configuration distribution is a later milestone; §6 is the design.)
        │
        ▼
-6. Agent persists credential + config atomically, then deletes the
-   enrollment token file.
+6. Agent writes the credential to /etc/hcc-agent/credential atomically,
+   at mode 0600, refusing a symlink or a world-writable directory.
        │
        ▼
-7. Steady state: heartbeat, report, stream — all outbound.
+7. Steady state: an outbound authenticated WebSocket, heartbeating.
 ```
+
+> **Implemented in milestone 1.8**, with three differences from what this
+> section originally described, each recorded where it was decided:
+>
+> - **SHA-256, not Argon2id** — [ADR-042](ARCHITECTURE.md#adr-042-agent-credentials-are-hashed-with-sha-256-not-argon2id).
+>   The rule for passwords does not transfer to 256-bit CSPRNG values, and a
+>   salted hash cannot be looked up by index.
+> - **Fifteen minutes, not an hour.** This is the secret that gets pasted into
+>   a terminal; a shorter window is what makes that survivable.
+> - **No `host_id` anywhere in the request.** The host is decided by the
+>   credential, so there is no field for an agent to claim to be a machine it
+>   does not hold a credential for.
 
 ### 4.1 Why two different secrets
 
@@ -190,17 +206,31 @@ and is read over someone's shoulder. Making it single-use and short-lived
 means that exposure is survivable. The long-lived credential never passes
 through a human's clipboard.
 
-### 4.2 Token handling rules
+### 4.2 Credential handling rules
 
-- **Never a command-line flag.** Command lines are world-readable through
-  `/proc`. The token comes from a file (preferred) or the environment. Already
-  enforced and tested today:
-  `TestNoFlagAcceptsTheEnrolmentToken`.
-- **The token file must not be group- or world-readable.** The agent refuses to
-  start rather than accept a secret that is not secret. Already implemented in
-  `config.readTokenFile`, tested across modes `0644`, `0640`, `0604`, `0666`.
-- **Both secrets are stored hashed.** A stolen database dump yields no working
-  credentials.
+All implemented and tested as of milestone 1.8.
+
+- **Never a command-line flag.** Command lines are readable by every local user
+  through `/proc`. Neither secret is a flag, and
+  `TestNoSecretIsSettableViaAFlag` fails if one is added.
+- **Neither file may be group- or world-readable.** The agent refuses to use a
+  credential that is not a secret, rather than fixing the mode itself —
+  silently chmod-ing a file it did not create would hide a misconfiguration
+  the operator needs to see. Measured: `0640`, `0644` and `0660` are refused,
+  `0600` and `0400` accepted.
+- **Neither file may be a symlink, nor owned by another user, nor sit in a
+  directory other users can write to.** Each is the same local attack in a
+  different shape: point the path at a file you own, and the agent either
+  writes the secret where you can read it or reads a secret you chose.
+- **Writes are atomic.** A temporary file in the same directory, fsynced, then
+  renamed. A plain write interrupted mid-enrollment leaves a truncated
+  credential that fails authentication with no indication the file is the
+  problem.
+- **Both secrets are stored hashed** (ADR-042). A stolen database dump yields
+  digests that cannot be replayed.
+- **Neither secret is ever in a URL.** Both travel in an `Authorization`
+  header, including on the WebSocket handshake. A query parameter would be
+  recorded by every proxy on the path and by the controller's own access log.
 
 ---
 
