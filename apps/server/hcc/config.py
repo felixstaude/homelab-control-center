@@ -199,6 +199,28 @@ class Settings(BaseSettings):
         default=300, ge=1, le=86400, description="Throttle window."
     )
 
+    # --- Password change throttling ---------------------------------------
+    # A password change costs *two* Argon2 operations — one verify and one
+    # hash — so ~128 MiB and ~100 ms per request. The endpoint requires a
+    # session, so an anonymous caller cannot reach it, but an authenticated
+    # one could still use it as a CPU and memory amplifier.
+    #
+    # Keyed on the user id and kept deliberately separate from the login
+    # budgets rather than reusing them: sharing would mean a user who changes
+    # their password a few times has spent the budget they need in order to
+    # sign in, which is a self-inflicted lockout created by a throttle meant
+    # to prevent one. Five per window is far above any legitimate use and far
+    # below a useful amplifier.
+    password_change_rate_limit_per_user: int = Field(
+        default=5,
+        ge=1,
+        le=1000,
+        description="Password change attempts per account per window.",
+    )
+    password_change_rate_limit_window_seconds: int = Field(
+        default=300, ge=1, le=86400, description="Password change throttle window."
+    )
+
     # --- Security headers -------------------------------------------------
     # A strict Content-Security-Policy breaks the Vite dev server, which needs
     # inline scripts and a websocket for hot reload. Enabled in production,

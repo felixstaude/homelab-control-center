@@ -29,11 +29,13 @@ from sqlalchemy.pool import NullPool
 
 from hcc.app import create_app
 from hcc.config import Settings
+from hcc.models.user import User, UserRole
 from hcc.security.password import Argon2Parameters, PasswordHasher
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable, Iterator, Sequence
+    from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
     from contextlib import AbstractAsyncContextManager
+    from typing import Any
 
     from fastapi import APIRouter, FastAPI
 
@@ -51,7 +53,12 @@ _SERVER_DIR = Path(__file__).resolve().parent.parent
 # `installation` is included because it is the bootstrap invariant: a leftover
 # row would make every later bootstrap test see an already-initialized
 # installation, and the suite would pass by refusing to do anything.
-_TRUNCATED_TABLES = ("installation", "sessions", "users")
+#
+# `audit_events` is included for the mirror-image reason: the audit assertions
+# count and inspect events, so a leftover row from a previous test would make
+# one test's writes look like another's. The table has no foreign keys, so
+# nothing else removes its rows on CASCADE — it has to be listed explicitly.
+_TRUNCATED_TABLES = ("audit_events", "installation", "sessions", "users")
 
 # Cheapest Argon2 parameters the module permits. Integration tests hash and
 # verify real passwords, so the shipped 64 MiB defaults would make the suite
@@ -388,3 +395,97 @@ async def api_factory(
                         await connection.execute(text(f"TRUNCATE TABLE {table} CASCADE"))
             finally:
                 await engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers for the API integration suites (milestone 1.7)
+#
+# Exposed as fixtures returning callables rather than as module-level
+# functions, so the new suites share one implementation without importing
+# across test modules — which `tests/` cannot do reliably, having no
+# `__init__.py`.
+#
+# `tests/test_api_authorization.py` predates these and keeps its own copies.
+# Left alone deliberately: it is the default-deny regression suite, and
+# rewriting its scaffolding to save a few lines would risk the one file whose
+# job is to notice when something stops being protected.
+# ---------------------------------------------------------------------------
+
+#: Password for seeded accounts. Satisfies the policy and is not a credential
+#: for anything — the database it reaches exists for one test.
+TEST_PASSWORD = "correct horse battery staple"
+
+
+@pytest.fixture
+def seed_user() -> Callable[..., Awaitable[User]]:
+    """Insert a user directly, bypassing the API.
+
+    Deliberately not "create a user through the endpoint": a test of the
+    create endpoint cannot use the create endpoint to arrange its fixtures,
+    and a test of the *list* endpoint should not fail because creation is
+    broken. Hashing uses the app's own hasher, so the account can really sign
+    in.
+    """
+
+    async def insert(
+        client: AsyncClient,
+        *,
+        username: str,
+        role: UserRole = UserRole.VIEWER,
+        is_active: bool = True,
+        display_name: str | None = None,
+        password: str = TEST_PASSWORD,
+    ) -> User:
+        hasher = client.app_state.password_hasher  # type: ignore[attr-defined]
+        async with client.app_state.database.session_factory() as db:  # type: ignore[attr-defined]
+            user = User(
+                username=username,
+                display_name=display_name,
+                password_hash=hasher.hash(password),
+                role=role,
+                is_active=is_active,
+            )
+            db.add(user)
+            await db.commit()
+            await db.refresh(user)
+            return user
+
+    return insert
+
+
+@pytest.fixture
+def sign_in() -> Callable[..., Awaitable[str]]:
+    """Log in through the real endpoint and return the CSRF token.
+
+    The real endpoint, not a forged cookie: the tests that follow exercise
+    CSRF-protected mutations, and a hand-made session row would not carry a
+    CSRF token the client could present.
+    """
+
+    async def login(client: AsyncClient, username: str, password: str = TEST_PASSWORD) -> str:
+        response = await client.post(
+            "/api/v1/auth/login", json={"username": username, "password": password}
+        )
+        assert response.status_code == 200, response.text
+        token: str = response.json()["csrf_token"]
+        return token
+
+    return login
+
+
+@pytest.fixture
+def read_sql() -> Callable[..., Awaitable[Sequence[Any]]]:
+    """Run one read statement outside the API and return the rows.
+
+    For the states an HTTP client cannot reach or should not be trusted to
+    report — counting audit rows, checking a revocation really marked the
+    row — so an assertion about persistence is made against the database
+    rather than against the response that claimed it.
+    """
+
+    async def query(client: AsyncClient, statement: str) -> Sequence[Any]:
+        async with client.app_state.database.session_factory() as db:  # type: ignore[attr-defined]
+            rows: Sequence[Any] = (await db.execute(text(statement))).all()
+            return rows
+
+    return query

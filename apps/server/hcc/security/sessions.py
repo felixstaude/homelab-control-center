@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import CursorResult, delete, select, update
+from sqlalchemy import CursorResult, and_, delete, select, true, update
 
 from hcc.logging import get_logger
 from hcc.models.session import USER_AGENT_MAX_LENGTH, Session
@@ -39,8 +39,10 @@ from hcc.security.tokens import generate_token, hash_token, looks_like_token
 
 if TYPE_CHECKING:
     import uuid
+    from collections.abc import Sequence
 
     from sqlalchemy.ext.asyncio import AsyncSession
+    from sqlalchemy.sql.elements import ColumnElement
 
     from hcc.config import Settings
     from hcc.models.user import User
@@ -239,7 +241,132 @@ class SessionService:
         await db.commit()
         session.last_seen_at = now
 
+    # --- Listing ----------------------------------------------------------
+
+    def live_session_predicate(self, now: datetime | None = None) -> ColumnElement[bool]:
+        """The SQL form of "this session is currently usable".
+
+        Milestone 1.7. Exists so that the session *list*, the administrative
+        session *count* and :meth:`_rejection_reason` cannot disagree about
+        what counts as live — and they would have. The obvious filter,
+        ``revoked_at IS NULL AND expires_at > now()``, silently omits the idle
+        timeout, so a session abandoned two hours ago would have been listed
+        as active and counted toward an administrator's view while being
+        rejected on its very next request. Showing an operator a session that
+        does not work is a lie about the state of the system, and it is the
+        kind that makes the whole screen untrustworthy.
+
+        The ``user.is_active`` half is deliberately **not** here. It is a
+        property of the account, not of the session, and folding it in would
+        make "this user is deactivated" render as "this user has no sessions"
+        — which is a different and much less useful statement.
+
+        ``now`` is a parameter so a caller can evaluate several queries
+        against one instant rather than letting the boundary move between
+        them.
+        """
+        moment = now or datetime.now(UTC)
+        idle_timeout = self._settings.session_idle_timeout_seconds
+        return and_(
+            Session.revoked_at.is_(None),
+            Session.expires_at > moment,
+            # Zero disables the idle timeout, exactly as in `_rejection_reason`.
+            # `true()` rather than omitting the clause, so the expression's
+            # shape does not depend on configuration.
+            Session.last_seen_at > moment - timedelta(seconds=idle_timeout)
+            if idle_timeout > 0
+            else true(),
+        )
+
+    async def list_live_for_user(self, db: AsyncSession, user_id: uuid.UUID) -> Sequence[Session]:
+        """Return a user's currently usable sessions, newest first.
+
+        Only live ones. Expired and revoked rows are retained in the table so
+        that "when did this session end" stays answerable
+        (:mod:`hcc.models.session`), but they are not what someone asking
+        "where am I signed in" means, and listing them would bury the answer.
+        """
+        return (
+            (
+                await db.execute(
+                    select(Session)
+                    .where(Session.user_id == user_id, self.live_session_predicate())
+                    # Newest first, with `id` breaking a tie so the order is
+                    # total and a re-render cannot shuffle the rows.
+                    .order_by(Session.created_at.desc(), Session.id.desc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+
     # --- Revocation -------------------------------------------------------
+
+    async def revoke_for_user(
+        self,
+        db: AsyncSession,
+        *,
+        user_id: uuid.UUID,
+        session_id: uuid.UUID,
+    ) -> bool:
+        """Revoke one session, but only if it belongs to ``user_id``.
+
+        Milestone 1.7. The ``user_id`` filter is the whole point and is not
+        redundant with the route's authentication: without it, any
+        authenticated user could revoke any session id they could guess or
+        learn, which is a textbook insecure direct object reference — and the
+        consequence is signing other people out, so it would be noticed as a
+        mystery rather than as an attack.
+
+        Returns whether a live session was revoked. A session id belonging to
+        somebody else is indistinguishable from one that does not exist, so a
+        caller cannot use this to probe which ids are real.
+        """
+        result = await db.execute(
+            update(Session)
+            .where(
+                Session.id == session_id,
+                Session.user_id == user_id,
+                Session.revoked_at.is_(None),
+            )
+            .values(revoked_at=datetime.now(UTC))
+        )
+        revoked = cast("CursorResult[Any]", result).rowcount > 0
+        if revoked:
+            logger.info("session_revoked", session_id=str(session_id), user_id=str(user_id))
+        return revoked
+
+    async def revoke_others_for_user(
+        self,
+        db: AsyncSession,
+        *,
+        user_id: uuid.UUID,
+        keep_session_id: uuid.UUID,
+    ) -> int:
+        """Revoke every live session for a user except one. Returns how many.
+
+        Milestone 1.7. Used by "sign out everywhere else" and by the password
+        change, which keeps the caller signed in on the device they are using
+        while ending every other session.
+        """
+        result = await db.execute(
+            update(Session)
+            .where(
+                Session.user_id == user_id,
+                Session.id != keep_session_id,
+                Session.revoked_at.is_(None),
+            )
+            .values(revoked_at=datetime.now(UTC))
+        )
+        count = cast("CursorResult[Any]", result).rowcount
+        if count:
+            logger.info(
+                "other_sessions_revoked_for_user",
+                user_id=str(user_id),
+                kept_session_id=str(keep_session_id),
+                count=count,
+            )
+        return count
 
     async def revoke(self, db: AsyncSession, session_id: uuid.UUID) -> bool:
         """Revoke one session. Returns whether it was live beforehand.

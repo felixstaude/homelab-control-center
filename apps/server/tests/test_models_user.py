@@ -316,9 +316,23 @@ def test_timestamps_are_timezone_aware() -> None:
         assert column_type.timezone is True, f"{name} must be timezone-aware"
 
 
-def test_last_login_at_is_the_only_nullable_column() -> None:
+def test_only_the_genuinely_optional_columns_are_nullable() -> None:
+    """Pin the nullable set, so a new nullable column is a deliberate choice.
+
+    Both members earn it by representing a state that genuinely has no value,
+    rather than by being convenient to leave empty:
+
+    * ``last_login_at`` — null means "has never signed in", which must not be
+      rendered as a date.
+    * ``display_name`` — null means "no separate label", so callers render the
+      username. Distinct from the empty string, which a CHECK constraint
+      forbids precisely so the two states cannot be confused (milestone 1.7).
+
+    Everything else is NOT NULL, and a new nullable column should have to
+    justify itself here before it exists.
+    """
     nullable = {column.name for column in Base.metadata.tables["users"].columns if column.nullable}
-    assert nullable == {"last_login_at"}
+    assert nullable == {"last_login_at", "display_name"}
 
 
 def test_role_column_uses_the_named_postgres_enum() -> None:

@@ -1,9 +1,11 @@
 """User account model.
 
-Phase 1, milestone 1.1. This defines the schema only. Authentication,
-sessions, registration and password reset are later milestones and are
-deliberately absent — this module contains no credential verification and no
-hashing, just the shape of a stored account.
+Phase 1, milestone 1.1, extended in 1.7 with a mutable display name.
+
+This defines the schema only. Credential verification lives in
+:mod:`hcc.security.authentication`, hashing in :mod:`hcc.security.password`,
+and the administrative rules that govern changes to these rows in
+:mod:`hcc.services.users`.
 
 ## Username normalization and uniqueness
 
@@ -28,10 +30,29 @@ available in SQL — ``lower()`` alone would be a weaker rule. The control plane
 is the only writer to this database (ADR-003), so the application is the right
 place to enforce it. See ADR-014.
 
+## The username is immutable; the display name is not
+
+Milestone 1.7 adds ``display_name`` and deliberately leaves ``username``
+unchangeable through the API. The two roles were conflated before: the only
+human-readable label an account had was the thing it logs in with, so
+correcting a typo in someone's name meant changing their credential.
+
+Separating them is what makes "rename a user" a safe operation. Renaming the
+*username* is not, and is not offered — see
+ADR-041. A username appears in the login throttle's budget keys, in every
+structured log line about that account, and in the audit trail; changing it
+would silently re-point all three, and a freed-up canonical name could then be
+registered by somebody else and inherit the old name's history by eye.
+
+``display_name`` is nullable, and null means "this account has no separate
+label" rather than "unknown". Callers render the username in that case, which
+is why there is no empty-string state: a blank submission clears the column
+back to null rather than storing whitespace that would render as a gap.
+
 ## Passwords
 
 Only hashes are stored, never plaintext. This module does not hash anything —
-the algorithm (Argon2id, per docs/SECURITY.md) arrives with milestone 1.2.
+the algorithm is Argon2id, per :mod:`hcc.security.password`.
 ``password_hash`` is NOT NULL with a non-empty CHECK constraint, so a row can
 never exist with an empty hash that some comparison might accidentally accept.
 """
@@ -86,6 +107,11 @@ class UserRole(enum.StrEnum):
 USERNAME_MIN_LENGTH: Final = 3
 USERNAME_MAX_LENGTH: Final = 32
 
+#: Upper bound on a display name. Generous enough for a full name with
+#: honorifics, narrow enough that the column stays cheap and a rendered table
+#: cell stays predictable.
+DISPLAY_NAME_MAX_LENGTH: Final = 64
+
 #: Upper bound for the stored hash. An Argon2id encoded hash at the parameters
 #: docs/SECURITY.md specifies is around 100 characters; 255 leaves room to
 #: change parameters, or algorithm, without a migration.
@@ -105,6 +131,80 @@ USER_ROLE_ENUM = Enum(
     native_enum=True,
     create_constraint=False,
 )
+
+
+def fold_username(raw: str) -> str:
+    """Apply the canonical folding to ``raw``, without validating the result.
+
+    The four normalization steps :func:`normalize_username` documents, and
+    none of its rejections. Split out in milestone 1.7 for the one caller that
+    legitimately needs the folding without the policy: the administrative user
+    *search*, which folds an operator's partial query so that typing ``Ad``
+    matches the stored canonical ``admin``.
+
+    Search must not inherit the policy, because a search term is not a
+    username. ``normalize_username`` rejects anything under three characters
+    and anything containing a space, so a one-letter query would raise and a
+    search for ``van der`` would raise — turning a perfectly reasonable
+    keystroke into an error. Folding alone is the part that makes the
+    comparison correct; the rejections exist to keep bad names out of the
+    table, which a read has no business doing.
+
+    Returns a possibly-empty string. The caller decides what that means.
+    """
+    if not isinstance(raw, str):  # pragma: no cover - defensive, typed as str
+        raise TypeError(f"username must be a string, got {type(raw).__name__}")
+
+    folded = unicodedata.normalize("NFKC", raw).strip().casefold()
+    return unicodedata.normalize("NFKC", folded)
+
+
+def normalize_display_name(raw: str | None) -> str | None:
+    """Return a stored display name, or ``None`` for "no display name".
+
+    NFKC and a strip, mirroring the username's folding but **without**
+    casefolding: a display name is meant to be shown as its owner writes it,
+    so collapsing case here would be the same mistake as storing only the
+    canonical username (ADR-014).
+
+    An absent, empty or whitespace-only value becomes ``None``. That mapping
+    is the reason the column has no empty-string state: an administrator who
+    clears the field means "this account has no separate label", and storing
+    ``""`` would instead render as a blank cell indistinguishable from a bug.
+
+    Interior whitespace *is* allowed — this is a human name, and "Felix
+    Staude" is the normal case. Control and format characters are not: they
+    are invisible, so they could make two different names render identically
+    in a user list an administrator is relying on to tell accounts apart.
+
+    Raises:
+        ValueError: if the result exceeds :data:`DISPLAY_NAME_MAX_LENGTH` or
+            contains control characters. Raised rather than truncated, for the
+            same reason passwords are never truncated: silently storing
+            something other than what was submitted is worse than refusing it.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, str):  # pragma: no cover - defensive, typed as str
+        raise TypeError(f"display_name must be a string, got {type(raw).__name__}")
+
+    candidate = unicodedata.normalize("NFKC", raw).strip()
+    if not candidate:
+        return None
+
+    for character in candidate:
+        # Cc control, Cf format, Cs surrogate, Co private use, Cn unassigned.
+        # Space is category Zs and so is deliberately not caught here.
+        if unicodedata.category(character).startswith("C"):
+            raise ValueError(
+                f"display name must not contain control characters (found U+{ord(character):04X})"
+            )
+    if len(candidate) > DISPLAY_NAME_MAX_LENGTH:
+        raise ValueError(
+            f"display name must be at most {DISPLAY_NAME_MAX_LENGTH} characters, "
+            f"got {len(candidate)}"
+        )
+    return candidate
 
 
 def normalize_username(raw: str) -> str:
@@ -138,11 +238,7 @@ def normalize_username(raw: str) -> str:
             characters, or is outside the permitted length. Raised rather than
             returned so a caller cannot accidentally persist an invalid name.
     """
-    if not isinstance(raw, str):  # pragma: no cover - defensive, typed as str
-        raise TypeError(f"username must be a string, got {type(raw).__name__}")
-
-    folded = unicodedata.normalize("NFKC", raw).strip().casefold()
-    canonical = unicodedata.normalize("NFKC", folded)
+    canonical = fold_username(raw)
 
     if not canonical:
         raise ValueError("username must not be empty or whitespace only")
@@ -198,6 +294,15 @@ class User(Base):
         # against an empty string is the kind of bug that silently grants
         # access.
         CheckConstraint("char_length(password_hash) > 0", name="password_hash_not_empty"),
+        # NULL passes a CHECK, so this bounds the length *and* forbids the
+        # empty string without forbidding "no display name". Those are
+        # different states and the application maps a blank submission onto
+        # the NULL one — see `normalize_display_name`.
+        CheckConstraint(
+            f"display_name IS NULL OR char_length(display_name) BETWEEN 1 "
+            f"AND {DISPLAY_NAME_MAX_LENGTH}",
+            name="display_name_length",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -221,6 +326,16 @@ class User(Base):
         doc=(
             "Normalized form used for uniqueness and lookup. Derived from "
             "`username`; never assign this directly."
+        ),
+    )
+
+    display_name: Mapped[str | None] = mapped_column(
+        String(DISPLAY_NAME_MAX_LENGTH),
+        nullable=True,
+        doc=(
+            "Human-readable label, independent of the login name. Null means "
+            "the account has no separate label and callers should render the "
+            "username; it never means 'unknown'."
         ),
     )
 
@@ -300,6 +415,27 @@ class User(Base):
         if not isinstance(value, str) or not value:
             raise ValueError("username_canonical is derived from username; set username instead")
         return value
+
+    @validates("display_name")
+    def _normalize_display_name(self, _key: str, value: str | None) -> str | None:
+        """Normalize on every assignment, so the column is never raw input.
+
+        Mirrors the ``username`` hook: validation surfaces where the value was
+        set rather than at flush time, where the traceback would point at the
+        session instead of the offending code. It also means the blank-to-null
+        mapping holds for every writer, not only the service layer.
+        """
+        return normalize_display_name(value)
+
+    @property
+    def label(self) -> str:
+        """What to call this account in prose.
+
+        The display name when there is one, the username otherwise. A single
+        accessor so that callers cannot each invent their own fallback and
+        disagree about whether a blank name renders as an empty string.
+        """
+        return self.display_name or self.username
 
     @validates("role")
     def _validate_role(self, _key: str, value: Any) -> UserRole:

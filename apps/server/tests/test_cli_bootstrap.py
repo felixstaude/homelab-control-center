@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import re
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -112,6 +113,19 @@ def command_args(**overrides: Any) -> argparse.Namespace:
 
 @pytest.mark.integration
 class TestBootstrapCommand:
+    """The command, against the real database.
+
+    Every test here takes ``db_session`` — including the ones that never
+    query through it — because that fixture is what truncates the tables
+    afterwards. Four of them originally took only ``migrated_database``, and
+    the one that successfully bootstraps therefore left an administrator and
+    an ``installation`` row behind for the rest of the session. Nothing
+    noticed until milestone 1.7 added a test that asserts on a *global*
+    property of the user table ("there is exactly one active administrator"),
+    which the leftover row quietly falsified. Taking the fixture is the
+    cheapest way to make isolation uniform rather than per-test.
+    """
+
     @staticmethod
     def _settings(database_url: str) -> Settings:
         return Settings(
@@ -304,7 +318,10 @@ class TestBootstrapCommand:
         ).scalar_one() == 0
 
     async def test_empty_stdin_is_refused(
-        self, migrated_database: str, capsys: pytest.CaptureFixture[str]
+        self,
+        db_session: AsyncSession,
+        migrated_database: str,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         code = await bootstrap_command(
             command_args(username="admin", password_stdin=True),
@@ -317,7 +334,10 @@ class TestBootstrapCommand:
         assert "No password" in capsys.readouterr().err
 
     async def test_a_missing_username_without_a_terminal_is_refused(
-        self, migrated_database: str, capsys: pytest.CaptureFixture[str]
+        self,
+        db_session: AsyncSession,
+        migrated_database: str,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         # Rather than hanging on a prompt nobody can answer.
         code = await bootstrap_command(
@@ -331,7 +351,10 @@ class TestBootstrapCommand:
         assert "--username is required" in capsys.readouterr().err
 
     async def test_no_password_source_without_a_terminal_is_refused(
-        self, migrated_database: str, capsys: pytest.CaptureFixture[str]
+        self,
+        db_session: AsyncSession,
+        migrated_database: str,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         code = await bootstrap_command(
             command_args(username="admin"),
@@ -343,7 +366,9 @@ class TestBootstrapCommand:
         assert code == EXIT_USAGE_ERROR
         assert "--password-stdin" in capsys.readouterr().err
 
-    async def test_reports_the_schema_revision_and_user_count(self, migrated_database: str) -> None:
+    async def test_reports_the_schema_revision_and_user_count(
+        self, db_session: AsyncSession, migrated_database: str
+    ) -> None:
         out = io.StringIO()
         await bootstrap_command(
             command_args(username="admin", password_stdin=True),
@@ -354,7 +379,13 @@ class TestBootstrapCommand:
 
         rendered = out.getvalue()
         assert "reachable" in rendered
-        assert "0004_installation" in rendered
+        # The *shape* of the revision, not a literal. Pinning the head here
+        # made this test fail on every migration while telling nobody anything
+        # new: which revisions exist and in what order is already asserted by
+        # `test_revision_history_matches_the_expected_chain`, and what this
+        # test is about is that the preflight reports the revision at all
+        # rather than "unknown".
+        assert re.search(r"schema revision 0\d{3}_\w+", rendered), rendered
         assert "Existing users : 0" in rendered
 
 
