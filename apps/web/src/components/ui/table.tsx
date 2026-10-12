@@ -20,9 +20,24 @@ import { cn } from '@/lib/utils';
 
 export function Table({ className, ...props }: ComponentProps<'table'>) {
   return (
-    // Horizontal scroll on the wrapper rather than the table, so narrow
-    // viewports scroll the columns instead of squeezing them unreadably.
-    <div className="overflow-x-auto">
+    /*
+     * Horizontal scroll on the wrapper rather than the table, so narrow
+     * viewports scroll the columns instead of squeezing them unreadably.
+     *
+     * `relative` is load-bearing and was missing. Tailwind's `sr-only` is
+     * `position: absolute`, and an absolutely-positioned element is only
+     * clipped by an ancestor that is in its *containing-block* chain — so the
+     * visually-hidden "Actions" column header, sitting in a `static` cell,
+     * resolved against a containing block outside this wrapper, escaped the
+     * clip, and extended the **document's** scroll width. The result was 148px
+     * of whole-page horizontal scroll on a 390px viewport, with nothing
+     * visibly wrong and no element reported as overflowing: every candidate
+     * was inside a clipping ancestor, which is what made it hard to see.
+     * Making the wrapper a containing block puts such descendants back inside
+     * the scroll area where they belong. Caught by the browser suite's
+     * page-overflow assertion.
+     */
+    <div className="relative overflow-x-auto">
       <table className={cn('w-full text-sm', className)} {...props} />
     </div>
   );

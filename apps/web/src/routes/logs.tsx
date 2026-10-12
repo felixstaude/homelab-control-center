@@ -8,6 +8,9 @@ export function LogsPage() {
     <>
       <PageHeader
         title="Logs"
+        // Duplicated by the shell header, which renders this page name as
+        // the `<h1>`. See `PageHeader`.
+        titleHidden
         description="Searchable, filterable logs collected from configured sources."
       />
       <NotImplemented

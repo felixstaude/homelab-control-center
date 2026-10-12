@@ -8,6 +8,9 @@ export function DockerPage() {
     <>
       <PageHeader
         title="Docker"
+        // Duplicated by the shell header, which renders this page name as
+        // the `<h1>`. See `PageHeader`.
+        titleHidden
         description="Containers discovered on connected Docker hosts, with user-initiated lifecycle controls."
       />
       <NotImplemented

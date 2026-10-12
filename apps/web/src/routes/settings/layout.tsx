@@ -77,6 +77,9 @@ export function SettingsLayout() {
     <>
       <PageHeader
         title="Settings"
+        // Duplicated by the shell header, which renders this page name as the
+        // `<h1>`. See `PageHeader`.
+        titleHidden
         description="Accounts and access. Agent enrolment, notification destinations and retention policy arrive with the milestones that build them."
       />
 

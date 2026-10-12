@@ -131,12 +131,29 @@ export async function signIn(
  * which made an earlier version of this helper fail on the tablet and phone
  * viewports for a reason that had nothing to do with signing in.
  */
-export async function signInAndWait(page: Page): Promise<void> {
+export async function signInAndWait(
+  page: Page,
+  username = ADMIN_USERNAME,
+  password = ADMIN_PASSWORD,
+): Promise<void> {
   await page.goto('/login');
   await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible();
-  await signIn(page);
+  await signIn(page, username, password);
   await expect(page.locator('#main-content')).toBeVisible();
   await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+}
+
+/**
+ * Sign out through the account menu, as a user does.
+ *
+ * Waits for the login page rather than for the click to return: sign-out is a
+ * server-side revocation followed by a route change, and asserting on the
+ * destination is what proves both halves happened.
+ */
+export async function signOut(page: Page, username = ADMIN_USERNAME): Promise<void> {
+  await page.getByRole('button', { name: new RegExp(username) }).click();
+  await page.getByRole('button', { name: 'Sign out' }).click();
+  await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible();
 }
 
 export async function openAccountMenu(page: Page): Promise<void> {

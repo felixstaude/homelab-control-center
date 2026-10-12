@@ -25,6 +25,14 @@ import { cn } from '@/lib/utils';
  * Opt-in rather than automatic. A page whose title genuinely differs from its
  * navigation label should show both, and deriving "are these the same?" here
  * would couple this component to the navigation table.
+ *
+ * As it happens **every** page in the console currently titles itself with its
+ * navigation label, so every one passes this — which looks like it argues for
+ * making the behaviour automatic. It does not: the duplication is a property
+ * of the *content* (two components choosing the same words), not of this
+ * component, and a page that wanted a distinct title would then have to opt
+ * back out of a silent coupling. The explicit prop keeps the decision visible
+ * at each call site, which is where someone changing a title will be looking.
  */
 export function PageHeader({
   title,

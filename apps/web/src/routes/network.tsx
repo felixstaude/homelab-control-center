@@ -8,6 +8,9 @@ export function NetworkPage() {
     <>
       <PageHeader
         title="Network"
+        // Duplicated by the shell header, which renders this page name as
+        // the `<h1>`. See `PageHeader`.
+        titleHidden
         description="Manually registered devices, their reachability, and how they relate to each other."
       />
       <NotImplemented

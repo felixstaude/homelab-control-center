@@ -8,6 +8,9 @@ export function AlertsPage() {
     <>
       <PageHeader
         title="Alerts"
+        // Duplicated by the shell header, which renders this page name as
+        // the `<h1>`. See `PageHeader`.
+        titleHidden
         description="Notification rules you define, and the history of what they fired."
       />
       <NotImplemented

@@ -8,6 +8,9 @@ export function HostsPage() {
     <>
       <PageHeader
         title="Hosts"
+        // Duplicated by the shell header, which renders this page name as
+        // the `<h1>`. See `PageHeader`.
+        titleHidden
         description="Linux servers reporting through the Homelab Control Center agent."
       />
       <NotImplemented
