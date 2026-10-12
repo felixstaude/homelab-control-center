@@ -142,6 +142,16 @@ MAX_PAGE_SIZE: Final = 100
 #: an unbounded term would be an unbounded pattern.
 MAX_SEARCH_LENGTH: Final = 64
 
+#: Largest accepted ``offset``.
+#:
+#: Not a product limit — nobody pages a million accounts deep — but a bound on
+#: what reaches the database. ``offset`` was validated only as ``>= 0``, and
+#: Python integers are unbounded, so ``?offset=10**30`` was accepted by the
+#: schema and then failed in asyncpg as an out-of-range bigint: an unhandled
+#: 500 produced by one query parameter. Refusing it at validation makes it a
+#: 422, which is what a malformed request deserves.
+MAX_OFFSET: Final = 1_000_000
+
 
 class Unset(enum.Enum):
     """Sentinel for "this field was not submitted".

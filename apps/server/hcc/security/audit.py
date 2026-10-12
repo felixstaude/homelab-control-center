@@ -61,7 +61,7 @@ module.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 from hcc.logging import get_logger
 from hcc.models.audit import AuditAction, AuditEvent, AuditOutcome
@@ -74,6 +74,17 @@ if TYPE_CHECKING:
     from hcc.models.user import UserRole
 
 logger = get_logger(__name__)
+
+#: Longest denied path stored on a denial record.
+#:
+#: The path is **attacker-influenced**, which is easy to miss because it looks
+#: server-derived: authorization runs before a route's path parameters are
+#: validated, so a caller refused at ``/api/v1/users/{user_id}`` has chosen
+#: whatever that segment contains. Nothing interpolates it into markup — the
+#: audit viewer renders it as text and React escapes — but an unbounded
+#: attacker-chosen string going into a row is worth bounding on its way in
+#: rather than trusting every future reader of the column.
+MAX_DENIED_PATH_LENGTH: Final = 256
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,7 +192,8 @@ class AuditService:
                     context=context,
                     outcome=AuditOutcome.DENIED,
                     details={
-                        "path": path,
+                        # Truncated: see MAX_DENIED_PATH_LENGTH.
+                        "path": path[:MAX_DENIED_PATH_LENGTH],
                         "method": method,
                         "required_role": required_role.value,
                         "actual_role": actual_role.value,

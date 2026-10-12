@@ -69,6 +69,7 @@ from hcc.models.user import (
 from hcc.security.password import MAX_PASSWORD_BYTES, PasswordPolicyError
 from hcc.services.users import (
     DEFAULT_PAGE_SIZE,
+    MAX_OFFSET,
     MAX_PAGE_SIZE,
     MAX_SEARCH_LENGTH,
     UNSET,
@@ -358,7 +359,7 @@ async def list_users(
         bool | None, Query(description="Filter by account status. Omit for both.")
     ] = None,
     limit: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
-    offset: Annotated[int, Query(ge=0)] = 0,
+    offset: Annotated[int, Query(ge=0, le=MAX_OFFSET)] = 0,
 ) -> UserListResponse:
     """Return a page of accounts.
 
