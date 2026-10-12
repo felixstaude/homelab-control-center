@@ -148,16 +148,23 @@ export function LoginPage() {
   return (
     <FullPagePanel
       width="sm"
-      footer={
-        <>
-          Homelab Control Center · self-hosted
-          <br />
-          Sessions are server-side and revoked on sign-out.
-        </>
-      }
+      // One line, naming the product. The second line used to read "Sessions
+      // are server-side and revoked on sign-out" — true, and an
+      // implementation detail of no use to somebody trying to get past this
+      // screen. It belongs in `docs/SECURITY.md`, where it is, rather than in
+      // the furniture of a login page.
+      footer={<>Homelab Control Center · self-hosted</>}
     >
       <h1 className="text-text-primary text-base font-semibold">Sign in</h1>
-      <p className="text-text-muted mt-1 text-xs">
+      {/*
+       * `text-secondary` and `text-sm`, up from `text-muted` and `text-xs`.
+       * This is the one instruction on the page, and at the muted token it sat
+       * near the lower bound of comfortable contrast on the dark surface while
+       * also being the smallest text in the card — so the sentence telling a
+       * first-time operator which account to use was the hardest thing on the
+       * screen to read.
+       */}
+      <p className="text-text-secondary mt-1.5 text-sm">
         Use the administrator account created during setup.
       </p>
 

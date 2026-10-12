@@ -115,8 +115,24 @@ export function AppShell() {
             </div>
           </header>
 
-          <main id="main-content" className="px-4 py-6 sm:px-6 lg:px-8">
-            <div className="mx-auto max-w-[88rem]">
+          {/*
+           * Content width.
+           *
+           * Was a flat `max-w-[88rem]` (1408px) with `lg:px-8`. On a 2560px
+           * display that left roughly 550px of empty margin on each side while
+           * the host table scrolled horizontally — the cards were not stretched,
+           * they were simply confined, and the space went unused.
+           *
+           * Raised to 110rem (1760px) with a wider gutter above `2xl`. The cap
+           * stays rather than going fluid, and that is the trade: the content
+           * is grids of cards and a data table, so at an unbounded width a
+           * four-up metric row becomes four very wide tiles with their numbers
+           * far apart, and a table row becomes a line the eye has to track
+           * across a metre of glass. 110rem uses the space a 1440p and 4K
+           * display actually have without reaching either of those.
+           */}
+          <main id="main-content" className="px-4 py-6 sm:px-6 lg:px-8 2xl:px-12">
+            <div className="mx-auto max-w-[110rem]">
               <Outlet />
             </div>
           </main>

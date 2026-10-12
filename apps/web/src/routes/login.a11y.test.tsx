@@ -291,3 +291,37 @@ describe('account menu', () => {
     expect(signOut).toHaveFocus();
   });
 });
+
+describe('login page copy', () => {
+  beforeEach(() => {
+    backend = installFakeBackend({ initialized: true, session: null });
+  });
+
+  it('keeps no session implementation detail in the footer', async () => {
+    /*
+     * The footer used to read "Sessions are server-side and revoked on
+     * sign-out" — true, and of no use to somebody trying to get past this
+     * screen. It belongs in `docs/SECURITY.md`, where it is.
+     */
+    renderApp('/login');
+    await waitForAuthToResolve();
+
+    expect(screen.queryByText(/server-side/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/revoked on sign-out/i)).not.toBeInTheDocument();
+    // The product line stays.
+    expect(screen.getByText(/Homelab Control Center · self-hosted/)).toBeInTheDocument();
+  });
+
+  it('states which account to use, legibly', async () => {
+    // The one instruction on the page. It sat at the muted token and the
+    // smallest size in the card, which made the sentence a first-time
+    // operator most needs the hardest thing on screen to read.
+    renderApp('/login');
+    await waitForAuthToResolve();
+
+    const instruction = screen.getByText(/Use the administrator account created during setup/);
+    expect(instruction).toBeInTheDocument();
+    expect(instruction.className).toContain('text-text-secondary');
+    expect(instruction.className).not.toContain('text-xs');
+  });
+});

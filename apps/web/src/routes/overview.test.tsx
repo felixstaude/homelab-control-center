@@ -1,7 +1,7 @@
-import { screen } from '@testing-library/react';
+import { screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { MOCK_HOSTS } from '@/mocks/overview';
+import { MOCK_CONTAINERS, MOCK_HOSTS } from '@/mocks/overview';
 import { installFakeBackend, makeUser, type FakeBackend } from '@/test/fake-backend';
 import { renderApp, waitForAuthToResolve } from '@/test/render-app';
 
@@ -66,5 +66,63 @@ describe('overview page', () => {
     expect(
       screen.getByRole('table', { name: /sample host inventory/i }),
     ).toBeInTheDocument();
+  });
+
+  it('lists only genuinely unhealthy containers under "needing attention"', async () => {
+    /*
+     * The section used to render every fixture, so two healthy `running`
+     * containers appeared under a heading claiming they needed attention. On a
+     * monitoring dashboard that is the worst kind of wrong: it teaches the
+     * reader that the section's title means nothing, in the one place they
+     * look when something is broken.
+     */
+    await renderOverview();
+
+    const unhealthy = MOCK_CONTAINERS.filter((container) => container.state !== 'running');
+    const healthy = MOCK_CONTAINERS.filter((container) => container.state === 'running');
+
+    // The fixtures must contain some of each, or this test proves nothing.
+    expect(unhealthy.length).toBeGreaterThan(0);
+    expect(healthy.length).toBeGreaterThan(0);
+
+    // Scoped to the card: a container name also appears as a log entry's
+    // source in the events list, so an unscoped query is ambiguous.
+    const heading = screen.getByText('Containers needing attention');
+    // `closest` is typed as returning `Element`; the queries need an
+    // `HTMLElement`, and in a rendered document it always is one.
+    const card = heading.closest<HTMLElement>('div[class*="rounded-xl"]');
+    expect(card).not.toBeNull();
+
+    for (const container of unhealthy) {
+      expect(within(card!).getByText(container.name)).toBeInTheDocument();
+    }
+    for (const container of healthy) {
+      expect(within(card!).queryByText(container.name)).not.toBeInTheDocument();
+    }
+  });
+
+  it('does not render the page name twice on screen', async () => {
+    // The shell header owns the page `<h1>`; the `PageHeader` used to repeat
+    // it eight pixels below as a visible `<h2>`. Both headings still exist —
+    // the second is `sr-only`, so the outline is intact — and exactly one is
+    // visible.
+    await renderOverview();
+
+    const headings = screen
+      .getAllByRole('heading')
+      .filter((heading) => heading.textContent === 'Overview');
+
+    expect(headings).toHaveLength(2);
+    expect(headings.filter((heading) => !heading.className.includes('sr-only'))).toHaveLength(
+      1,
+    );
+  });
+
+  it('keeps the page heading in the accessibility tree', async () => {
+    // Hidden visually, not removed: the sections still sit beneath it, and
+    // deleting it would leave the content with no heading of its own.
+    await renderOverview();
+
+    expect(screen.getByRole('heading', { name: 'Overview', level: 1 })).toBeInTheDocument();
   });
 });

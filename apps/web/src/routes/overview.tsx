@@ -21,6 +21,18 @@ import { MOCK_CONTAINERS, MOCK_HOSTS, MOCK_LOG_ENTRIES } from '@/mocks/overview'
 const ResourceChart = lazy(() => import('@/routes/overview/resource-chart'));
 
 /**
+ * The fixtures that are genuinely not healthy.
+ *
+ * Computed once at module scope rather than per render: the fixtures are
+ * static, so filtering on every render would be work that cannot produce a
+ * different answer — and a new array identity each time is exactly what makes
+ * a memoised child re-render for nothing.
+ */
+const ATTENTION_CONTAINERS = MOCK_CONTAINERS.filter(
+  (container) => container.state !== 'running',
+);
+
+/**
  * Overview page.
  *
  * Every value on this page comes from `src/mocks/overview.ts` and is static
@@ -31,8 +43,14 @@ const ResourceChart = lazy(() => import('@/routes/overview/resource-chart'));
 export function OverviewPage() {
   return (
     <>
+      {/*
+       * `titleHidden`, because the shell header already renders "Overview" as
+       * this page's `<h1>` — the two sat eight pixels apart. The heading stays
+       * in the outline; only the visible duplicate goes. See `PageHeader`.
+       */}
       <PageHeader
         title="Overview"
+        titleHidden
         description="Fleet-wide health across hosts, containers and network devices. This page is a design reference built from static fixtures — the real data pipeline is not implemented."
       />
 
@@ -271,7 +289,25 @@ export function OverviewPage() {
         </CardHeader>
         <CardContent className="px-0 pb-0">
           <ul className="divide-border-subtle divide-y">
-            {MOCK_CONTAINERS.map((container) => (
+            {/*
+             * Filtered to the states the heading claims.
+             *
+             * This section listed every fixture, so two healthy `running`
+             * containers appeared under "needing attention" — a heading that
+             * described its contents incorrectly. On a monitoring dashboard
+             * that is the worst kind of wrong: it teaches the reader that the
+             * section's title means nothing, and the one place that matters is
+             * the place they look when something is broken.
+             *
+             * Filtering rather than renaming, because a section that surfaces
+             * the containers an operator has to deal with is the more useful
+             * card to be designing — and the fixtures contain exactly that
+             * (one restarting, one exited) alongside the healthy ones. The
+             * sample-data banner above still applies, and the per-card
+             * "Sample" badge stays: nothing here claims these are real
+             * container states.
+             */}
+            {ATTENTION_CONTAINERS.map((container) => (
               <li
                 key={container.id}
                 className="hover:bg-surface-hover/40 flex flex-wrap items-center gap-3 px-5 py-3 transition-colors"

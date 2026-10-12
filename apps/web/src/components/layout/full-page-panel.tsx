@@ -57,7 +57,12 @@ export function FullPagePanel({
         </Card>
 
         {footer === undefined ? null : (
-          <p className="text-text-faint mt-5 text-center text-[11px] leading-relaxed">{footer}</p>
+          // `text-muted` and `text-xs`, up from `text-faint` at 11px. The
+          // faint token is intended for de-emphasised text *beside* something
+          // brighter; as the only thing on the background it was dim enough to
+          // be easy to miss entirely, which for a product name is the wrong
+          // outcome. Still clearly secondary to the card.
+          <p className="text-text-muted mt-5 text-center text-xs leading-relaxed">{footer}</p>
         )}
       </div>
     </div>
