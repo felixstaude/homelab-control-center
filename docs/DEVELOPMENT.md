@@ -167,8 +167,19 @@ make check-web        # tsc + eslint + vitest
 make check-agent      # gofmt + go vet + go test -race
 ```
 
-Run `make check` before opening a pull request. CI runs the same commands, so a
-local pass means a CI pass.
+Run `make check` before opening a pull request. Two gates are **not** in
+`make check` because they need a running PostgreSQL, and CI runs them as
+separate jobs:
+
+```bash
+make smoke            # a real uvicorn process, probed over HTTP
+make e2e              # a real browser against a real control plane
+```
+
+**There is no Prettier configuration, and Prettier is not the formatter.**
+Frontend style is whatever ESLint accepts; running `npx prettier --write`
+will rewrite quotes and line breaks across a file and produce a diff that is
+almost entirely noise.
 
 Auto-fix what can be fixed:
 
@@ -200,8 +211,22 @@ Backend tests come in two tiers:
 #### Browser end-to-end tests
 
 ```bash
-make e2e
+make e2e                                  # the whole suite
+./scripts/e2e.sh e2e/session.spec.ts      # one file
+./scripts/e2e.sh -g 'expired session'     # one test
+./scripts/e2e.sh --headed                 # watch it happen
 ```
+
+Arguments are forwarded to Playwright. Four suites run serially against one
+installation:
+
+| Suite | What it covers |
+| --- | --- |
+| `auth-journey.spec.ts` | First run, bootstrap, sign in, navigate, reload, sign out |
+| `responsive.spec.ts` | The same screens at 1920×1080, 1440×900, 768×1024 and 390×844 — overflow, target sizes, reachable navigation, layout shift, keyboard order, password-manager compatibility |
+| `security.spec.ts` | Session fixation, login CSRF from a foreign origin, borrowed CSRF tokens, rejected `Origin` shapes, CORS, back-button disclosure, enumeration, the live routed surface |
+| `session.spec.ts` | Expiry, server-side revocation, forged cookies, client restart, 401 versus 403, an unreachable backend and recovery, real throttling |
+
 
 `scripts/e2e.sh` owns the whole fixture, so there is nothing to set up and
 nothing to clean up:
@@ -221,6 +246,11 @@ nothing to clean up:
 Playwright itself starts nothing — the script owns the lifecycle, so the suite
 behaves identically locally and in CI. Logs from a failed run land in
 `/tmp/hcc-e2e-*.log` and CI uploads them as an artefact.
+
+The script shortens the login throttle *window* to two seconds while leaving
+the budgets at their production defaults, so the throttling test spends a real
+budget and then waits a real window out instead of leaving every later test
+locked out for five minutes.
 
 First run needs the browser once:
 
@@ -466,6 +496,18 @@ A backend response model changed. That is the drift check working. Run
 **`make e2e` fails immediately with a database error.**
 It needs PostgreSQL running (`make db-up`) — it creates its own disposable
 database on that server and never touches yours.
+
+**A browser test fails that has nothing to do with my change.**
+The suites run serially against one installation and several sign in and out
+of the same account, so selecting a subset can skip something a later file
+expects. Every suite bootstraps an administrator itself if one is missing, so
+running one file is safe — but `auth-journey.spec.ts` is the only one that can
+observe the uninitialised state, and only on a fresh database.
+
+**The backend starts but the frontend shows "cannot reach the control plane".**
+Check the backend is on :8000 and that `HCC_CORS_ORIGINS` includes
+`http://localhost:5173`; `make dev-server` sets it. The dev proxy rewrites
+`Host`, so the backend cannot infer the browser's origin and has to be told.
 
 **Vite fails with a port conflict.**
 `strictPort` is on deliberately: a silent port change would break the proxy and

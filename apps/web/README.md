@@ -26,7 +26,12 @@ npm run check        # typecheck + lint + test
 
 Browser end-to-end tests live in `e2e/` and are run by `make e2e` from the
 repository root — that script owns the disposable database, the backend and
-the preview server, so Playwright starts nothing itself.
+the preview server, so Playwright starts nothing itself. It forwards its
+arguments, so `./scripts/e2e.sh -g 'expired session'` runs one test.
+
+**There is no Prettier configuration, and Prettier is not the formatter.**
+Style is whatever ESLint accepts. Running `npx prettier --write` rewrites
+quotes and line breaks across a whole file.
 
 ## Talking to the API
 
@@ -233,6 +238,7 @@ src/
 ├── components/
 │   ├── ui/                design-system primitives
 │   ├── layout/            shell, sidebar, navigation, brand, account menu
+│   │   └── full-page-panel  chrome for every screen outside the shell
 │   ├── states/            full-page spinner, backend-unavailable
 │   ├── error-boundary      recovery screen for a render error
 │   ├── mock-data-banner   "this is not real data"

@@ -152,6 +152,12 @@ entirely. In development Vite proxies `/api` with `changeOrigin`, which
 rewrites `Host` — so the dev setup does need a declared CORS origin, and that
 asymmetry is covered by a test in both directions.
 
+Screens shown outside the console shell — login, first-run setup and the
+backend-unavailable state — share one `FullPagePanel` layout rather than each
+carrying its own copy of the chrome. The three copies had already drifted
+apart in a way no test could catch, because none of them assert on
+decoration.
+
 ### 2.2 Control plane (`apps/server`)
 
 FastAPI. The authority for all state.
@@ -169,7 +175,15 @@ FastAPI. The authority for all state.
 
 **Deliberately stateless between requests.** All state is in PostgreSQL, so the
 control plane can be restarted at any time and — once a leader-election
-mechanism exists for the scheduler — scaled horizontally.
+mechanism exists for the scheduler — scaled horizontally. Verified rather than
+assumed: a browser session established before a restart still works after one,
+because the session lives in `sessions` and not in process memory.
+
+**`hcc.main` is the only supported way to start it**, in development and
+production alike. Pointing uvicorn at the factory directly works but silently
+loses what that module configures — the suppressed `Server` banner, the
+disabled duplicate access log, and the single logging chain — so two
+invocations would harden differently. They had already drifted once.
 
 ### 2.3 Agent (`agents/linux`)
 

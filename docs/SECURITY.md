@@ -756,6 +756,37 @@ as never to be reused.
   **opaque** 500. Internal details never reach the client. Tested by
   `test_unexpected_exception_does_not_leak_internals`.
 
+### Cacheability (implemented)
+
+Every response under `/api/`, plus `/healthz` and `/readyz`, carries
+`Cache-Control: no-store` — set server-side, in the same middleware as the
+other hardening headers, and applied to error responses too.
+
+**Why not leave it to the client.** The browser client already sends
+`cache: 'no-store'` on every request, but that binds only the browser. A
+shared cache — a reverse proxy, a corporate middlebox, a CDN someone puts in
+front of this — decides from the *response*, and an authenticated JSON body
+with no cache directives at all is heuristically cacheable. For
+`GET /api/v1/auth/me` that means one operator's identity being served to the
+next person through the proxy. It was missing until the browser suite asked
+for the header and found nothing.
+
+The probes are included for a different reason: a cached readiness response is
+a readiness probe that lies.
+
+**When the control plane starts serving the built client**, static assets will
+want the opposite policy; they must be added as an exclusion where the prefix
+list is defined rather than the rule being widened.
+
+### No server banner (implemented)
+
+`Server: uvicorn` is suppressed (`server_header=False` in `hcc.main`). It
+named the server software to anyone who asked, which is the same disclosure
+the health probes are careful to avoid (ADR-032). A version-less banner is
+only a small help to an attacker, but it is a free one to withhold.
+Asserted by `scripts/smoke-test.sh`, which is the gate that runs a real
+uvicorn.
+
 ### Browser-exposed configuration (implemented)
 
 Only `VITE_`-prefixed variables reach the client, and they are embedded
@@ -785,6 +816,7 @@ and not *lying to the user* — none of it is relied on for enforcement.
 | **No open redirect** | The post-login destination travels in router location state, not a query parameter, and `safeRedirectPath` refuses absolute URLs, protocol-relative `//host`, `/\`, encoded-slash variants, control characters and the login and setup paths themselves. | An open redirect on a login page is a phishing primitive. |
 | **Cache cleared on sign-in as well as sign-out** | `queryClient.clear()` on both. | A second user on the same browser would otherwise be shown the first user's cached data. |
 | **CSRF token read per request** | From the readable `hcc_csrf` cookie at request time, never cached in a module variable. | The cookie is rotated by sign-in and sign-out; a cached token would be stale exactly when it mattered. |
+| **One deliberate action, one request** | The submit handler takes a synchronous ref guard, released in `finally`. | The `disabled` attribute only takes effect after React re-renders, and a double-click delivers its second event before that — so two sessions were created, one of which nothing would ever revoke, and two attempts were spent from the user's own throttle budget. |
 | **No public bootstrap path added** | The first-run screen displays *instructions* for `hcc bootstrap-admin` and performs no bootstrap itself. | Any screen that performed it would be the endpoint ADR-033 refuses to create. |
 
 Fetch defaults worth stating: `credentials: 'same-origin'` (not `'include'`,
@@ -1053,14 +1085,21 @@ authentication endpoints face an untrusted network.
     tested; the scheduler arrives with the other periodic jobs. Until then the
     table grows with expired rows.
 12. **`pip-audit` and `npm audit` are not yet CI-blocking.**
-13. **The end-to-end smoke test is not run in CI.** The Playwright browser
-    suite added in 1.6 *is* (`scripts/e2e.sh`, which starts a real uvicorn
-    server against a disposable database), so the gap the reverse-proxy origin
-    defect fell through is now covered from the browser's side —
-    `scripts/smoke-test.sh` itself remains a local-only gate.
-14. **The client has no Content-Security-Policy beyond the server's default
-    headers**, and the bundle is served by the control plane in production.
-    A strict CSP needs the asset-serving path that arrives with packaging.
+13. ~~The end-to-end smoke test is not run in CI.~~ **Closed.** Both
+    real-process gates now run in CI: `scripts/e2e.sh` (a real uvicorn and a
+    real browser against a disposable database) and `scripts/smoke-test.sh`,
+    the latter on **Python 3.14** while the other jobs pin 3.12. The version
+    split is deliberate: the other jobs test the oldest supported
+    interpreter, which is the right floor, but development happens on the
+    newest, and a 3.14-only behaviour change had already broken
+    `make dev-server` invisibly.
+14. **The Content-Security-Policy is production-only and untested in a
+    browser.** It is set when `security_headers_enabled` and CSP are on,
+    which by default means production — the Vite dev server needs inline
+    scripts and a websocket for hot reload. The browser suite therefore runs
+    against a configuration *without* it, so the policy is asserted as a
+    header value and not as something a real page was loaded under. It needs
+    the asset-serving path that arrives with packaging.
 15. **A signed-out browser keeps whatever is already on screen until the next
     request.** Sign-out clears the local session and the query cache
     immediately, but another tab holding a rendered page learns its session is
