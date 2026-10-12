@@ -401,14 +401,21 @@ func (c *Client) Connect(ctx context.Context, credential string) (*Conn, error) 
 	return &Conn{socket: socket}, nil
 }
 
-// SendHeartbeat writes one heartbeat frame.
-func (c *Conn) SendHeartbeat(ctx context.Context, heartbeat protocol.Heartbeat) error {
-	payload, err := json.Marshal(heartbeat)
+// Send writes one agent → controller frame.
+//
+// One method rather than one per frame type. The alternative — SendHeartbeat,
+// SendConfigRequest, SendConfigAck, SendConfigNack — would be four
+// near-identical bodies and a fifth the day a frame is added, and every one of
+// them would be a place for the encoding to differ. The frame's type is still
+// checked at the call site, because the protocol package's constructors are
+// the only way to build one.
+func (c *Conn) Send(ctx context.Context, frame any) error {
+	payload, err := json.Marshal(frame)
 	if err != nil {
-		return fmt.Errorf("cannot encode heartbeat: %w", err)
+		return fmt.Errorf("cannot encode an outgoing frame: %w", err)
 	}
 	if err := c.socket.Write(ctx, websocket.MessageText, payload); err != nil {
-		return fmt.Errorf("cannot send heartbeat: %w", err)
+		return fmt.Errorf("cannot send a frame to the controller: %w", err)
 	}
 	return nil
 }

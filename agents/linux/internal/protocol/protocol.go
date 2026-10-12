@@ -46,6 +46,20 @@ const (
 	TypeHeartbeat    = "heartbeat"
 	TypeHeartbeatAck = "heartbeat_ack"
 	TypeClose        = "close"
+
+	// Configuration synchronisation, phase 2. See docs/ADR-049: configuration
+	// travels on this socket rather than over a second HTTP channel, because
+	// the socket is already authenticated and identity-bound.
+	//
+	// TypeConfigAvailable is a *notification* carrying only a version. The
+	// agent's correctness does not depend on receiving one: every heartbeat
+	// acknowledgement states the version the controller has, so a missed
+	// notification costs one heartbeat interval of latency.
+	TypeConfigAvailable = "config_available"
+	TypeConfigRequest   = "config_request"
+	TypeConfigSnapshot  = "config_snapshot"
+	TypeConfigAck       = "config_ack"
+	TypeConfigNack      = "config_nack"
 )
 
 // Close reasons the controller may send.
@@ -101,22 +115,50 @@ type Heartbeat struct {
 	AgentVersion  string `json:"agent_version,omitempty"`
 	Platform      string `json:"platform,omitempty"`
 	UptimeSeconds int64  `json:"uptime_seconds,omitempty"`
+
+	// ConfigVersion and ConfigChecksum report the configuration this agent is
+	// actually running. They are what makes the synchronisation loop
+	// self-correcting rather than dependent on every push arriving.
+	//
+	// `omitempty` is load-bearing on both: an agent with no configuration must
+	// report that by *omission*, not by sending zero. There is no version zero,
+	// and claiming one would make "never configured" indistinguishable from
+	// "configured, then something went wrong" — the controller refuses a
+	// version below 1 for exactly that reason.
+	ConfigVersion  int64  `json:"config_version,omitempty"`
+	ConfigChecksum string `json:"config_checksum,omitempty"`
 }
 
 // NewHeartbeat builds a heartbeat frame.
-func NewHeartbeat(agentVersion, platform string, uptimeSeconds int64) Heartbeat {
+//
+// configVersion and configChecksum describe the configuration currently
+// applied; pass 0 and "" when there is none.
+func NewHeartbeat(
+	agentVersion, platform string,
+	uptimeSeconds int64,
+	configVersion int64,
+	configChecksum string,
+) Heartbeat {
 	// Negative uptime is impossible and the controller refuses it, so a clock
 	// that stepped backwards is clamped rather than turned into a disconnect.
 	// An agent must not be able to lose its connection over a cosmetic field.
 	if uptimeSeconds < 0 {
 		uptimeSeconds = 0
 	}
+	// Likewise a nonsense version: the controller refuses anything below 1,
+	// and reporting nothing is both honest and keeps the connection.
+	if configVersion < 1 {
+		configVersion = 0
+		configChecksum = ""
+	}
 	return Heartbeat{
-		V:             Version,
-		Type:          TypeHeartbeat,
-		AgentVersion:  agentVersion,
-		Platform:      platform,
-		UptimeSeconds: uptimeSeconds,
+		V:              Version,
+		Type:           TypeHeartbeat,
+		AgentVersion:   agentVersion,
+		Platform:       platform,
+		UptimeSeconds:  uptimeSeconds,
+		ConfigVersion:  configVersion,
+		ConfigChecksum: configChecksum,
 	}
 }
 
@@ -130,6 +172,12 @@ type HeartbeatAck struct {
 	Type            string `json:"type"`
 	IntervalSeconds int    `json:"interval_seconds"`
 	ServerTime      string `json:"server_time"`
+
+	// ConfigVersion is the version the controller has for this host, or 0 when
+	// it has none. An agent running something else should send a
+	// config_request — which is the whole drift-detection mechanism, in one
+	// field, needing no separate channel and no push to have arrived.
+	ConfigVersion int64 `json:"config_version,omitempty"`
 }
 
 // Close is the controller's termination notice.
@@ -146,16 +194,132 @@ type Close struct {
 	SupportedVersions []int `json:"supported_versions,omitempty"`
 }
 
+// ConfigAvailable tells the agent a newer configuration exists.
+//
+// Carries a version and nothing else. The agent answers with a
+// [ConfigRequest]; it does not act on the version itself, because a
+// notification is not evidence of anything — only a snapshot whose checksum
+// verifies is.
+type ConfigAvailable struct {
+	V       int    `json:"v"`
+	Type    string `json:"type"`
+	Version int64  `json:"version"`
+}
+
+// ConfigSnapshot carries one configuration document.
+//
+// Document is a *string*, and that is the whole of the checksum design: it
+// holds the canonical bytes the controller computed the digest over, so the
+// agent verifies sha256(Document) == Checksum on exactly what arrived and then
+// parses it.
+//
+// Decoding into a struct and re-serialising to check instead would make the
+// comparison depend on Go's encoding/json producing byte-identical output to
+// Python's json — which it does not, for key order, integer rendering and
+// non-ASCII escaping. The failure would be a checksum mismatch that looks
+// exactly like tampering.
+type ConfigSnapshot struct {
+	V        int    `json:"v"`
+	Type     string `json:"type"`
+	Version  int64  `json:"version"`
+	Checksum string `json:"checksum"`
+	Document string `json:"document"`
+}
+
+// ConfigRequest asks the controller for the current configuration.
+//
+// No fields beyond the envelope, and the absence is deliberate in the same way
+// [Heartbeat]'s missing host identifier is: there is no version to ask for and
+// no host to ask about, so there is nothing here to abuse. The controller
+// forbids unknown fields, so adding one is a protocol error rather than a
+// silently ignored key.
+type ConfigRequest struct {
+	V    int    `json:"v"`
+	Type string `json:"type"`
+}
+
+// NewConfigRequest builds a configuration request.
+func NewConfigRequest() ConfigRequest {
+	return ConfigRequest{V: Version, Type: TypeConfigRequest}
+}
+
+// ConfigAck reports that a configuration was verified and applied.
+type ConfigAck struct {
+	V        int    `json:"v"`
+	Type     string `json:"type"`
+	Version  int64  `json:"version"`
+	Checksum string `json:"checksum"`
+}
+
+// NewConfigAck builds an acknowledgement.
+//
+// The checksum travels as well as the version so that a truncated or tampered
+// document cannot be acknowledged as applied under a version that looks right.
+func NewConfigAck(version int64, checksum string) ConfigAck {
+	return ConfigAck{V: Version, Type: TypeConfigAck, Version: version, Checksum: checksum}
+}
+
+// ConfigNack reports that a configuration was refused, and why.
+//
+// The agent keeps running its last known good configuration. A monitoring
+// agent that stops monitoring because somebody typed a bad interval has failed
+// at its job.
+type ConfigNack struct {
+	V        int      `json:"v"`
+	Type     string   `json:"type"`
+	Version  int64    `json:"version"`
+	Checksum string   `json:"checksum"`
+	Problems []string `json:"problems"`
+}
+
+// MaxNackProblems and MaxNackProblemLength bound a rejection.
+//
+// Bounded by the *sender*, not only by the controller. The controller clamps
+// too, but an agent that sent a megabyte of problems would have its frame
+// refused for size before the clamp ran — losing the rejection entirely. So
+// the agent sends something that will be accepted.
+const (
+	MaxNackProblems      = 32
+	MaxNackProblemLength = 256
+)
+
+// NewConfigNack builds a rejection, clamped to what the controller accepts.
+func NewConfigNack(version int64, checksum string, problems []string) ConfigNack {
+	clamped := make([]string, 0, MaxNackProblems+1)
+	for _, problem := range problems {
+		if len(clamped) == MaxNackProblems {
+			break
+		}
+		if len(problem) > MaxNackProblemLength {
+			problem = problem[:MaxNackProblemLength]
+		}
+		clamped = append(clamped, problem)
+	}
+	if remaining := len(problems) - MaxNackProblems; remaining > 0 {
+		clamped = append(clamped, fmt.Sprintf("… and %d further problem(s), not sent", remaining))
+	}
+	return ConfigNack{
+		V:        Version,
+		Type:     TypeConfigNack,
+		Version:  version,
+		Checksum: checksum,
+		Problems: clamped,
+	}
+}
+
 // ServerFrame is one decoded controller → agent frame.
 //
-// A tagged union rather than an interface, because there are two cases and a
-// caller has to handle both: an interface would let a new case be added and
-// silently ignored by every existing switch.
+// A tagged union rather than an interface, because a caller has to handle
+// every case: an interface would let a new case be added and silently ignored
+// by every existing switch. Exactly one pointer is non-nil, and which one is
+// named by Type.
 type ServerFrame struct {
 	Type string
 
-	Ack   *HeartbeatAck
-	Close *Close
+	Ack       *HeartbeatAck
+	Close     *Close
+	Available *ConfigAvailable
+	Snapshot  *ConfigSnapshot
 }
 
 // ErrFrameTooLarge reports a frame the agent refused to decode.
@@ -203,6 +367,20 @@ func ParseServerFrame(raw []byte) (ServerFrame, error) {
 			return ServerFrame{}, fmt.Errorf("malformed %s frame: %w", TypeClose, err)
 		}
 		return ServerFrame{Type: TypeClose, Close: &closed}, nil
+
+	case TypeConfigAvailable:
+		var available ConfigAvailable
+		if err := json.Unmarshal(raw, &available); err != nil {
+			return ServerFrame{}, fmt.Errorf("malformed %s frame: %w", TypeConfigAvailable, err)
+		}
+		return ServerFrame{Type: TypeConfigAvailable, Available: &available}, nil
+
+	case TypeConfigSnapshot:
+		var snapshot ConfigSnapshot
+		if err := json.Unmarshal(raw, &snapshot); err != nil {
+			return ServerFrame{}, fmt.Errorf("malformed %s frame: %w", TypeConfigSnapshot, err)
+		}
+		return ServerFrame{Type: TypeConfigSnapshot, Snapshot: &snapshot}, nil
 
 	default:
 		return ServerFrame{}, fmt.Errorf(

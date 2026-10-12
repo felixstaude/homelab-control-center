@@ -136,13 +136,31 @@ type fakeConn struct {
 	sendErr   error
 	exhausted error
 	block     bool
+
+	// outgoing records every frame the agent sent, so a test can assert what
+	// it asked for rather than only how many times it spoke. `sent` still
+	// counts heartbeats specifically, because several tests are about the
+	// heartbeat cadence and would be made harder to read by filtering.
+	outgoing []any
 }
 
-func (c *fakeConn) SendHeartbeat(context.Context, protocol.Heartbeat) error {
+func (c *fakeConn) Send(_ context.Context, frame any) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.sent++
+	c.outgoing = append(c.outgoing, frame)
+	if _, isHeartbeat := frame.(protocol.Heartbeat); isHeartbeat {
+		c.sent++
+	}
 	return c.sendErr
+}
+
+// sentFrames returns a copy of everything the agent sent.
+func (c *fakeConn) sentFrames() []any {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]any, len(c.outgoing))
+	copy(out, c.outgoing)
+	return out
 }
 
 func (c *fakeConn) Read(ctx context.Context) (protocol.ServerFrame, error) {
@@ -218,8 +236,13 @@ func enrolledConfig(t *testing.T) config.Config {
 
 	cfg, err := config.Load(func(key string) (string, bool) {
 		values := map[string]string{
-			config.EnvControllerURL:    "https://hcc.internal:8000",
-			config.EnvCredentialFile:   path,
+			config.EnvControllerURL:  "https://hcc.internal:8000",
+			config.EnvCredentialFile: path,
+			// Pointed into the temporary directory, not left at its default.
+			// Without this every test here would read — and the configuration
+			// tests would *write* — /etc/hcc-agent/config.json on the
+			// developer's own machine.
+			config.EnvConfigFile:       filepath.Join(directory, "config.json"),
 			config.EnvReconnectMinWait: "2s",
 			config.EnvReconnectMaxWait: "60s",
 		}

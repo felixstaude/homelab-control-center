@@ -39,12 +39,15 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/felixstaude/homelab-control-center/agents/linux/internal/buildinfo"
 	"github.com/felixstaude/homelab-control-center/agents/linux/internal/config"
 	"github.com/felixstaude/homelab-control-center/agents/linux/internal/controller"
 	"github.com/felixstaude/homelab-control-center/agents/linux/internal/credentials"
+	"github.com/felixstaude/homelab-control-center/agents/linux/internal/monitoring"
 	"github.com/felixstaude/homelab-control-center/agents/linux/internal/protocol"
 )
 
@@ -83,6 +86,35 @@ type Agent struct {
 	dial Dialer
 
 	startedAt time.Time
+
+	// configMu guards config. The session loop is single-goroutine today, so
+	// a bare field would be correct — but the scheduler reads this from its
+	// own goroutines, and a lock added later is a lock added after the race
+	// has shipped. `go test -race` covers it either way.
+	configMu sync.RWMutex
+	// config is the configuration currently in force, or nil when the agent
+	// has none. Never replaced by a configuration that failed validation: a
+	// rejected document leaves this untouched, which is what "keep running
+	// the last known good one" means in practice.
+	config *monitoring.Stored
+}
+
+// Configuration returns the configuration in force, or nil.
+//
+// A pointer to the stored value rather than a copy of the document: the value
+// is immutable once applied — [monitoring.Apply] builds a new one rather than
+// mutating — so sharing it is safe and copying a map of modules on every
+// scheduler tick would not be.
+func (a *Agent) Configuration() *monitoring.Stored {
+	a.configMu.RLock()
+	defer a.configMu.RUnlock()
+	return a.config
+}
+
+func (a *Agent) setConfiguration(stored *monitoring.Stored) {
+	a.configMu.Lock()
+	a.config = stored
+	a.configMu.Unlock()
 }
 
 // Connection is the subset of a controller connection the loop uses.
@@ -91,7 +123,9 @@ type Agent struct {
 // deliberately small: a wide interface would be a second description of the
 // protocol, free to drift from the first.
 type Connection interface {
-	SendHeartbeat(ctx context.Context, heartbeat protocol.Heartbeat) error
+	// Send writes one agent → controller frame. One method rather than one per
+	// type; the protocol package's constructors are what type the call site.
+	Send(ctx context.Context, frame any) error
 	Read(ctx context.Context) (protocol.ServerFrame, error)
 	Close()
 }
@@ -184,7 +218,48 @@ func New(cfg config.Config, logger *slog.Logger, opts ...Option) (*Agent, error)
 	}
 
 	a.startedAt = a.clock.Now()
+	a.loadStoredConfiguration()
 	return a, nil
+}
+
+// loadStoredConfiguration reads the last configuration the controller gave
+// this agent, if there is one.
+//
+// At construction rather than on connect, so a restarted agent resumes
+// collecting from its own disk without waiting for the controller — which is
+// the whole point of storing it (AGENT_ARCHITECTURE.md §8: a controller
+// outage must not create a monitoring gap).
+//
+// Never fatal. Three outcomes, and the middle one is the interesting case:
+//
+//   - **No file.** Normal for a freshly enrolled agent. Logged at debug; the
+//     controller sends one on connect.
+//   - **A corrupt or invalid file.** Logged at *error*, because an operator
+//     needs to know — an agent that silently discarded it would come up
+//     collecting nothing while reporting itself healthy. Not fatal, because
+//     the controller will send a fresh document on the next connection and
+//     exiting would turn a self-healing problem into a manual one.
+//   - **A good file.** Applied, and the agent collects before it has spoken to
+//     anybody.
+func (a *Agent) loadStoredConfiguration() {
+	stored, err := monitoring.Load(a.cfg.ConfigFile)
+	switch {
+	case errors.Is(err, monitoring.ErrNoStoredConfig):
+		a.logger.Debug("no stored configuration; waiting for the controller",
+			"path", a.cfg.ConfigFile,
+		)
+	case err != nil:
+		a.logger.Error("ignoring the stored configuration",
+			"path", a.cfg.ConfigFile,
+			"error", err,
+		)
+	default:
+		a.setConfiguration(&stored)
+		a.logger.Info("resuming with the stored configuration",
+			"version", stored.Document.Version,
+			"enabled_modules", strings.Join(stored.Document.EnabledModules(), ","),
+		)
+	}
 }
 
 // Run connects to the controller and stays connected until ctx is cancelled.
@@ -383,6 +458,26 @@ func (a *Agent) session(ctx context.Context) (productive bool, err error) {
 				// the thing connections are for.
 				productive = true
 				interval = a.acceptInterval(result.frame.Ack, interval)
+				if err := a.reconcileConfig(ctx, connection, result.frame.Ack); err != nil {
+					return productive, err
+				}
+			case protocol.TypeConfigAvailable:
+				// A notification, not evidence. The agent asks for the
+				// document rather than acting on the version, because only a
+				// snapshot whose checksum verifies says anything about what
+				// to collect.
+				a.logger.Info("the controller has a newer configuration",
+					"version", result.frame.Available.Version,
+				)
+				if err := connection.Send(ctx, protocol.NewConfigRequest()); err != nil {
+					return productive, err
+				}
+
+			case protocol.TypeConfigSnapshot:
+				if err := a.handleConfigSnapshot(ctx, connection, result.frame.Snapshot); err != nil {
+					return productive, err
+				}
+
 			case protocol.TypeClose:
 				return productive, a.handleClose(result.frame.Close)
 			default:
@@ -463,14 +558,109 @@ func (a *Agent) handleClose(closed *protocol.Close) error {
 	return nil
 }
 
-// sendHeartbeat writes one heartbeat.
+// sendHeartbeat writes one heartbeat, reporting the configuration in force.
+//
+// Reporting it on every heartbeat is what makes the synchronisation loop
+// self-correcting: the controller answers with the version it has, so a missed
+// push, a controller restart and a stale local file are all noticed within one
+// interval without any of them needing a mechanism of its own.
 func (a *Agent) sendHeartbeat(ctx context.Context, connection Connection) error {
 	info := buildinfo.Get()
-	return connection.SendHeartbeat(ctx, protocol.NewHeartbeat(
+	var version int64
+	var checksum string
+	if current := a.Configuration(); current != nil {
+		version = current.Document.Version
+		checksum = current.Checksum
+	}
+	return connection.Send(ctx, protocol.NewHeartbeat(
 		info.Version,
 		info.Platform,
 		int64(a.uptime().Seconds()),
+		version,
+		checksum,
 	))
+}
+
+// reconcileConfig asks for a configuration when the controller has a
+// different one.
+//
+// This is the whole of drift detection, and it is three lines because the
+// acknowledgement carries the version. No push needs to have arrived, no
+// separate channel exists, and a controller restart, a missed notification and
+// a stale local file all produce the same comparison and the same request.
+//
+// Deliberately *not* "ask if the versions differ in either direction". An
+// agent whose version is **higher** than the controller's has a configuration
+// the controller does not know about, which should not be possible — versions
+// are controller-assigned and monotonic — and the honest response is to ask
+// for the current one and let the controller's answer win, rather than to
+// assume the local file is newer and keep running it.
+func (a *Agent) reconcileConfig(
+	ctx context.Context, connection Connection, ack *protocol.HeartbeatAck,
+) error {
+	if ack.ConfigVersion == 0 {
+		// The controller has none for this host. Nothing to ask for, and
+		// nothing to do about a local configuration that should not exist:
+		// discarding it would stop collection on a host whose controller is
+		// merely between revisions, which is strictly worse than carrying on.
+		return nil
+	}
+	var current int64
+	if stored := a.Configuration(); stored != nil {
+		current = stored.Document.Version
+	}
+	if current == ack.ConfigVersion {
+		return nil
+	}
+	a.logger.Info("requesting the current configuration",
+		"running", current,
+		"controller_has", ack.ConfigVersion,
+	)
+	return connection.Send(ctx, protocol.NewConfigRequest())
+}
+
+// handleConfigSnapshot verifies, applies and acknowledges a configuration.
+//
+// Returns an error only when the *connection* cannot be used — a failed send.
+// A configuration the agent will not run is not an error here: it is a
+// rejection, reported to the controller and surfaced in the interface, with
+// the previous configuration left in force.
+//
+// A failure to write the file is logged and **not** reported as a rejection.
+// The two mean different things to the operator: "this configuration is
+// wrong" sends them to the schedule, "this host's disk is read-only" sends
+// them to the host. Nor is it acknowledged, so the controller keeps reporting
+// the host as pending — which is true.
+func (a *Agent) handleConfigSnapshot(
+	ctx context.Context, connection Connection, snapshot *protocol.ConfigSnapshot,
+) error {
+	outcome, err := monitoring.Apply(
+		a.cfg.ConfigFile, snapshot.Version, snapshot.Checksum, []byte(snapshot.Document),
+	)
+	if err != nil {
+		a.logger.Error("cannot store the configuration the controller sent",
+			"version", snapshot.Version,
+			"error", err,
+		)
+		return nil
+	}
+
+	if !outcome.Accepted() {
+		a.logger.Warn("refusing the configuration the controller sent",
+			"version", snapshot.Version,
+			"problems", strings.Join(outcome.Problems, "; "),
+		)
+		return connection.Send(ctx, protocol.NewConfigNack(
+			outcome.Version, outcome.Checksum, outcome.Problems,
+		))
+	}
+
+	a.setConfiguration(outcome.Applied)
+	a.logger.Info("applied a new configuration",
+		"version", outcome.Version,
+		"enabled_modules", strings.Join(outcome.Applied.Document.EnabledModules(), ","),
+	)
+	return connection.Send(ctx, protocol.NewConfigAck(outcome.Version, outcome.Checksum))
 }
 
 // jitter spreads a backoff delay across [d/2, d).

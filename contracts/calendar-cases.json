@@ -1,0 +1,339 @@
+{
+  "cases": [
+    {
+      "after": "2024-06-01T12:00:00+00:00",
+      "expected": {
+        "at": "2024-06-02T01:00:00+00:00",
+        "dst_adjustment": null,
+        "local_time": "03:00"
+      },
+      "name": "every day at 03:00",
+      "schedule": {
+        "days_of_month": null,
+        "days_of_week": null,
+        "dst_ambiguous": "first",
+        "dst_nonexistent": "shift_forward",
+        "kind": "calendar",
+        "missed_grace_seconds": 7200,
+        "months": null,
+        "on_missed": "skip",
+        "times": [
+          "03:00"
+        ],
+        "timezone": "Europe/Berlin"
+      }
+    },
+    {
+      "after": "2024-06-01T00:00:00+00:00",
+      "expected": {
+        "at": "2024-06-01T06:00:00+00:00",
+        "dst_adjustment": null,
+        "local_time": "08:00"
+      },
+      "name": "two times a day, earliest first",
+      "schedule": {
+        "days_of_month": null,
+        "days_of_week": null,
+        "dst_ambiguous": "first",
+        "dst_nonexistent": "shift_forward",
+        "kind": "calendar",
+        "missed_grace_seconds": 7200,
+        "months": null,
+        "on_missed": "skip",
+        "times": [
+          "08:00",
+          "20:00"
+        ],
+        "timezone": "Europe/Berlin"
+      }
+    },
+    {
+      "after": "2024-06-01T00:00:00+00:00",
+      "expected": {
+        "at": "2024-06-03T01:00:00+00:00",
+        "dst_adjustment": null,
+        "local_time": "03:00"
+      },
+      "name": "mondays only, 0 is sunday",
+      "schedule": {
+        "days_of_month": null,
+        "days_of_week": [
+          1
+        ],
+        "dst_ambiguous": "first",
+        "dst_nonexistent": "shift_forward",
+        "kind": "calendar",
+        "missed_grace_seconds": 7200,
+        "months": null,
+        "on_missed": "skip",
+        "times": [
+          "03:00"
+        ],
+        "timezone": "Europe/Berlin"
+      }
+    },
+    {
+      "after": "2024-06-01T00:00:00+00:00",
+      "expected": {
+        "at": "2024-06-02T00:00:00+00:00",
+        "dst_adjustment": null,
+        "local_time": "00:00"
+      },
+      "name": "sunday is zero",
+      "schedule": {
+        "days_of_month": null,
+        "days_of_week": [
+          0
+        ],
+        "dst_ambiguous": "first",
+        "dst_nonexistent": "shift_forward",
+        "kind": "calendar",
+        "missed_grace_seconds": 7200,
+        "months": null,
+        "on_missed": "skip",
+        "times": [
+          "00:00"
+        ],
+        "timezone": "UTC"
+      }
+    },
+    {
+      "after": "2024-01-01T00:00:00+00:00",
+      "expected": {
+        "at": "2024-09-13T00:00:00+00:00",
+        "dst_adjustment": null,
+        "local_time": "00:00"
+      },
+      "name": "day of month and day of week are ANDed, not ORed",
+      "schedule": {
+        "days_of_month": [
+          13
+        ],
+        "days_of_week": [
+          5
+        ],
+        "dst_ambiguous": "first",
+        "dst_nonexistent": "shift_forward",
+        "kind": "calendar",
+        "missed_grace_seconds": 7200,
+        "months": null,
+        "on_missed": "skip",
+        "times": [
+          "00:00"
+        ],
+        "timezone": "UTC"
+      }
+    },
+    {
+      "after": "2024-03-01T00:00:00+00:00",
+      "expected": {
+        "at": "2028-02-29T00:00:00+00:00",
+        "dst_adjustment": null,
+        "local_time": "00:00"
+      },
+      "name": "29 february, four years away",
+      "schedule": {
+        "days_of_month": [
+          29
+        ],
+        "days_of_week": null,
+        "dst_ambiguous": "first",
+        "dst_nonexistent": "shift_forward",
+        "kind": "calendar",
+        "missed_grace_seconds": 7200,
+        "months": [
+          2
+        ],
+        "on_missed": "skip",
+        "times": [
+          "00:00"
+        ],
+        "timezone": "UTC"
+      }
+    },
+    {
+      "after": "2024-03-30T12:00:00+00:00",
+      "expected": {
+        "at": "2024-03-31T01:00:00+00:00",
+        "dst_adjustment": "shifted_forward",
+        "local_time": "02:30"
+      },
+      "name": "spring forward, shift to the first instant that exists",
+      "schedule": {
+        "days_of_month": null,
+        "days_of_week": null,
+        "dst_ambiguous": "first",
+        "dst_nonexistent": "shift_forward",
+        "kind": "calendar",
+        "missed_grace_seconds": 7200,
+        "months": null,
+        "on_missed": "skip",
+        "times": [
+          "02:30"
+        ],
+        "timezone": "Europe/Berlin"
+      }
+    },
+    {
+      "after": "2024-03-30T12:00:00+00:00",
+      "expected": {
+        "at": "2024-04-01T00:30:00+00:00",
+        "dst_adjustment": null,
+        "local_time": "02:30"
+      },
+      "name": "spring forward, skip",
+      "schedule": {
+        "days_of_month": null,
+        "days_of_week": null,
+        "dst_ambiguous": "first",
+        "dst_nonexistent": "skip",
+        "kind": "calendar",
+        "missed_grace_seconds": 7200,
+        "months": null,
+        "on_missed": "skip",
+        "times": [
+          "02:30"
+        ],
+        "timezone": "Europe/Berlin"
+      }
+    },
+    {
+      "after": "2024-10-05T00:00:00+00:00",
+      "expected": {
+        "at": "2024-10-05T15:30:00+00:00",
+        "dst_adjustment": "shifted_forward",
+        "local_time": "02:15"
+      },
+      "name": "spring forward, a 30-minute gap shifts 30 minutes",
+      "schedule": {
+        "days_of_month": null,
+        "days_of_week": null,
+        "dst_ambiguous": "first",
+        "dst_nonexistent": "shift_forward",
+        "kind": "calendar",
+        "missed_grace_seconds": 7200,
+        "months": null,
+        "on_missed": "skip",
+        "times": [
+          "02:15"
+        ],
+        "timezone": "Australia/Lord_Howe"
+      }
+    },
+    {
+      "after": "2024-10-26T12:00:00+00:00",
+      "expected": {
+        "at": "2024-10-27T00:30:00+00:00",
+        "dst_adjustment": "ambiguous_first",
+        "local_time": "02:30"
+      },
+      "name": "fall back, first occurrence",
+      "schedule": {
+        "days_of_month": null,
+        "days_of_week": null,
+        "dst_ambiguous": "first",
+        "dst_nonexistent": "shift_forward",
+        "kind": "calendar",
+        "missed_grace_seconds": 7200,
+        "months": null,
+        "on_missed": "skip",
+        "times": [
+          "02:30"
+        ],
+        "timezone": "Europe/Berlin"
+      }
+    },
+    {
+      "after": "2024-10-26T12:00:00+00:00",
+      "expected": {
+        "at": "2024-10-27T01:30:00+00:00",
+        "dst_adjustment": "ambiguous_second",
+        "local_time": "02:30"
+      },
+      "name": "fall back, second occurrence",
+      "schedule": {
+        "days_of_month": null,
+        "days_of_week": null,
+        "dst_ambiguous": "second",
+        "dst_nonexistent": "shift_forward",
+        "kind": "calendar",
+        "missed_grace_seconds": 7200,
+        "months": null,
+        "on_missed": "skip",
+        "times": [
+          "02:30"
+        ],
+        "timezone": "Europe/Berlin"
+      }
+    },
+    {
+      "after": "2024-10-26T12:00:00+00:00",
+      "expected": {
+        "at": "2024-10-27T00:30:00+00:00",
+        "dst_adjustment": "ambiguous_first",
+        "local_time": "02:30"
+      },
+      "name": "fall back, both occurrences, the first of the two",
+      "schedule": {
+        "days_of_month": null,
+        "days_of_week": null,
+        "dst_ambiguous": "both",
+        "dst_nonexistent": "shift_forward",
+        "kind": "calendar",
+        "missed_grace_seconds": 7200,
+        "months": null,
+        "on_missed": "skip",
+        "times": [
+          "02:30"
+        ],
+        "timezone": "Europe/Berlin"
+      }
+    },
+    {
+      "after": "2024-10-27T00:45:00+00:00",
+      "expected": {
+        "at": "2024-10-27T01:30:00+00:00",
+        "dst_adjustment": "ambiguous_second",
+        "local_time": "02:30"
+      },
+      "name": "fall back, both occurrences, the second of the two",
+      "schedule": {
+        "days_of_month": null,
+        "days_of_week": null,
+        "dst_ambiguous": "both",
+        "dst_nonexistent": "shift_forward",
+        "kind": "calendar",
+        "missed_grace_seconds": 7200,
+        "months": null,
+        "on_missed": "skip",
+        "times": [
+          "02:30"
+        ],
+        "timezone": "Europe/Berlin"
+      }
+    },
+    {
+      "after": "2024-03-30T12:00:00+00:00",
+      "expected": {
+        "at": "2024-03-31T00:30:00+00:00",
+        "dst_adjustment": null,
+        "local_time": "01:30"
+      },
+      "name": "a time outside the gap on a transition night is unaffected",
+      "schedule": {
+        "days_of_month": null,
+        "days_of_week": null,
+        "dst_ambiguous": "first",
+        "dst_nonexistent": "shift_forward",
+        "kind": "calendar",
+        "missed_grace_seconds": 7200,
+        "months": null,
+        "on_missed": "skip",
+        "times": [
+          "01:30"
+        ],
+        "timezone": "Europe/Berlin"
+      }
+    }
+  ]
+}

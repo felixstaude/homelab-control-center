@@ -50,6 +50,7 @@ import (
 const (
 	EnvControllerURL    = "HCC_AGENT_CONTROLLER_URL"
 	EnvCredentialFile   = "HCC_AGENT_CREDENTIAL_FILE"
+	EnvConfigFile       = "HCC_AGENT_CONFIG_FILE"
 	EnvEnrollmentToken  = "HCC_AGENT_ENROLLMENT_TOKEN" //nolint:gosec // a variable name, not a credential
 	EnvEnrollmentFile   = "HCC_AGENT_ENROLLMENT_TOKEN_FILE"
 	EnvCAFile           = "HCC_AGENT_CA_FILE"
@@ -66,6 +67,19 @@ const (
 // replace by hand, it must survive a package upgrade, and /etc is where a
 // Debian administrator looks for a service's secrets.
 const DefaultCredentialFile = "/etc/hcc-agent/credential"
+
+// DefaultConfigFile is where the agent stores the configuration the controller
+// gave it.
+//
+// Beside the credential, in the same 0700 directory. Not under /var/lib,
+// which is where mutable state conventionally lives, for one reason that
+// outweighs the convention: the agent must be able to start and collect with
+// its last known good configuration before anything else is mounted or
+// available, and /etc is the directory that is always there. The file is
+// controller-owned rather than operator-edited — an operator who changes it
+// will have it overwritten on the next connection — and the deployment
+// documentation says so.
+const DefaultConfigFile = "/etc/hcc-agent/config.json"
 
 // LogFormat selects the log encoding.
 type LogFormat string
@@ -108,6 +122,12 @@ type Config struct {
 	// CredentialFile is the path to the long-lived agent credential.
 	CredentialFile string
 
+	// ConfigFile is where the controller-supplied monitoring configuration is
+	// stored. Written atomically on every accepted configuration, read at
+	// startup so a restarted agent collects immediately rather than waiting
+	// for the controller.
+	ConfigFile string
+
 	// CAFile optionally points at a PEM bundle to trust in addition to the
 	// system roots. For an internal CA the operator would rather not install
 	// host-wide.
@@ -130,6 +150,7 @@ type Config struct {
 func defaults() Config {
 	return Config{
 		CredentialFile:   DefaultCredentialFile,
+		ConfigFile:       DefaultConfigFile,
 		ShutdownTimeout:  DefaultShutdownGrace,
 		ReconnectMinWait: DefaultReconnectMin,
 		ReconnectMaxWait: DefaultReconnectMax,
@@ -170,6 +191,9 @@ func Load(lookupEnv func(string) (string, bool)) (Config, error) {
 	}
 	if value, ok := lookupEnv(EnvCredentialFile); ok && strings.TrimSpace(value) != "" {
 		cfg.CredentialFile = strings.TrimSpace(value)
+	}
+	if value, ok := lookupEnv(EnvConfigFile); ok && strings.TrimSpace(value) != "" {
+		cfg.ConfigFile = strings.TrimSpace(value)
 	}
 	if value, ok := lookupEnv(EnvCAFile); ok {
 		cfg.CAFile = strings.TrimSpace(value)
@@ -284,6 +308,17 @@ func (c *Config) Validate() error {
 
 	if strings.TrimSpace(c.CredentialFile) == "" {
 		problems = append(problems, fmt.Sprintf("%s must not be empty", EnvCredentialFile))
+	}
+
+	if strings.TrimSpace(c.ConfigFile) == "" {
+		problems = append(problems, fmt.Sprintf("%s must not be empty", EnvConfigFile))
+	} else if c.ConfigFile == c.CredentialFile {
+		// Caught explicitly, because the failure otherwise is that the first
+		// accepted configuration overwrites the credential and the agent
+		// locks itself out of its own host — recoverable only by re-enrolling.
+		problems = append(problems, fmt.Sprintf(
+			"%s and %s must not be the same path", EnvConfigFile, EnvCredentialFile,
+		))
 	}
 
 	if c.ShutdownTimeout <= 0 {

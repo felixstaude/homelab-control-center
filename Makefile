@@ -174,8 +174,20 @@ check: check-docs check-contract check-server check-web check-agent ## Run the l
 	@echo "✓ All checks passed"
 
 .PHONY: check-contract
-check-contract: ## Fail if the API contract changed without regenerating the snapshot
+check-contract: ## Fail if a generated contract changed without being regenerated
+# Two contracts, both generated from the controller and committed:
+#   - the OpenAPI schema the browser client's hand-written types are checked
+#     against (ADR-037);
+#   - the monitoring module registry and the calendar cases, which the Go agent
+#     and the browser client each hold their own copy of.
+# Checking both here means a change on one side that is not reflected on the
+# others fails in the same gate rather than drifting.
 	@./scripts/openapi-snapshot.sh --check
+	@./scripts/contracts.sh --check
+
+.PHONY: contracts
+contracts: ## Regenerate the cross-language contract files
+	@./scripts/contracts.sh
 
 .PHONY: check-docs
 check-docs: ## Validate documentation links, anchors, ADR numbering and roadmap

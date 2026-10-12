@@ -40,6 +40,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/felixstaude/homelab-control-center/agents/linux/internal/agent"
@@ -48,6 +49,7 @@ import (
 	"github.com/felixstaude/homelab-control-center/agents/linux/internal/controller"
 	"github.com/felixstaude/homelab-control-center/agents/linux/internal/credentials"
 	"github.com/felixstaude/homelab-control-center/agents/linux/internal/logging"
+	"github.com/felixstaude/homelab-control-center/agents/linux/internal/monitoring"
 	"github.com/felixstaude/homelab-control-center/agents/linux/internal/protocol"
 )
 
@@ -301,6 +303,39 @@ func runAgent(args []string, _, stderr io.Writer) int {
 // deliberately no flag that prints it: the credential is in a file the
 // operator can read if they are entitled to, and a command that printed it
 // would put it in shell history and in whatever they piped it to.
+// reportConfiguration prints what this agent is set up to collect.
+//
+// Part of `status` because it answers the second question an operator asks
+// after "is this host enrolled": "and is it actually collecting anything?".
+// Without it the answer requires reading a JSON file by hand, and the common
+// case — enrolled, connected, collecting nothing because no module has been
+// enabled — would look identical to a fault.
+//
+// Never fatal, and the three outcomes are deliberately distinguishable:
+// "none" means the controller has not sent one yet, "unusable" means the file
+// is there and broken, and a version means it is in force. Reporting "none"
+// for a corrupt file would hide exactly the problem this is meant to surface.
+func reportConfiguration(path string, stdout io.Writer) {
+	stored, err := monitoring.Load(path)
+	switch {
+	case errors.Is(err, monitoring.ErrNoStoredConfig):
+		fmt.Fprintf(stdout, "Configuration:   none yet; the controller sends one on connect\n")
+	case err != nil:
+		fmt.Fprintf(stdout, "Configuration:   UNUSABLE (%v)\n", err)
+	default:
+		enabled := stored.Document.EnabledModules()
+		fmt.Fprintf(stdout, "Configuration:   v%d\n", stored.Document.Version)
+		if len(enabled) == 0 {
+			// Said in words rather than printed as an empty list, because
+			// "collecting nothing" is the default state and an operator
+			// looking at a blank line cannot tell it from a rendering fault.
+			fmt.Fprintf(stdout, "Modules:         none enabled\n")
+		} else {
+			fmt.Fprintf(stdout, "Modules:         %s\n", strings.Join(enabled, ", "))
+		}
+	}
+}
+
 func runStatus(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("hcc-agent status", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -312,6 +347,7 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 
 	fmt.Fprintf(stdout, "Controller:      %s\n", cfg.ControllerURL)
 	fmt.Fprintf(stdout, "Credential file: %s\n", cfg.CredentialFile)
+	fmt.Fprintf(stdout, "Config file:     %s\n", cfg.ConfigFile)
 
 	// The controller URL is checked here, not only by `enroll` and `run`.
 	//
@@ -338,6 +374,7 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 	case err == nil:
 		fmt.Fprintf(stdout, "Enrolled:        yes\n")
 		fmt.Fprintf(stdout, "Protocol:        v%d\n", protocol.Version)
+		reportConfiguration(cfg.ConfigFile, stdout)
 		return exitOK
 	case errors.Is(err, credentials.ErrNotEnrolled):
 		fmt.Fprintf(stdout, "Enrolled:        no\n\n")

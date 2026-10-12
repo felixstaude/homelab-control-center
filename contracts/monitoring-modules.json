@@ -1,0 +1,171 @@
+{
+  "document_version": 1,
+  "max_interval_seconds": 2592000,
+  "min_interval_seconds": 1,
+  "modules": [
+    {
+      "allows_duplicate_runs": true,
+      "data_schema_version": 1,
+      "default_interval_seconds": 10,
+      "id": "cpu",
+      "metrics": [
+        {
+          "id": "utilisation",
+          "kind": "gauge",
+          "label_keys": [],
+          "name": "CPU utilisation",
+          "unit": "percent"
+        },
+        {
+          "id": "core_utilisation",
+          "kind": "gauge",
+          "label_keys": [
+            "core"
+          ],
+          "name": "Per-core utilisation",
+          "unit": "percent"
+        },
+        {
+          "id": "logical_cpus",
+          "kind": "gauge",
+          "label_keys": [],
+          "name": "Logical CPUs",
+          "unit": "count"
+        }
+      ],
+      "min_interval_seconds": 1,
+      "name": "CPU utilisation",
+      "platform": "linux",
+      "requires_privileges": false,
+      "schedule_kinds": [
+        "interval"
+      ]
+    },
+    {
+      "allows_duplicate_runs": true,
+      "data_schema_version": 1,
+      "default_interval_seconds": 10,
+      "id": "memory",
+      "metrics": [
+        {
+          "id": "utilisation",
+          "kind": "gauge",
+          "label_keys": [],
+          "name": "Memory used",
+          "unit": "percent"
+        },
+        {
+          "id": "total",
+          "kind": "gauge",
+          "label_keys": [],
+          "name": "Total memory",
+          "unit": "bytes"
+        },
+        {
+          "id": "available",
+          "kind": "gauge",
+          "label_keys": [],
+          "name": "Available memory",
+          "unit": "bytes"
+        },
+        {
+          "id": "used",
+          "kind": "gauge",
+          "label_keys": [],
+          "name": "Used memory",
+          "unit": "bytes"
+        }
+      ],
+      "min_interval_seconds": 1,
+      "name": "Memory",
+      "platform": "linux",
+      "requires_privileges": false,
+      "schedule_kinds": [
+        "interval"
+      ]
+    },
+    {
+      "allows_duplicate_runs": true,
+      "data_schema_version": 1,
+      "default_interval_seconds": 10,
+      "id": "swap",
+      "metrics": [
+        {
+          "id": "utilisation",
+          "kind": "gauge",
+          "label_keys": [],
+          "name": "Swap used",
+          "unit": "percent"
+        },
+        {
+          "id": "total",
+          "kind": "gauge",
+          "label_keys": [],
+          "name": "Total swap",
+          "unit": "bytes"
+        },
+        {
+          "id": "used",
+          "kind": "gauge",
+          "label_keys": [],
+          "name": "Used swap",
+          "unit": "bytes"
+        }
+      ],
+      "min_interval_seconds": 1,
+      "name": "Swap",
+      "platform": "linux",
+      "requires_privileges": false,
+      "schedule_kinds": [
+        "interval"
+      ]
+    },
+    {
+      "allows_duplicate_runs": true,
+      "data_schema_version": 1,
+      "default_interval_seconds": 30,
+      "id": "load",
+      "metrics": [
+        {
+          "id": "average",
+          "kind": "gauge",
+          "label_keys": [
+            "window"
+          ],
+          "name": "Load average",
+          "unit": "load"
+        }
+      ],
+      "min_interval_seconds": 5,
+      "name": "Load average",
+      "platform": "linux",
+      "requires_privileges": false,
+      "schedule_kinds": [
+        "interval"
+      ]
+    },
+    {
+      "allows_duplicate_runs": true,
+      "data_schema_version": 1,
+      "default_interval_seconds": 300,
+      "id": "uptime",
+      "metrics": [
+        {
+          "id": "seconds",
+          "kind": "gauge",
+          "label_keys": [],
+          "name": "System uptime",
+          "unit": "seconds"
+        }
+      ],
+      "min_interval_seconds": 60,
+      "name": "System uptime",
+      "platform": "linux",
+      "requires_privileges": false,
+      "schedule_kinds": [
+        "interval"
+      ]
+    }
+  ],
+  "registry_version": 1
+}

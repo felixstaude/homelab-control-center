@@ -115,6 +115,14 @@ jobs:
         working-directory: .
         run: ./scripts/openapi-snapshot.sh --check
 
+      - name: Verify the cross-language contracts are current
+        # The monitoring module registry exists three times — Python, Go and
+        # TypeScript — and the Go and TypeScript copies are tested against
+        # this generated file. A stale one means those tests are asserting
+        # agreement with a registry that has moved.
+        working-directory: .
+        run: ./scripts/contracts.sh --check
+
   # ==========================================================================
   # Frontend
   # ==========================================================================
