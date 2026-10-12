@@ -207,7 +207,19 @@ export function expectCsrfHeader(request: RecordedRequest | undefined): void {
   expect(request?.headers['x-csrf-token']).toBe(TEST_CSRF_TOKEN);
 }
 
-/** A role other than the default administrator. */
+/**
+ * A user with a specific role.
+ *
+ * The usernames deliberately do not resemble the role labels the interface
+ * renders ("Viewer", "Operator", "Administrator"): a fixture named `Operator`
+ * makes `getByText('Operator')` ambiguous, which looks like a component bug.
+ */
+const USERNAME_BY_ROLE: Record<UserRole, string> = {
+  viewer: 'Ren',
+  operator: 'Casey',
+  admin: 'Morgan',
+};
+
 export function userWithRole(role: UserRole): CurrentUser {
-  return makeUser({ role, username: role === 'viewer' ? 'ReadOnly' : 'Operator' });
+  return makeUser({ role, username: USERNAME_BY_ROLE[role] });
 }
