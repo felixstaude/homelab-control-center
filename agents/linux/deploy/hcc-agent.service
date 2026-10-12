@@ -1,0 +1,120 @@
+; systemd unit for the Homelab Control Center Linux agent.
+;
+; Install to /etc/systemd/system/hcc-agent.service. See
+; agents/linux/deploy/README.md for the whole procedure.
+;
+; Every hardening directive below is here because the agent is a long-lived
+; process on somebody else's server, and a monitoring agent is a tempting
+; place to put a privilege it does not need. The comments say what each one
+; prevents rather than restating what it does.
+
+[Unit]
+Description=Homelab Control Center agent
+Documentation=https://github.com/felixstaude/homelab-control-center
+; The agent dials out, so it needs the network to be routable — but not to
+; wait for it. `network-online.target` would delay boot on a machine whose
+; network comes up late, and the agent's own backoff already handles a
+; controller it cannot reach yet. Wanting `network.target` is the honest
+; dependency: "after the stack is up", not "after something answers".
+After=network.target
+Wants=network.target
+
+; Give up after five failures in five minutes rather than restarting forever.
+; A host in this state needs an operator, and a service that keeps restarting
+; is a service nobody notices is broken.
+;
+; In [Unit] and not [Service]: systemd reads these here and ignores them in
+; [Service], so the limit written in the obvious place has no effect at all.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/hcc-agent run
+EnvironmentFile=/etc/hcc-agent/agent.env
+
+; --- Identity ---------------------------------------------------------------
+; A dedicated system account with no login shell and no home directory.
+; DynamicUser is deliberately *not* used: the credential file in /etc has to
+; be readable by a stable uid across restarts, and a dynamic uid would mean
+; either chowning it on every start or making it world-readable.
+User=hcc-agent
+Group=hcc-agent
+
+; --- Restart policy ---------------------------------------------------------
+; `on-failure`, not `always`. The agent exits non-zero for the two conditions
+; a restart cannot fix — a revoked credential (1) and no credential at all
+; (3) — and `always` would hide both behind an endless restart loop while
+; `systemctl status` reported the service as running. With `on-failure` plus
+; the backoff below, a genuinely transient failure recovers and a
+; needs-a-human failure stays visible in `systemctl status`.
+Restart=on-failure
+RestartSec=10s
+; The rate limit that goes with this lives in [Unit] above, because systemd
+; reads StartLimit* from there and *ignores* them here — silently, until
+; `systemd-analyze verify` is run. Caught that way rather than by reading the
+; manual, which is the only reason it is not still wrong.
+
+; --- Filesystem -------------------------------------------------------------
+; The agent reads one file and writes none while running. `enroll` writes the
+; credential and is run by an administrator directly, not through this unit,
+; which is why this unit needs no write access to /etc at all.
+ProtectSystem=strict
+ProtectHome=yes
+ReadOnlyPaths=/etc/hcc-agent
+PrivateTmp=yes
+; No writable directory is granted. If a future collector needs scratch space
+; it should be an explicit StateDirectory= rather than a relaxation of this.
+
+; --- Privileges -------------------------------------------------------------
+; The agent is never root and never needs a capability. Both are stated
+; rather than left to the default, so a future ExecStart run as root would
+; still gain nothing.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateUsers=yes
+
+; --- Kernel and devices -----------------------------------------------------
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectProc=invisible
+ProcSubset=pid
+PrivateDevices=yes
+DevicePolicy=closed
+
+; --- Syscalls and address families ------------------------------------------
+; @system-service minus the groups a network client has no business in.
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount @debug @module @reboot @swap @obsolete
+SystemCallArchitectures=native
+; IPv4, IPv6 and Unix only. AF_NETLINK and AF_PACKET are what a process uses
+; to read the host's network configuration or sniff traffic, and this agent
+; does neither.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+; --- Resource bounds --------------------------------------------------------
+; A monitoring agent that becomes the reason a server fell over has failed at
+; its job in the most embarrassing way available. These are generous for what
+; the agent does and firm enough that a leak is bounded.
+MemoryMax=128M
+TasksMax=64
+LimitNOFILE=1024
+
+; --- Logging ----------------------------------------------------------------
+; The agent logs to stderr; journald captures it. `journalctl -u hcc-agent` is
+; the documented way to read it.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hcc-agent
+
+[Install]
+WantedBy=multi-user.target
