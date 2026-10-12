@@ -3,6 +3,7 @@ import { Menu, X } from 'lucide-react';
 import { useState } from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
 
+import { AccountMenu } from '@/components/layout/account-menu';
 import { Brand } from '@/components/layout/brand';
 import { NAV_ITEMS } from '@/components/layout/navigation';
 import { SidebarNav } from '@/components/layout/sidebar-nav';
@@ -46,12 +47,8 @@ export function AppShell() {
           <SidebarNav />
         </div>
         <Separator />
-        <div className="px-4 py-3">
-          <p className="text-text-faint text-[11px] leading-relaxed">
-            Phase 0 foundation
-            <br />
-            No monitoring data is collected yet.
-          </p>
+        <div className="px-2 py-2">
+          <AccountMenu />
         </div>
       </aside>
 
@@ -78,6 +75,12 @@ export function AppShell() {
                   setMobileNavOpen(false);
                 }}
               />
+            </div>
+            {/* Repeated in the drawer: without it, a phone user has no way to
+             * sign out, since the desktop sidebar is hidden below `lg`. */}
+            <Separator />
+            <div className="px-2 py-2">
+              <AccountMenu />
             </div>
           </Dialog.Content>
         </Dialog.Portal>
