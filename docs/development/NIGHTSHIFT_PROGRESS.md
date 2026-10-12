@@ -82,10 +82,10 @@ Reasons are in the ADRs; the summary is:
 | 1. Preflight and architecture | ✅ |
 | 2. Configuration persistence | ✅ |
 | 3. Configuration APIs | ✅ |
-| 4. Configuration synchronisation | ✅ controller half; agent half next |
-| 5. Scheduling engine | ⬜ |
-| 6. Core collectors | ⬜ |
-| 7. Telemetry transport | ⬜ |
+| 4. Configuration synchronisation | ✅ |
+| 5. Scheduling engine | ✅ |
+| 6. Core collectors | ✅ built and tested; **not yet wired into the agent** |
+| 7. Telemetry transport | ⬜ next — wires 5 and 6 into the agent |
 | 8. Historical storage | ⬜ |
 | 9. Retention foundation | ⬜ |
 | 10. Host monitoring frontend | ⬜ |
@@ -107,6 +107,8 @@ Reasons are in the ADRs; the summary is:
 | `30c3a9f` | Milestone 1.8 (10/10): the three defects the full suite found |
 | `3bb73b0` | NIGHTSHIFT (1/?): configuration persistence and the contracts under it |
 | `6bfb3ac` | NIGHTSHIFT (2/?): the configuration API, split across two gates |
+| `161c73b` | NIGHTSHIFT (3/?): configuration on the agent socket, controller half |
+| `8add7c6` | NIGHTSHIFT (4/?): the agent applies, acknowledges and refuses configuration |
 
 ---
 
@@ -124,9 +126,11 @@ Re-run these; do not trust the numbers.
 
 ## Next exact action
 
-Stage 4's agent half, in Go: `internal/protocol` gains the five configuration
-frames, `internal/config` gains the document model and its validation,
-`internal/agent` applies atomically and acknowledges by version **and**
-checksum, keeping the last known good document on a rejection.
+Stage 7, which is also what makes stages 5 and 6 live: a bounded telemetry
+queue in the agent, the telemetry frames, and controller-side ingestion. The
+scheduler and the five collectors are built and tested but **nothing
+constructs them yet** — `internal/agent` does not build a `scheduler.Scheduler`
+or pass it the applied document, so the binary carries them as dead code until
+the queue gives the scheduler a sink to submit to.
 
-Then Stage 5 (the agent scheduler) and Stage 6 (the collectors).
+Then Stage 8 (historical storage) and Stage 9 (retention).
