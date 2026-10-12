@@ -148,6 +148,15 @@ class CurrentUserResponse(BaseModel):
 
     user_id: str
     username: str = Field(description="Display form, as the user entered it.")
+    display_name: str | None = Field(
+        default=None,
+        description=(
+            "Human-readable label, or null when the account has none. Added "
+            "in milestone 1.7 so the console can greet the user by the name "
+            "an administrator gave them rather than by their login name. Null "
+            "means 'no separate label' — render the username."
+        ),
+    )
     # The enum, not `str`: it puts the closed role set into the OpenAPI schema,
     # so a client can be typed against the three roles that exist rather than
     # against "some string". ADR-013 makes adding a role a reviewed migration;
@@ -188,13 +197,20 @@ def _client_ip(request: Request, settings: Settings) -> str:
     )
 
 
-def _set_session_cookies(response: Response, issued: IssuedSession, settings: Settings) -> None:
+def set_session_cookies(response: Response, issued: IssuedSession, settings: Settings) -> None:
     """Attach the session and CSRF cookies.
 
     ``max_age`` matches the session's absolute lifetime, so the browser
     discards the cookie at roughly the same moment the server stops honouring
     it. The server remains the authority either way: an expired session is
     rejected on lookup regardless of what the browser kept.
+
+    Public since milestone 1.7, because login is no longer the only endpoint
+    that issues a session: a password change rotates it (ADR-040) and must set
+    exactly these attributes. A second copy of this function would be a second
+    place for ``HttpOnly``, ``Secure`` or ``SameSite`` to drift, and a cookie
+    written with different attributes is treated by the browser as a different
+    cookie — so the old one would survive alongside it.
     """
     secure = settings.effective_cookie_secure
     max_age = settings.session_lifetime_seconds
@@ -301,11 +317,12 @@ async def login(
     if authenticated is None:  # pragma: no cover - would mean a write failed
         raise InvalidCredentialsError
 
-    _set_session_cookies(response, issued, settings)
+    set_session_cookies(response, issued, settings)
 
     return CurrentUserResponse(
         user_id=str(authenticated.user.id),
         username=authenticated.user.username,
+        display_name=authenticated.user.display_name,
         role=authenticated.user.role,
         is_active=authenticated.user.is_active,
         session_expires_at=issued.expires_at.isoformat(),
@@ -360,6 +377,7 @@ async def me(current: CurrentSessionDep) -> CurrentUserResponse:
     return CurrentUserResponse(
         user_id=str(current.user.id),
         username=current.user.username,
+        display_name=current.user.display_name,
         role=current.user.role,
         is_active=current.user.is_active,
         session_expires_at=current.session.expires_at.isoformat(),

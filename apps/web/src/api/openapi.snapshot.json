@@ -1,6 +1,66 @@
 {
   "components": {
     "schemas": {
+      "AccountResponse": {
+        "description": "The caller's own account.\n\nOverlaps ``CurrentUserResponse`` from ``/auth/me`` and is deliberately a\nseparate model. ``/auth/me`` answers \"who am I, and what CSRF token should\nI send\" \u2014 it is part of the authentication handshake and carries the CSRF\ntoken. This answers \"what does my account look like\", carries no token,\nand is free to grow fields that the authentication path should not.",
+        "properties": {
+          "created_at": {
+            "description": "ISO-8601.",
+            "title": "Created At",
+            "type": "string"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null when the account has no separate label; render the username.",
+            "title": "Display Name"
+          },
+          "is_active": {
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "last_login_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "ISO-8601, or null if this account has never signed in. On the caller's own account this is the *previous* sign-in's timestamp only until the current one records it, which happens at login \u2014 so it reflects the current session.",
+            "title": "Last Login At"
+          },
+          "role": {
+            "$ref": "#/components/schemas/UserRole"
+          },
+          "user_id": {
+            "title": "User Id",
+            "type": "string"
+          },
+          "username": {
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "username",
+          "display_name",
+          "role",
+          "is_active",
+          "created_at",
+          "last_login_at"
+        ],
+        "title": "AccountResponse",
+        "type": "object"
+      },
       "ApiInfo": {
         "description": "Metadata describing this API version.",
         "properties": {
@@ -28,6 +88,168 @@
         "title": "ApiInfo",
         "type": "object"
       },
+      "AuditActorResponse": {
+        "description": "An account referenced by an event.\n\n``username`` is null when the account no longer exists. The id is always\npresent, because that is what the trail actually recorded \u2014 see\n:mod:`hcc.services.audit` on why names are joined rather than\nsnapshotted.",
+        "properties": {
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "user_id": {
+            "title": "User Id",
+            "type": "string"
+          },
+          "username": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null when the referenced account no longer exists. Render the id.",
+            "title": "Username"
+          }
+        },
+        "required": [
+          "user_id",
+          "username"
+        ],
+        "title": "AuditActorResponse",
+        "type": "object"
+      },
+      "AuditEventResponse": {
+        "description": "One recorded operation.",
+        "properties": {
+          "action": {
+            "description": "A dotted action identifier such as `user.role_changed`. A string rather than a closed enum, because the vocabulary grows with every milestone that records something new (ADR-038) \u2014 a client must render an unrecognised value rather than failing on it.",
+            "title": "Action",
+            "type": "string"
+          },
+          "actor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AuditActorResponse"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Who performed it, or null for an operation with no authenticated actor."
+          },
+          "details": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Small structured context the writer constructed. Never credential material and never a request body.",
+            "title": "Details"
+          },
+          "event_id": {
+            "title": "Event Id",
+            "type": "string"
+          },
+          "occurred_at": {
+            "description": "ISO-8601, assigned by the database.",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "outcome": {
+            "description": "One of `success`, `denied`, `failure`.",
+            "title": "Outcome",
+            "type": "string"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Correlates with the server log for the same request.",
+            "title": "Request Id"
+          },
+          "target": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AuditActorResponse"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Which account it acted on, or null where the action has no target."
+          }
+        },
+        "required": [
+          "event_id",
+          "occurred_at",
+          "action",
+          "outcome",
+          "actor",
+          "target",
+          "request_id",
+          "details"
+        ],
+        "title": "AuditEventResponse",
+        "type": "object"
+      },
+      "AuditListResponse": {
+        "description": "A page of events, newest first.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AuditEventResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Pass as `cursor` for the next page. Null on the last page. Keyset rather than an offset, so events recorded while an operator is reading cannot duplicate or hide rows.",
+            "title": "Next Cursor"
+          },
+          "total": {
+            "description": "Events matching the filters, ignoring pagination.",
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor",
+          "total",
+          "limit"
+        ],
+        "title": "AuditListResponse",
+        "type": "object"
+      },
       "CurrentUserResponse": {
         "description": "The authenticated identity.\n\nCarries no password material and no session token. ``csrf_token`` is\nincluded because the client needs it to make state-changing requests, and\nit is useless without the session cookie.",
         "properties": {
@@ -35,6 +257,18 @@
             "description": "Send as the X-CSRF-Token header.",
             "title": "Csrf Token",
             "type": "string"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Human-readable label, or null when the account has none. Added in milestone 1.7 so the console can greet the user by the name an administrator gave them rather than by their login name. Null means 'no separate label' \u2014 render the username.",
+            "title": "Display Name"
           },
           "is_active": {
             "title": "Is Active",
@@ -177,6 +411,59 @@
         "title": "LogoutResponse",
         "type": "object"
       },
+      "PasswordChangeRequest": {
+        "additionalProperties": false,
+        "description": "Change the caller's own password.\n\nConfirmation of the new password is deliberately **not** a field. It is a\nclient-side guard against a typo in a masked input, and the server has\nnothing to compare it against that the client does not already have \u2014 so\nsending it would mean transmitting the new password twice for no gain. The\ninterface enforces the match before submitting.",
+        "properties": {
+          "current_password": {
+            "description": "Proof that the caller is the account's owner, not merely its session.",
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Current Password",
+            "type": "string"
+          },
+          "new_password": {
+            "description": "Subject to the standard policy.",
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "New Password",
+            "type": "string"
+          }
+        },
+        "required": [
+          "current_password",
+          "new_password"
+        ],
+        "title": "PasswordChangeRequest",
+        "type": "object"
+      },
+      "PasswordChangeResponse": {
+        "description": "What the password change did.\n\nNo password material, and no token: the replacement session travels in\n``Set-Cookie``, where the client cannot read it (``HttpOnly``) and does not\nneed to.",
+        "properties": {
+          "other_sessions_revoked": {
+            "description": "How many *other* sessions were ended. The current one was replaced rather than counted here, so zero means this was the only place the account was signed in.",
+            "title": "Other Sessions Revoked",
+            "type": "integer"
+          },
+          "session_expires_at": {
+            "description": "ISO-8601 expiry of the replacement session.",
+            "title": "Session Expires At",
+            "type": "string"
+          },
+          "status": {
+            "default": "password_changed",
+            "description": "Fixed marker.",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "other_sessions_revoked",
+          "session_expires_at"
+        ],
+        "title": "PasswordChangeResponse",
+        "type": "object"
+      },
       "ReadinessResponse": {
         "description": "Aggregate only: this endpoint is public.\n\nWhich dependency failed, and why, is logged server-side rather than\nreturned \u2014 see the module docstring.",
         "properties": {
@@ -195,6 +482,93 @@
         "title": "ReadinessResponse",
         "type": "object"
       },
+      "SessionListResponse": {
+        "description": "The caller's live sessions, newest first.",
+        "properties": {
+          "current_session_id": {
+            "description": "Always present and always one of `items`, so a client never has to infer which session it is using.",
+            "title": "Current Session Id",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SessionResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items",
+          "current_session_id"
+        ],
+        "title": "SessionListResponse",
+        "type": "object"
+      },
+      "SessionResponse": {
+        "description": "One of the caller's live sessions.\n\nCarries no token and no CSRF value \u2014 see the module docstring on why the\nid is nonetheless safe to return.",
+        "properties": {
+          "created_at": {
+            "description": "ISO-8601 sign-in time.",
+            "title": "Created At",
+            "type": "string"
+          },
+          "created_ip": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The client address recorded at sign-in, or null if none was available. Returned on the caller's own sessions only.",
+            "title": "Created Ip"
+          },
+          "expires_at": {
+            "description": "ISO-8601 absolute expiry. Never extended.",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "is_current": {
+            "description": "True for the session this request was made with.",
+            "title": "Is Current",
+            "type": "boolean"
+          },
+          "last_seen_at": {
+            "description": "ISO-8601 last activity. Advanced at most once per the configured touch interval, so it is accurate to within that interval rather than to the second.",
+            "title": "Last Seen At",
+            "type": "string"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "user_agent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The raw, truncated User-Agent header recorded at sign-in, or null when none was sent. Deliberately unparsed: a browser or operating-system label inferred from this string would be a guess presented as a fact, and would be wrong exactly for the unusual clients worth noticing.",
+            "title": "User Agent"
+          }
+        },
+        "required": [
+          "session_id",
+          "is_current",
+          "created_at",
+          "last_seen_at",
+          "expires_at",
+          "created_ip",
+          "user_agent"
+        ],
+        "title": "SessionResponse",
+        "type": "object"
+      },
       "SetupStatus": {
         "description": "Whether this installation has been initialized.\n\nDeliberately one field. See the module docstring for what is excluded and\nwhy.",
         "properties": {
@@ -210,6 +584,156 @@
         "title": "SetupStatus",
         "type": "object"
       },
+      "UserCreateRequest": {
+        "additionalProperties": false,
+        "description": "Create an account.\n\n``extra=\"forbid\"``: a request naming a field this model does not declare\nis rejected. That is the mass-assignment guard at the boundary \u2014 a\nforwarded ``password_hash`` or ``id`` fails validation rather than being\nsilently dropped, and a client that believed it set one finds out.",
+        "properties": {
+          "display_name": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional label, up to 64 characters. Blank or whitespace-only is stored as null.",
+            "title": "Display Name"
+          },
+          "is_active": {
+            "default": true,
+            "description": "Whether the account may sign in immediately.",
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "password": {
+            "description": "Initial password. Subject to the standard policy.",
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Password",
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/UserRole",
+            "default": "viewer",
+            "description": "Defaults to viewer \u2014 the least privilege. An account created without an explicit role is never an administrator."
+          },
+          "username": {
+            "description": "3 to 32 characters after normalization. Case-insensitively unique.",
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "username",
+          "password"
+        ],
+        "title": "UserCreateRequest",
+        "type": "object"
+      },
+      "UserListResponse": {
+        "description": "A page of accounts, and what a pager needs.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/UserResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "total": {
+            "description": "Accounts matching the filters, ignoring pagination.",
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "title": "UserListResponse",
+        "type": "object"
+      },
+      "UserResponse": {
+        "description": "One account, as an administrator sees it.\n\nAn allow-list. See the module docstring for what is deliberately absent\nand why \"absent\" is a stronger statement than \"excluded\".",
+        "properties": {
+          "active_session_count": {
+            "description": "Currently usable sessions. Counts the same thing session resolution does, including the idle timeout, so a session listed here will actually work.",
+            "title": "Active Session Count",
+            "type": "integer"
+          },
+          "created_at": {
+            "description": "ISO-8601 creation timestamp.",
+            "title": "Created At",
+            "type": "string"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Human-readable label, or null when the account has none. Null means 'no separate label', not 'unknown' \u2014 render the username.",
+            "title": "Display Name"
+          },
+          "is_active": {
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "last_login_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "ISO-8601, or null when the account has never signed in. Null must not be rendered as a date.",
+            "title": "Last Login At"
+          },
+          "role": {
+            "$ref": "#/components/schemas/UserRole"
+          },
+          "user_id": {
+            "title": "User Id",
+            "type": "string"
+          },
+          "username": {
+            "description": "Display form of the login name, as it was created.",
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "username",
+          "display_name",
+          "role",
+          "is_active",
+          "created_at",
+          "last_login_at",
+          "active_session_count"
+        ],
+        "title": "UserResponse",
+        "type": "object"
+      },
       "UserRole": {
         "description": "Roles a user account may hold.\n\nA closed set matching the authorization model in docs/ARCHITECTURE.md \u00a74.3.\nAdding a member requires a migration (``ALTER TYPE user_role ADD VALUE``),\nwhich is intentional: a new role changes the authorization surface and\nshould be a reviewed change rather than a configuration edit. See ADR-013.",
         "enum": [
@@ -219,6 +743,79 @@
         ],
         "title": "UserRole",
         "type": "string"
+      },
+      "UserUpdateRequest": {
+        "additionalProperties": false,
+        "description": "Change an account.\n\nEvery field is optional, and \"absent\" is distinguished from \"null\":\nomitting ``display_name`` leaves it alone, sending ``null`` clears it.\nPydantic cannot express that with a plain default, so\n:meth:`to_service_update` consults ``model_fields_set`` \u2014 the set of keys\nthe client actually sent.\n\n``username`` is deliberately **not** a field. Usernames are immutable; see\nADR-041.",
+        "properties": {
+          "display_name": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Send a string to set it, null to clear it, or omit the key to leave it unchanged.",
+            "title": "Display Name"
+          },
+          "is_active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Omit to leave unchanged.",
+            "title": "Is Active"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UserRole"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Omit to leave unchanged."
+          }
+        },
+        "title": "UserUpdateRequest",
+        "type": "object"
+      },
+      "hcc__api__v1__account__SessionRevocationResponse": {
+        "description": "The outcome of a revocation.",
+        "properties": {
+          "sessions_revoked": {
+            "title": "Sessions Revoked",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sessions_revoked"
+        ],
+        "title": "SessionRevocationResponse",
+        "type": "object"
+      },
+      "hcc__api__v1__users__SessionRevocationResponse": {
+        "description": "The outcome of revoking an account's sessions.",
+        "properties": {
+          "sessions_revoked": {
+            "description": "How many live sessions were ended. Zero means the account had none \u2014 the request succeeded and changed nothing.",
+            "title": "Sessions Revoked",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sessions_revoked"
+        ],
+        "title": "SessionRevocationResponse",
+        "type": "object"
       }
     }
   },
@@ -229,6 +826,466 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/account": {
+      "get": {
+        "description": "Return the caller's account details.\n\nReads from the user already loaded with the session, so this costs no\nadditional query.",
+        "operationId": "get_account_api_v1_account_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "No valid session."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "The caller's own account",
+        "tags": [
+          "account"
+        ]
+      }
+    },
+    "/api/v1/account/password": {
+      "post": {
+        "description": "Replace the caller's password, ending every session and issuing a new one.\n\nRequires the current password even though the caller already holds a valid\nsession. A session proves possession of a cookie; changing a credential\nshould require possession of the credential, so that a stolen session\ncannot be used to lock the real owner out of their own account.\n\nA wrong current password is **422, never 401**. The client treats 401 as\n\"your session has ended\" and signs the user out, so returning it here\nwould eject someone for a typo \u2014 see\n:class:`~hcc.services.account.InvalidCurrentPasswordError`.",
+        "operationId": "change_password_api_v1_account_password_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordChangeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PasswordChangeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "No valid session."
+          },
+          "403": {
+            "description": "CSRF validation failed."
+          },
+          "422": {
+            "description": "The current password did not verify, or the new one violates the policy. The two are distinguished by `error.code`."
+          },
+          "429": {
+            "description": "Too many attempts for this account. Carries Retry-After."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "Change the caller's own password",
+        "tags": [
+          "account"
+        ]
+      }
+    },
+    "/api/v1/account/sessions": {
+      "get": {
+        "description": "List every session that would currently authenticate the caller.\n\nOnly live ones. Expired and revoked rows are kept in the table so that\n\"when did this session end\" stays answerable, but they are not what\n\"where am I signed in\" means and listing them would bury the answer.",
+        "operationId": "list_sessions_api_v1_account_sessions_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "No valid session."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "The caller's active sessions",
+        "tags": [
+          "account"
+        ]
+      }
+    },
+    "/api/v1/account/sessions/revoke-others": {
+      "post": {
+        "description": "End every session except this one.\n\nDeclared before the ``{session_id}`` route below so that ``revoke-others``\nis not captured as a session id. FastAPI matches in declaration order, and\nthe parameter is typed as a UUID so the literal would in fact fall through\nwith a 422 rather than being mistaken for one \u2014 but relying on a\nvalidation failure for correct routing is the kind of thing that breaks\nthe day someone widens the type.",
+        "operationId": "revoke_other_sessions_api_v1_account_sessions_revoke_others_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hcc__api__v1__account__SessionRevocationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "No valid session."
+          },
+          "403": {
+            "description": "CSRF validation failed."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "Sign out of every other session",
+        "tags": [
+          "account"
+        ]
+      }
+    },
+    "/api/v1/account/sessions/{session_id}/revoke": {
+      "post": {
+        "description": "End one session.\n\nRevoking the current session is allowed \u2014 that is a sign-out, and the\nclient learns on its next request, which answers 401. Refusing it would\nmean one row in the list behaved differently from the others for no reason\nthe user could see.\n\nA session id belonging to another account returns 404, identically to one\nthat does not exist, so this cannot be used to discover whose sessions are\nlive.",
+        "operationId": "revoke_session_api_v1_account_sessions__session_id__revoke_post",
+        "parameters": [
+          {
+            "description": "The session to revoke.",
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "description": "The session to revoke.",
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hcc__api__v1__account__SessionRevocationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "No valid session."
+          },
+          "403": {
+            "description": "CSRF validation failed."
+          },
+          "404": {
+            "description": "No live session of the caller's has that id."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "Revoke one of the caller's sessions",
+        "tags": [
+          "account"
+        ]
+      }
+    },
+    "/api/v1/audit/actions": {
+      "get": {
+        "description": "Return the action identifiers this server can record.\n\nServed so the interface can offer a filter without hard-coding a list\nthat drifts from the server's. It describes what this build *writes*, not\nwhat the table *contains* \u2014 a stored event from an older or newer version\nmay carry an action absent from here, which is exactly why the filter\naccepts any string and the renderer tolerates an unknown one.\n\nA constant, so there is no query and nothing to paginate.",
+        "operationId": "list_audit_actions_api_v1_audit_actions_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Response List Audit Actions Api V1 Audit Actions Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "No valid session."
+          },
+          "403": {
+            "description": "Not an administrator."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "The action vocabulary this server writes",
+        "tags": [
+          "audit"
+        ]
+      }
+    },
+    "/api/v1/audit/events": {
+      "get": {
+        "description": "Return a page of audit events.",
+        "operationId": "list_audit_events_api_v1_audit_events_get",
+        "parameters": [
+          {
+            "description": "Exact action match. Not validated against the known vocabulary: an unknown value simply matches nothing, which is the right answer and avoids a 422 for an action a newer server recorded.",
+            "in": "query",
+            "name": "action",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Exact action match. Not validated against the known vocabulary: an unknown value simply matches nothing, which is the right answer and avoids a 422 for an action a newer server recorded.",
+              "title": "Action"
+            }
+          },
+          {
+            "description": "Events acting on this account.",
+            "in": "query",
+            "name": "target_user_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Events acting on this account.",
+              "title": "Target User Id"
+            }
+          },
+          {
+            "description": "Events performed by this account.",
+            "in": "query",
+            "name": "actor_user_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Events performed by this account.",
+              "title": "Actor User Id"
+            }
+          },
+          {
+            "description": "The `next_cursor` from a previous response, unmodified.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 256,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The `next_cursor` from a previous response, unmodified.",
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "No valid session."
+          },
+          "403": {
+            "description": "Not an administrator."
+          },
+          "422": {
+            "description": "The cursor is not valid."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "List audit events",
+        "tags": [
+          "audit"
+        ]
+      }
+    },
     "/api/v1/auth/login": {
       "post": {
         "description": "Verify credentials and issue a session.\n\nSession fixation is impossible by construction: the token is generated\nserver-side from a CSPRNG and nothing the client sends influences it. Any\nsession already presented is revoked before the new one is issued, so a\ntoken planted in the browser before login cannot survive it.",
@@ -461,6 +1518,538 @@
         "summary": "Whether first-run setup is complete",
         "tags": [
           "setup"
+        ]
+      }
+    },
+    "/api/v1/users": {
+      "get": {
+        "description": "Return a page of accounts.\n\n``limit`` is bounded by the query validation *and* clamped again in the\nservice. Two layers on purpose: this is the bound that stops an\nauthenticated caller asking the server to materialise the whole table, and\na bound enforced in only one place is one a future caller can route\naround.",
+        "operationId": "list_users_api_v1_users_get",
+        "parameters": [
+          {
+            "description": "Substring match against the normalized username. Folded the same way usernames are, so 'AD' matches 'admin'.",
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Substring match against the normalized username. Folded the same way usernames are, so 'AD' matches 'admin'.",
+              "title": "Search"
+            }
+          },
+          {
+            "description": "Exact role match.",
+            "in": "query",
+            "name": "role",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/UserRole"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Exact role match.",
+              "title": "Role"
+            }
+          },
+          {
+            "description": "Filter by account status. Omit for both.",
+            "in": "query",
+            "name": "is_active",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by account status. Omit for both.",
+              "title": "Is Active"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "No valid session."
+          },
+          "403": {
+            "description": "Not an administrator."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "List user accounts",
+        "tags": [
+          "users"
+        ]
+      },
+      "post": {
+        "description": "Create an account and return it.\n\nThe response carries **no password material** \u2014 not the plaintext that was\nsubmitted, not the hash, not a token. An administrator who needs to give\nthe password to its owner already has it: they chose it.",
+        "operationId": "create_user_api_v1_users_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "No valid session."
+          },
+          "403": {
+            "description": "Not an administrator."
+          },
+          "409": {
+            "description": "The username is already taken."
+          },
+          "422": {
+            "description": "The username, display name or password is invalid."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "Create a user account",
+        "tags": [
+          "users"
+        ]
+      }
+    },
+    "/api/v1/users/{user_id}": {
+      "get": {
+        "description": "Return one account.\n\n``user_id`` is typed as a UUID, so a malformed id is a 422 from the\nframework and never reaches a query.",
+        "operationId": "get_user_api_v1_users__user_id__get",
+        "parameters": [
+          {
+            "description": "The account's id.",
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "description": "The account's id.",
+              "format": "uuid",
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "No valid session."
+          },
+          "403": {
+            "description": "Not an administrator."
+          },
+          "404": {
+            "description": "No such account."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "Fetch one user account",
+        "tags": [
+          "users"
+        ]
+      },
+      "patch": {
+        "description": "Apply an administrative change.\n\nPartial by design: a request naming only ``role`` leaves the display name\nand status alone. An empty body is accepted and changes nothing, which is\nthe honest answer \u2014 refusing it would mean the client had to decide\nwhether its own diff was empty, and a no-op is not an error.",
+        "operationId": "update_user_api_v1_users__user_id__patch",
+        "parameters": [
+          {
+            "description": "The account's id.",
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "description": "The account's id.",
+              "format": "uuid",
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "No valid session."
+          },
+          "403": {
+            "description": "Not an administrator."
+          },
+          "404": {
+            "description": "No such account."
+          },
+          "409": {
+            "description": "The change would leave no active administrator."
+          },
+          "422": {
+            "description": "The display name is invalid."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "Change a user's display name, role or status",
+        "tags": [
+          "users"
+        ]
+      }
+    },
+    "/api/v1/users/{user_id}/deactivate": {
+      "post": {
+        "description": "End an account's access.\n\nTakes effect immediately: ``is_active`` is re-checked on every request, so\nthe account's next call fails whether or not its session has expired. Its\nlive sessions are also revoked, so the session counts an administrator\nsees afterwards are accurate.\n\nIdempotent \u2014 deactivating an already-inactive account succeeds and records\nnothing.",
+        "operationId": "deactivate_user_api_v1_users__user_id__deactivate_post",
+        "parameters": [
+          {
+            "description": "The account's id.",
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "description": "The account's id.",
+              "format": "uuid",
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "No valid session."
+          },
+          "403": {
+            "description": "Not an administrator."
+          },
+          "404": {
+            "description": "No such account."
+          },
+          "409": {
+            "description": "This is the only active administrator."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "Deactivate a user account",
+        "tags": [
+          "users"
+        ]
+      }
+    },
+    "/api/v1/users/{user_id}/reactivate": {
+      "post": {
+        "description": "Restore an account's access.\n\nDoes **not** restore the sessions deactivation revoked, and must not: a\nrevoked token is revoked. The account signs in again, which is also the\nonly way the server learns the password is still known to its owner.",
+        "operationId": "reactivate_user_api_v1_users__user_id__reactivate_post",
+        "parameters": [
+          {
+            "description": "The account's id.",
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "description": "The account's id.",
+              "format": "uuid",
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "No valid session."
+          },
+          "403": {
+            "description": "Not an administrator."
+          },
+          "404": {
+            "description": "No such account."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "Reactivate a user account",
+        "tags": [
+          "users"
+        ]
+      }
+    },
+    "/api/v1/users/{user_id}/sessions/revoke": {
+      "post": {
+        "description": "End every live session for an account, without changing its status.\n\nDistinct from deactivation: the account may sign in again straight away.\nThis is the \"I think that session was taken over\" action, not the \"this\nperson has left\" action.\n\nReturns the count, so the interface can report what happened rather than\nasserting success. A revocation that reports success without having\nrevoked anything is the one thing this must not do, which is why an\nunknown id is a 404 rather than a cheerful zero.",
+        "operationId": "revoke_user_sessions_api_v1_users__user_id__sessions_revoke_post",
+        "parameters": [
+          {
+            "description": "The account's id.",
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "description": "The account's id.",
+              "format": "uuid",
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/hcc__api__v1__users__SessionRevocationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "No valid session."
+          },
+          "403": {
+            "description": "Not an administrator."
+          },
+          "404": {
+            "description": "No such account."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "Revoke all of a user's sessions",
+        "tags": [
+          "users"
         ]
       }
     },

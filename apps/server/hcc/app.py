@@ -22,12 +22,16 @@ from hcc.db import Database
 from hcc.errors import ErrorResponse, register_exception_handlers
 from hcc.logging import configure_logging, get_logger
 from hcc.middleware import RequestContextMiddleware, SecurityHeadersMiddleware
+from hcc.security.audit import AuditService
 from hcc.security.authentication import AuthenticationService
 from hcc.security.authorization import Authorizer
 from hcc.security.forwarded import describe
 from hcc.security.password import build_password_hasher
 from hcc.security.ratelimit import LoginThrottle, RateLimiter
 from hcc.security.sessions import SessionService
+from hcc.services.account import AccountService
+from hcc.services.audit import AuditQueryService
+from hcc.services.users import UserService
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -198,6 +202,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         hasher=app.state.password_hasher,
         sessions=app.state.session_service,
         throttle=app.state.login_throttle,
+    )
+    # Milestone 1.7. Separate from the login budgets on purpose: sharing them
+    # would let a user spend the budget they need in order to sign in by
+    # changing their password a few times. See hcc/config.py.
+    app.state.password_change_throttle = RateLimiter(
+        limit=settings.password_change_rate_limit_per_user,
+        window_seconds=settings.password_change_rate_limit_window_seconds,
+    )
+    app.state.audit_service = AuditService()
+    app.state.audit_query_service = AuditQueryService()
+    app.state.user_service = UserService(
+        hasher=app.state.password_hasher,
+        sessions=app.state.session_service,
+        audit=app.state.audit_service,
+    )
+    app.state.account_service = AccountService(
+        hasher=app.state.password_hasher,
+        sessions=app.state.session_service,
+        audit=app.state.audit_service,
+        throttle=app.state.password_change_throttle,
     )
     # No capability resolver: per-host capability configuration does not exist
     # yet, so the second authorization axis is unavailable and any request for

@@ -12,6 +12,12 @@ Two routers are assembled:
   every route mounted beneath it requires a valid session whether or not its
   handler asks for one.
 
+* ``_admin`` — carries the router-level **administrator** dependency, added in
+  milestone 1.7 for user management and the audit trail. The same reasoning
+  one level up: a route added to ``hcc/api/v1/users.py`` is privileged by
+  placement, so publishing it to every authenticated user takes an explicit
+  move rather than a forgotten decorator.
+
 A new feature router is included into ``_protected``, which means forgetting
 to protect it requires actively moving it to ``_public`` rather than merely
 omitting a decorator. That is the point: the failure mode of a per-endpoint
@@ -36,8 +42,9 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 from hcc import __version__
-from hcc.api.deps import SettingsDep, get_current_session
-from hcc.api.v1 import auth, setup
+from hcc.api.deps import SettingsDep, get_current_session, require_min_role
+from hcc.api.v1 import account, audit, auth, setup, users
+from hcc.models.user import UserRole
 
 #: Paths under ``/api/v1`` reachable without a session, with the reason.
 #: Mirrored by an explicit expected set in the authorization tests, so
@@ -60,6 +67,15 @@ router = APIRouter()
 
 _public = APIRouter()
 _protected = APIRouter(dependencies=[Depends(get_current_session)])
+
+#: Administrator-only, with denials written to the audit trail.
+#:
+#: A sibling of ``_protected`` rather than a child of it. Nesting would work —
+#: the admin dependency depends on the session one, and FastAPI caches it per
+#: request — but a sibling makes the routing table say which routes are
+#: privileged in one place, and means a reader does not have to know that one
+#: dependency implies the other.
+_admin = APIRouter(dependencies=[Depends(require_min_role(UserRole.ADMIN, audit_denials=True))])
 
 
 class ApiInfo(BaseModel):
@@ -87,7 +103,15 @@ async def api_info(settings: SettingsDep) -> ApiInfo:
 
 _public.include_router(auth.public_router)
 _public.include_router(setup.public_router)
+
 _protected.include_router(auth.router)
+# Self-service: scoped to the caller by construction, so authenticated is the
+# right gate at any role. See hcc/api/v1/account.py.
+_protected.include_router(account.router)
+
+_admin.include_router(users.router)
+_admin.include_router(audit.router)
 
 router.include_router(_public)
 router.include_router(_protected)
+router.include_router(_admin)

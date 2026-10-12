@@ -42,6 +42,7 @@ from hcc.errors import (
 )
 from hcc.logging import get_logger
 from hcc.models.user import UserRole
+from hcc.security.audit import AuditContext, AuditService
 from hcc.security.authentication import AuthenticationService
 from hcc.security.authorization import (
     AuthorizationRequest,
@@ -55,6 +56,9 @@ from hcc.security.origins import InvalidOriginError, normalize_origin, origin_fr
 from hcc.security.password import PasswordHasher
 from hcc.security.sessions import AuthenticatedSession, SessionService
 from hcc.security.tokens import tokens_equal
+from hcc.services.account import AccountService
+from hcc.services.audit import AuditQueryService
+from hcc.services.users import UserService
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
@@ -97,6 +101,30 @@ def get_session_service(connection: HTTPConnection) -> SessionService:
 def get_authentication_service(connection: HTTPConnection) -> AuthenticationService:
     """Return the process-wide authentication service."""
     service: AuthenticationService = connection.app.state.authentication_service
+    return service
+
+
+def get_audit_service(connection: HTTPConnection) -> AuditService:
+    """Return the process-wide audit service."""
+    service: AuditService = connection.app.state.audit_service
+    return service
+
+
+def get_user_service(connection: HTTPConnection) -> UserService:
+    """Return the process-wide user management service."""
+    service: UserService = connection.app.state.user_service
+    return service
+
+
+def get_account_service(connection: HTTPConnection) -> AccountService:
+    """Return the process-wide self-service account service."""
+    service: AccountService = connection.app.state.account_service
+    return service
+
+
+def get_audit_query_service(connection: HTTPConnection) -> AuditQueryService:
+    """Return the process-wide audit query service."""
+    service: AuditQueryService = connection.app.state.audit_query_service
     return service
 
 
@@ -300,9 +328,41 @@ def get_authorizer(connection: HTTPConnection) -> Authorizer:
     return authorizer
 
 
+def request_id_of(connection: HTTPConnection) -> str | None:
+    """The correlation id :class:`~hcc.middleware.RequestContextMiddleware` set.
+
+    ``getattr`` rather than a direct read: a request that bypassed the
+    middleware — which only happens in a test that mounts a bare app — must
+    produce an unattributed audit event rather than an ``AttributeError`` from
+    inside an authorization check.
+    """
+    value = getattr(connection.state, "request_id", None)
+    return str(value) if value else None
+
+
+def get_audit_context(
+    connection: HTTPConnection,
+    current: Annotated[AuthenticatedSession, Depends(get_current_session)],
+) -> AuditContext:
+    """Build the audit context for an authenticated request.
+
+    The actor comes from the **resolved session**, never from the request
+    body. That is what makes an audit event's attribution trustworthy: there
+    is no field a caller could set to record their action against somebody
+    else, which is the audit-log equivalent of the server-side attribution
+    rule for ingested data (``docs/ARCHITECTURE.md`` §7.3).
+    """
+    return AuditContext(
+        actor_user_id=current.user.id,
+        request_id=request_id_of(connection),
+    )
+
+
 def require_min_role(
     minimum: UserRole,
-) -> Callable[[AuthenticatedSession, Authorizer], Awaitable[AuthenticatedSession]]:
+    *,
+    audit_denials: bool = False,
+) -> Callable[..., Awaitable[AuthenticatedSession]]:
     """Build a dependency admitting callers at or above ``minimum``.
 
     Returns the authenticated session, so an endpoint needs one dependency
@@ -318,11 +378,22 @@ def require_min_role(
     The capability axis is not wired in here. An endpoint that needs one will
     call the authorizer directly with the target host, because the host comes
     from the request path and a dependency factory cannot know it.
+
+    ``audit_denials`` adds a persisted record of each refusal, for the
+    administrative surfaces where "a Viewer tried to list every account" is a
+    security signal worth keeping rather than only a log line. It is off by
+    default because the denial write has a cost and most role-gated routes do
+    not warrant one; see
+    :meth:`hcc.security.audit.AuditService.record_denial` for why the write
+    can never convert a refusal into a success.
     """
 
     async def dependency(
+        connection: HTTPConnection,
         current: Annotated[AuthenticatedSession, Depends(get_current_session)],
         authorizer: Annotated[Authorizer, Depends(get_authorizer)],
+        audit: Annotated[AuditService, Depends(get_audit_service)],
+        database: Annotated[Database, Depends(get_database)],
     ) -> AuthenticatedSession:
         try:
             await authorizer.authorize(AuthorizationRequest(session=current, minimum_role=minimum))
@@ -335,10 +406,25 @@ def require_min_role(
                 required_role=exc.required.value,
                 actual_role=exc.actual.value,
                 user_id=str(current.user.id),
-                # No path: the dependency has no Request, and the request id
-                # already correlates this line with the access log, which
-                # carries the path.
+                path=connection.url.path,
             )
+            if audit_denials:
+                # Before raising, and in its own transaction: the request's
+                # transaction is about to be rolled back, so an event added to
+                # it would be the one event class that never survived.
+                await audit.record_denial(
+                    # A session of its own, not the request's: that one is
+                    # about to be rolled back by `Database.session`.
+                    session_factory=database.session_factory,
+                    context=AuditContext(
+                        actor_user_id=current.user.id,
+                        request_id=request_id_of(connection),
+                    ),
+                    path=connection.url.path,
+                    method=connection.scope.get("method", "WEBSOCKET"),
+                    required_role=exc.required,
+                    actual_role=exc.actual,
+                )
             raise InsufficientPermissionsError from exc
         except (CapabilityNotEnabledError, CapabilityNotAvailableError) as exc:
             # Unreachable from this dependency, which never requests a
@@ -358,6 +444,11 @@ SessionServiceDep = Annotated[SessionService, Depends(get_session_service)]
 AuthenticationServiceDep = Annotated[AuthenticationService, Depends(get_authentication_service)]
 CurrentSessionDep = Annotated[AuthenticatedSession, Depends(get_current_session)]
 AuthorizerDep = Annotated[Authorizer, Depends(get_authorizer)]
+AuditServiceDep = Annotated[AuditService, Depends(get_audit_service)]
+AuditContextDep = Annotated[AuditContext, Depends(get_audit_context)]
+UserServiceDep = Annotated[UserService, Depends(get_user_service)]
+AccountServiceDep = Annotated[AccountService, Depends(get_account_service)]
+AuditQueryServiceDep = Annotated[AuditQueryService, Depends(get_audit_query_service)]
 
 #: Any authenticated user. Authentication only — no role requirement beyond
 #: being logged in. Named for the lowest role so that call sites read as a
@@ -369,3 +460,17 @@ OperatorDep = Annotated[AuthenticatedSession, Depends(require_min_role(UserRole.
 
 #: Administrator only: configuration and user management.
 AdminDep = Annotated[AuthenticatedSession, Depends(require_min_role(UserRole.ADMIN))]
+
+#: Administrator only, **and** a refusal is written to the audit trail.
+#:
+#: Used by the user-administration and audit routers. The distinction from
+#: :data:`AdminDep` is deliberate rather than an optimisation: an attempt to
+#: reach user management from a Viewer or Operator session is a security
+#: event — it means either a confused operator or a session being probed —
+#: whereas a denial on an ordinary role-gated route is routine and would only
+#: add noise. Adding the record where it carries signal keeps the trail worth
+#: reading.
+AuditedAdminDep = Annotated[
+    AuthenticatedSession,
+    Depends(require_min_role(UserRole.ADMIN, audit_denials=True)),
+]
