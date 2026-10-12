@@ -82,11 +82,21 @@ from hcc.agents.protocol import (
     SUPPORTED_PROTOCOL_VERSIONS,
     Close,
     CloseReason,
+    ConfigAck,
+    ConfigAvailable,
+    ConfigNack,
+    ConfigRequest,
+    ConfigSnapshot,
+    Heartbeat,
     HeartbeatAck,
     ProtocolError,
     parse_agent_frame,
 )
-from hcc.agents.registry import ConnectionRegistry, LiveConnection
+from hcc.agents.registry import (
+    MAX_PENDING_NOTIFICATIONS,
+    ConnectionRegistry,
+    LiveConnection,
+)
 from hcc.api.deps import SessionDep, get_database, request_id_of
 
 # Imported at runtime, not under TYPE_CHECKING: FastAPI resolves endpoint
@@ -99,10 +109,16 @@ from hcc.api.deps import SessionDep, get_database, request_id_of
 from hcc.db import Database
 from hcc.errors import AgentCredentialRejectedError, AppError, NotAuthenticatedError
 from hcc.logging import get_logger
+from hcc.monitoring.document import ConfigurationRevision
+from hcc.security.audit import AuditContext
 from hcc.services.enrollment import (
     AgentAuthenticationError,
     AgentEnrollmentService,
     EnrollmentRefusedError,
+)
+from hcc.services.monitoring import (
+    REVISION_REASON_FOR_CONNECT,
+    MonitoringConfigService,
 )
 
 if TYPE_CHECKING:
@@ -176,6 +192,18 @@ AgentCredentialDep = Annotated[str, Depends(agent_credential)]
 def get_enrollment_service(connection: HTTPConnection) -> AgentEnrollmentService:
     """Return the process-wide agent enrollment service."""
     service: AgentEnrollmentService = connection.app.state.agent_enrollment_service
+    return service
+
+
+def get_monitoring_service(connection: HTTPConnection) -> MonitoringConfigService:
+    """Return the process-wide monitoring configuration service.
+
+    Declared here rather than imported from :mod:`hcc.api.deps` so that this
+    module's dependency aliases live beside the router that uses them — and
+    because the alias in ``deps`` is annotated for HTTP routes, where
+    FastAPI's annotation resolution has caught this module out before.
+    """
+    service: MonitoringConfigService = connection.app.state.monitoring_config_service
     return service
 
 
@@ -422,6 +450,82 @@ def _refuse_handshake(*, status_code: int, code: str, message: str) -> AppError:
     return AppError(message, code=code, status_code=status_code)
 
 
+def _snapshot_frame(revision: ConfigurationRevision) -> str:
+    """Serialise a revision into a ``config_snapshot`` frame.
+
+    ``revision.text`` is the canonical document, decoded. It travels as a
+    **string** inside the frame rather than as a nested object, so the agent
+    checksums exactly the bytes it received (ADR-050) — which is the one
+    property that makes "this agent is running version 7" verifiable rather
+    than asserted.
+    """
+    return ConfigSnapshot(
+        version=revision.version,
+        checksum=revision.checksum,
+        document=revision.text,
+    ).model_dump_json()
+
+
+def config_available_frame(version: int) -> str:
+    """The notification an administrative request queues for a connected agent.
+
+    Public, because the caller is :mod:`hcc.api.v1.monitoring` — a different
+    router, which must not have to know the frame's shape. A notification
+    rather than the document, for the reason in
+    :data:`hcc.agents.registry.MAX_PENDING_NOTIFICATIONS`.
+    """
+    return ConfigAvailable(version=version).model_dump_json()
+
+
+async def _handle_heartbeat(
+    database: Database,
+    *,
+    enrollment: AgentEnrollmentService,
+    monitoring: MonitoringConfigService,
+    agent: AuthenticatedAgent,
+    heartbeat: Heartbeat,
+) -> tuple[bool, int | None]:
+    """Record a heartbeat and the configuration it reports.
+
+    Returns ``(applied, desired_version)``. ``applied`` is false when the
+    epoch guard rejected the write, meaning this connection is no longer the
+    host's current one.
+
+    Both writes are guarded by the same connection id and epoch, and both run
+    in **one** transaction. That matters: recording liveness and recording the
+    reported configuration version are two facts about the same instant, and
+    committing them separately would leave a window in which a host was
+    alive with a configuration state from a previous heartbeat.
+
+    The desired version is read only when the heartbeat was applied. There is
+    no point computing what a superseded connection should be told.
+    """
+    async with database.session_factory() as db:
+        applied = await enrollment.record_heartbeat(
+            db,
+            agent=agent,
+            agent_version=heartbeat.agent_version,
+            platform=heartbeat.platform,
+        )
+        if applied:
+            await monitoring.record_reported_config(
+                db,
+                host_id=agent.host_id,
+                connection_id=agent.connection_id,
+                epoch=agent.epoch,
+                version=heartbeat.config_version,
+                checksum=heartbeat.config_checksum,
+            )
+        await db.commit()
+
+    if not applied:
+        return False, None
+
+    async with database.session_factory() as db:
+        latest = await monitoring.latest_revision(db, agent.host_id)
+    return True, latest.version if latest is not None else None
+
+
 @router.websocket("/connect")
 async def connect(
     socket: WebSocket,
@@ -429,6 +533,7 @@ async def connect(
     enrollment: EnrollmentServiceDep,
     database: Annotated[Database, Depends(get_database)],
     registry: Annotated[ConnectionRegistry, Depends(get_connection_registry)],
+    monitoring: Annotated[MonitoringConfigService, Depends(get_monitoring_service)],
 ) -> None:
     """The agent's outbound, authenticated, long-lived connection.
 
@@ -535,6 +640,7 @@ async def connect(
         connection_id=agent.connection_id,
         epoch=agent.epoch,
         closing=asyncio.Event(),
+        outbound=asyncio.Queue(maxsize=MAX_PENDING_NOTIFICATIONS),
     )
     superseded = registry.register(live)
     if superseded is not None:
@@ -550,12 +656,43 @@ async def connect(
     closing_reason: CloseReason | None = None
     closing_detail: str | None = None
 
+    # The configuration this connection last *sent*. Not what the agent is
+    # running — that is the agent's claim, recorded from its heartbeats — but
+    # what this socket put on the wire, so a `config_request` can be answered
+    # without re-reading the row and an acknowledgement can be matched against
+    # something.
+    try:
+        async with database.session_factory() as db:
+            outcome = await monitoring.ensure_revision(
+                db, agent.host_id, reason=REVISION_REASON_FOR_CONNECT
+            )
+            await db.commit()
+        await socket.send_text(_snapshot_frame(outcome.revision))
+    except Exception:
+        # A configuration the agent cannot be given is not a reason to refuse
+        # the connection. The heartbeat is the one thing that is always on
+        # (`AGENT_ARCHITECTURE.md` §9), and a host that can connect but cannot
+        # be configured should report as connected-and-unconfigured rather
+        # than as offline — which is what refusing here would make it look
+        # like, and would send an operator looking at the network.
+        logger.exception(
+            "agent_initial_config_failed",
+            host_id=str(agent.host_id),
+            connection_id=str(agent.connection_id),
+        )
+
     try:
         while True:
             receive = asyncio.create_task(socket.receive_text())
             shutdown = asyncio.create_task(live.closing.wait())
+            # Notifications queued by another task — an administrator's save,
+            # most often. Selected alongside the socket read so a push takes
+            # effect at once rather than waiting for the agent to say
+            # something, and consumed *here* because the reader task is the
+            # only task permitted to write to this socket.
+            notified = asyncio.create_task(live.outbound.get())
             done, pending = await asyncio.wait(
-                {receive, shutdown},
+                {receive, shutdown, notified},
                 timeout=HEARTBEAT_TIMEOUT_SECONDS,
                 return_when=asyncio.FIRST_COMPLETED,
             )
@@ -563,6 +700,9 @@ async def connect(
                 task.cancel()
                 # Awaited so the cancellation is observed here rather than
                 # surfacing later as "task exception was never retrieved".
+                # Cancelling a pending `Queue.get` does not consume an item:
+                # the value stays in the queue's own deque and the next
+                # iteration's getter takes it.
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await task
 
@@ -582,6 +722,16 @@ async def connect(
                 closing_detail = None
                 break
 
+            if notified in done and receive not in done:
+                # A notification and nothing to read. Sent and then straight
+                # back to waiting — deliberately *not* falling through to the
+                # frame budget, which exists to bound what the agent costs the
+                # controller and must not be spent by the controller's own
+                # pushes.
+                with contextlib.suppress(Exception):
+                    await socket.send_text(notified.result())
+                continue
+
             raw = receive.result()
 
             if not budget.spend():
@@ -590,52 +740,96 @@ async def connect(
                 break
 
             try:
-                heartbeat = parse_agent_frame(raw)
+                message = parse_agent_frame(raw)
             except ProtocolError as exc:
                 closing_reason = exc.reason
                 closing_detail = exc.detail
                 break
 
-            async with database.session_factory() as db:
-                applied = await enrollment.record_heartbeat(
-                    db,
+            if isinstance(message, Heartbeat):
+                applied, desired = await _handle_heartbeat(
+                    database,
+                    enrollment=enrollment,
+                    monitoring=monitoring,
                     agent=agent,
-                    agent_version=heartbeat.agent_version,
-                    platform=heartbeat.platform,
+                    heartbeat=message,
                 )
-                await db.commit()
+                if not applied:
+                    # The epoch guard made this write a no-op, so this
+                    # connection is no longer the host's current one. *Why* is
+                    # not obvious from that fact alone, and getting it wrong
+                    # misleads an operator: a revocation also clears
+                    # `current_connection_id`, so the guard fires for a revoked
+                    # credential exactly as it does for a genuine supersession.
+                    #
+                    # Live verification caught this reporting a revoked agent
+                    # as "superseded", which is false and sends whoever reads
+                    # the agent's log looking for a duplicate agent that does
+                    # not exist. So the real reason is established before the
+                    # connection is closed: one indexed read, on a path taken
+                    # once per connection rather than once per heartbeat.
+                    async with database.session_factory() as db:
+                        refusal = await enrollment.is_still_authorized(db, agent=agent)
+                    if refusal is not None:
+                        closing_reason = refusal
+                        closing_detail = "authorization was withdrawn"
+                    else:
+                        closing_reason = CloseReason.SUPERSEDED
+                        closing_detail = "a newer connection for this host was accepted"
+                    break
 
-            if not applied:
-                # The epoch guard made this write a no-op, so this connection
-                # is no longer the host's current one. *Why* is not obvious
-                # from that fact alone, and getting it wrong misleads an
-                # operator: a revocation also clears `current_connection_id`,
-                # so the guard fires for a revoked credential exactly as it
-                # does for a genuine supersession.
-                #
-                # Live verification caught this reporting a revoked agent as
-                # "superseded — a newer connection for this host was
-                # accepted", which is false and sends whoever reads the
-                # agent's log looking for a duplicate agent that does not
-                # exist. So the real reason is established before the
-                # connection is closed: one indexed read, on a path taken once
-                # per connection rather than once per heartbeat.
+                await socket.send_text(
+                    HeartbeatAck(
+                        interval_seconds=HEARTBEAT_INTERVAL_SECONDS,
+                        server_time=datetime.now(UTC).isoformat(),
+                        config_version=desired,
+                    ).model_dump_json()
+                )
+
+            elif isinstance(message, ConfigRequest):
                 async with database.session_factory() as db:
-                    refusal = await enrollment.is_still_authorized(db, agent=agent)
-                if refusal is not None:
-                    closing_reason = refusal
-                    closing_detail = "authorization was withdrawn"
-                else:
-                    closing_reason = CloseReason.SUPERSEDED
-                    closing_detail = "a newer connection for this host was accepted"
-                break
+                    outcome = await monitoring.ensure_revision(
+                        db, agent.host_id, reason=REVISION_REASON_FOR_CONNECT
+                    )
+                    await db.commit()
+                await socket.send_text(_snapshot_frame(outcome.revision))
 
-            await socket.send_text(
-                HeartbeatAck(
-                    interval_seconds=HEARTBEAT_INTERVAL_SECONDS,
-                    server_time=datetime.now(UTC).isoformat(),
-                ).model_dump_json()
-            )
+            elif isinstance(message, ConfigAck):
+                async with database.session_factory() as db:
+                    matched = await monitoring.acknowledge(
+                        db,
+                        host_id=agent.host_id,
+                        version=message.version,
+                        checksum=message.checksum,
+                    )
+                    await db.commit()
+                if not matched:
+                    # Logged, not fatal. An acknowledgement that matches no
+                    # revision is most often a race — the agent acknowledging
+                    # version 4 while the controller has already minted 5 — and
+                    # closing the connection would turn an ordinary overlap
+                    # into a reconnect. The agent learns the real version from
+                    # its next heartbeat acknowledgement.
+                    logger.info(
+                        "agent_config_ack_unmatched",
+                        host_id=str(agent.host_id),
+                        version=message.version,
+                    )
+
+            elif isinstance(message, ConfigNack):
+                async with database.session_factory() as db:
+                    await monitoring.reject(
+                        db,
+                        host_id=agent.host_id,
+                        version=message.version,
+                        checksum=message.checksum,
+                        problems=message.problems,
+                        # No actor: the agent refused this, and attributing it
+                        # to whoever last saved the configuration would be a
+                        # claim about a person who was not present.
+                        context=AuditContext(actor_user_id=None, request_id=request_id),
+                    )
+                    await db.commit()
 
             now = time.monotonic()
             if now - last_recheck >= AUTHORIZATION_RECHECK_SECONDS:

@@ -38,13 +38,35 @@ compromised host presents exactly this interface, so each limit below answers
   reports about itself, which means they are attacker-controlled on a
   compromised host.
 
+## Configuration travels here, not on a second HTTP channel
+
+Phase 2 adds configuration distribution to this socket rather than to the
+``GET /api/v1/agents/config`` plus ``POST .../config/ack`` pair
+``docs/AGENT_ARCHITECTURE.md`` §6.3 originally described. The socket is already
+authenticated and identity-bound, so there is no second credential path to
+defend; a push removes the polling latency; and it is one fewer endpoint. See
+ADR-049.
+
+The **pull is still the guarantee**. Every heartbeat carries the agent's
+running configuration version and checksum, and every acknowledgement carries
+the version the controller believes is current — so an agent that missed a
+push corrects itself on its next heartbeat. The push is a latency
+optimisation on top of a self-correcting loop, which is the same
+event-stream-plus-reconciliation shape ``docs/SCHEDULING.md`` §9.2 requires of
+every event-driven module. A design where the push *was* the mechanism would
+leave a host silently running month-old configuration after one dropped
+frame.
+
 ## There is no command execution in this protocol
 
 Deliberately, and it is the most important absence here. No message carries a
-shell command, a script, a path to execute, or a module name to import. The
-controller-to-agent direction in this milestone is limited to protocol
-housekeeping — an acknowledgement and a close — and the agent-to-controller
-direction to liveness and self-description.
+shell command, a script, a path to execute, or a module name to import. That
+remains true with configuration on the wire, and it is worth being precise
+about why, because a configuration document is the closest thing to an
+instruction that crosses this boundary: the document names **modules from a
+closed registry compiled into the agent**, never a path, a binary or a
+collector to load. An agent receiving a module identifier it does not know
+reports it unsupported; it cannot be told to go and find one.
 
 A monitoring agent that will run what the controller tells it has turned a
 control-plane compromise into root on every monitored machine. When remote
@@ -59,7 +81,10 @@ import enum
 import json
 from typing import Any, Final, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from hcc.models.monitoring import MAX_PROBLEM_LENGTH, MAX_PROBLEMS
+from hcc.monitoring.canonical import CHECKSUM_LENGTH
 
 #: The protocol version this controller speaks. Bumped for a breaking change
 #: to the frame format or to the meaning of a field.
@@ -73,6 +98,14 @@ SUPPORTED_PROTOCOL_VERSIONS: Final = (1,)
 #: Largest frame the controller will read. 64 KiB is two orders of magnitude
 #: more than any message defined here needs, and small enough that a thousand
 #: agents each mid-frame is 64 MiB rather than unbounded.
+#:
+#: Unchanged by configuration arriving on this socket. A five-module document
+#: is about 1 KiB and the ceiling applies to the **inbound** direction, where
+#: the largest frame an agent can send is a rejection carrying
+#: ``MAX_PROBLEMS`` problems of ``MAX_PROBLEM_LENGTH`` each — 8 KiB of text
+#: plus JSON overhead, comfortably inside the bound. The outbound snapshot is
+#: not governed by this at all; it is the controller's own document, and its
+#: size is bounded by the registry being closed.
 MAX_MESSAGE_BYTES: Final = 64 * 1024
 
 #: Sustained frame rate one agent may use, and the burst it may spend at once.
@@ -96,6 +129,15 @@ MAX_AGENT_VERSION_LENGTH: Final = 64
 MAX_PLATFORM_LENGTH: Final = 64
 MAX_CLOSE_REASON_LENGTH: Final = 123
 
+#: Largest configuration version an agent may claim to be running.
+#:
+#: Versions are assigned by the controller and are per host, so a real one is
+#: small. The bound exists because the value arrives from a possibly
+#: compromised host and lands in an integer column: without it, an agent
+#: claiming version 2**63 would be a failed insert on a path that should not
+#: be able to fail.
+MAX_CONFIG_VERSION: Final = 2_000_000_000
+
 
 class MessageType(enum.StrEnum):
     """Every frame type that exists.
@@ -105,13 +147,35 @@ class MessageType(enum.StrEnum):
     smuggled past a controller that does not understand it.
     """
 
-    #: Agent → controller. Liveness, plus the agent's view of itself.
+    #: Agent → controller. Liveness, plus the agent's view of itself and of
+    #: the configuration it is running.
     HEARTBEAT = "heartbeat"
-    #: Controller → agent. Acknowledges a heartbeat and restates the interval,
-    #: so an agent that has drifted converges without a redeploy.
+    #: Controller → agent. Acknowledges a heartbeat, restates the interval so
+    #: an agent that has drifted converges without a redeploy, and states the
+    #: configuration version the controller believes is current — which is
+    #: what makes the synchronisation loop self-correcting.
     HEARTBEAT_ACK = "heartbeat_ack"
     #: Controller → agent. The connection is ending, and why.
     CLOSE = "close"
+
+    # --- Configuration synchronisation, phase 2 -----------------------------
+
+    #: Controller → agent. A newer configuration exists. Carries the version
+    #: and nothing else: it is a *notification*, so a dropped one costs at
+    #: most one heartbeat interval of latency rather than a document.
+    CONFIG_AVAILABLE = "config_available"
+    #: Agent → controller. "Send me the current configuration." Sent on the
+    #: agent's own initiative — after a notification, after noticing a version
+    #: mismatch in an acknowledgement, or after a restart with no local copy.
+    CONFIG_REQUEST = "config_request"
+    #: Controller → agent. The configuration document, its version and the
+    #: checksum over its exact bytes.
+    CONFIG_SNAPSHOT = "config_snapshot"
+    #: Agent → controller. "I verified and applied this version."
+    CONFIG_ACK = "config_ack"
+    #: Agent → controller. "I refused this version, and here is every reason."
+    #: The agent keeps running its last known good configuration.
+    CONFIG_NACK = "config_nack"
 
 
 class CloseReason(enum.StrEnum):
@@ -205,6 +269,36 @@ class Heartbeat(AgentMessage):
         ),
     )
 
+    # --- Configuration state, phase 2 ---------------------------------------
+    #
+    # What makes the synchronisation loop self-correcting: the agent states
+    # what it is running on every heartbeat, so a missed push is noticed
+    # within one interval rather than never. Both fields are optional, because
+    # an agent that has never been given a configuration has none to report
+    # and must say so by *omission* rather than by claiming version zero —
+    # there is no version zero, and inventing one would make "never
+    # configured" indistinguishable from "configured, then reset".
+
+    config_version: int | None = Field(
+        default=None,
+        ge=1,
+        le=MAX_CONFIG_VERSION,
+        description=(
+            "The configuration version this agent is running, or absent if "
+            "it has none. Never trusted as a fact about what *should* be "
+            "running — only compared against what the controller stored."
+        ),
+    )
+    config_checksum: str | None = Field(
+        default=None,
+        max_length=CHECKSUM_LENGTH,
+        description=(
+            "Checksum of the running configuration. Compared as well as the "
+            "version, so a truncated or tampered document cannot be reported "
+            "as applied under a version that looks right."
+        ),
+    )
+
     def __repr__(self) -> str:
         """Representation naming the frame, not its contents.
 
@@ -225,6 +319,12 @@ class HeartbeatAck(BaseModel):
     which was built against an older default — converges without being
     redeployed. The agent is still free to heartbeat more often; the
     controller's timeout is what it must stay inside.
+
+    Also states the configuration version the controller believes is current.
+    That single field is what makes the synchronisation loop self-correcting:
+    an agent comparing it against what it is running notices a missed push,
+    a controller restart and its own stale local copy, all without any of
+    them needing a mechanism of their own.
     """
 
     model_config = {"extra": "forbid"}
@@ -239,6 +339,54 @@ class HeartbeatAck(BaseModel):
     #: discrepancy. Advisory in the other direction: the controller stamps
     #: every timestamp it stores with its own clock regardless.
     server_time: str = Field(description="ISO-8601 controller time.")
+    config_version: int | None = Field(
+        default=None,
+        description=(
+            "The configuration version the controller has for this host, or "
+            "null when it has none. An agent running something else should "
+            "send a config_request."
+        ),
+    )
+
+
+class ConfigAvailable(BaseModel):
+    """Controller → agent: a newer configuration exists.
+
+    A notification, not the document. The queue this travels on is bounded,
+    and dropping a notification costs at most one heartbeat interval of
+    latency because the acknowledgement carries the same version — whereas a
+    queue of documents would be kilobytes per entry for a saving of one round
+    trip.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    v: int = PROTOCOL_VERSION
+    type: Literal[MessageType.CONFIG_AVAILABLE] = MessageType.CONFIG_AVAILABLE
+    version: int = Field(description="The version now current for this host.")
+
+
+class ConfigSnapshot(BaseModel):
+    """Controller → agent: the configuration document itself.
+
+    ``document`` is a **string**, not an object, and that is the whole of
+    ADR-050. It carries the canonical bytes the checksum was computed over, so
+    the agent verifies ``sha256(document) == checksum`` on exactly what
+    arrived and then parses it. Sending an object instead would make the
+    comparison depend on the agent re-serialising it identically to the
+    controller — which Python's ``json`` and Go's ``encoding/json`` do not
+    guarantee, and the failure would look like tampering.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    v: int = PROTOCOL_VERSION
+    type: Literal[MessageType.CONFIG_SNAPSHOT] = MessageType.CONFIG_SNAPSHOT
+    version: int
+    checksum: str = Field(description="`sha256:<hex>` over the UTF-8 bytes of `document`.")
+    document: str = Field(
+        description="The canonical configuration JSON, byte for byte as checksummed."
+    )
 
 
 class Close(BaseModel):
@@ -262,6 +410,87 @@ class Close(BaseModel):
     #: Present only on :attr:`CloseReason.UNSUPPORTED_PROTOCOL`, so the agent's
     #: log can name the versions that would have worked.
     supported_versions: list[int] | None = None
+
+
+class ConfigRequest(AgentMessage):
+    """Agent → controller: "send me the current configuration".
+
+    No fields. There is deliberately nothing to ask *for*: an agent cannot
+    request a particular version, or another host's configuration, because the
+    host is decided by the credential that authenticated the connection and
+    the version is whatever is current. A ``host_id`` or a ``version`` field
+    here would be a field to abuse, and neither has a legitimate use — an
+    agent that wants an old configuration is an agent that should be told the
+    current one.
+    """
+
+    type: Literal[MessageType.CONFIG_REQUEST] = MessageType.CONFIG_REQUEST
+
+
+class ConfigAck(AgentMessage):
+    """Agent → controller: "I verified and applied this version".
+
+    Carries the checksum as well as the version, so a truncated or tampered
+    document cannot be acknowledged as applied under a version that looks
+    right (``AGENT_ARCHITECTURE.md`` §6.3). The controller matches on both and
+    records nothing if either disagrees.
+    """
+
+    type: Literal[MessageType.CONFIG_ACK] = MessageType.CONFIG_ACK
+
+    version: int = Field(ge=1, le=MAX_CONFIG_VERSION)
+    checksum: str = Field(max_length=CHECKSUM_LENGTH)
+
+
+class ConfigNack(AgentMessage):
+    """Agent → controller: "I refused this version, and here is why".
+
+    The agent keeps running its last known good configuration. A monitoring
+    agent that stops monitoring because someone typed a bad interval has
+    failed at its job (``AGENT_ARCHITECTURE.md`` §6.3).
+
+    ``problems`` is bounded in both dimensions at the protocol boundary rather
+    than only at the storage one. The strings come from a host whose security
+    the controller does not own, and a bound applied only before the INSERT
+    would still have parsed and held an unbounded list in memory first.
+    """
+
+    type: Literal[MessageType.CONFIG_NACK] = MessageType.CONFIG_NACK
+
+    version: int = Field(ge=1, le=MAX_CONFIG_VERSION)
+    checksum: str = Field(max_length=CHECKSUM_LENGTH)
+    problems: list[str] = Field(
+        default_factory=list,
+        description="Every reason the configuration was refused, not the first.",
+    )
+
+    @field_validator("problems")
+    @classmethod
+    def _bound_problems(cls, value: list[str]) -> list[str]:
+        """Clamp count and length rather than refusing the whole frame.
+
+        Deliberately a clamp and not a ``max_length``. A ``max_length`` makes
+        an over-long list a validation failure, which this protocol answers by
+        **closing the connection** — so an agent making a legitimate rejection
+        with thirty-three problems would be disconnected for being verbose,
+        losing both the rejection and the information an operator needs in
+        order to fix the configuration. The truncation is marked, so nobody
+        goes looking for a cause that was in the part discarded.
+
+        An unbounded list is still impossible: a frame large enough to carry
+        one exceeds :data:`MAX_MESSAGE_BYTES` and is refused before it reaches
+        a JSON parser.
+        """
+        clamped = [problem[:MAX_PROBLEM_LENGTH] for problem in value[:MAX_PROBLEMS]]
+        remaining = len(value) - MAX_PROBLEMS
+        if remaining > 0:
+            clamped.append(f"… and {remaining} further problem(s), not recorded")
+        return clamped
+
+
+#: Every frame an agent may send. A closed union, so an unrecognised ``type``
+#: is refused rather than ignored.
+IncomingMessage = Heartbeat | ConfigRequest | ConfigAck | ConfigNack
 
 
 class ProtocolError(Exception):
@@ -294,14 +523,16 @@ def is_supported_version(version: object) -> bool:
     return version in SUPPORTED_PROTOCOL_VERSIONS
 
 
-def parse_agent_frame(raw: str | bytes) -> Heartbeat:
+def parse_agent_frame(raw: str | bytes) -> IncomingMessage:
     """Parse and validate one agent → controller frame.
 
     Every failure becomes a :class:`ProtocolError` carrying the close reason
-    the endpoint should send. Four checks, in this order, and the order is the
-    point: size before parse, so an oversized frame is never handed to a JSON
-    parser; version before type, so an agent speaking a future protocol is
-    told that rather than being told its frame type is unknown.
+    the endpoint should send. The order of the checks is the point: size before
+    parse, so an oversized frame is never handed to a JSON parser; version
+    before type, so an agent speaking a future protocol is told that rather
+    than being told its frame type is unknown; and **type before model**, so
+    one concrete model validates the frame rather than a union reporting the
+    failures of all four.
 
     Raises:
         ProtocolError: the frame is too large, is not an object, declares an
@@ -328,15 +559,39 @@ def parse_agent_frame(raw: str | bytes) -> Heartbeat:
             f"supported versions: {', '.join(str(v) for v in SUPPORTED_PROTOCOL_VERSIONS)}",
         )
 
-    message_type = document.get("type")
-    if message_type != MessageType.HEARTBEAT.value:
+    # `str(...)` rather than a cast: the value comes from parsed JSON and may
+    # be any type, and a non-string simply will not match a key in the closed
+    # table below — which is the refusal wanted, reached without a type check
+    # that would have to enumerate what a `type` field is allowed not to be.
+    declared_type = document.get("type")
+    model = _INCOMING_BY_TYPE.get(declared_type) if isinstance(declared_type, str) else None
+    if model is None:
         # Named without echoing the value: an agent-supplied string reflected
-        # into a close frame would make the controller a reflector.
+        # into a close frame would make the controller a reflector. Note that
+        # this also refuses the controller→agent types — an agent sending a
+        # `heartbeat_ack` is either confused or probing, and either way the
+        # frame has no handler.
         raise ProtocolError(CloseReason.PROTOCOL_ERROR, "unknown or unexpected message type")
 
     try:
-        return Heartbeat.model_validate(document)
+        return model.model_validate(document)
     except ValueError as exc:
         # The validation error is *not* forwarded. It enumerates field names,
         # limits and received values, and this string is sent to the agent.
-        raise ProtocolError(CloseReason.PROTOCOL_ERROR, "heartbeat failed validation") from exc
+        # The frame type is safe to name: it came from the closed table above,
+        # so it is one of four constants rather than agent-supplied text.
+        raise ProtocolError(
+            CloseReason.PROTOCOL_ERROR, f"{model.__name__} failed validation"
+        ) from exc
+
+
+#: Dispatch table from wire ``type`` to model. Closed, and the closure is the
+#: security property: a frame type absent from here has no handler and is
+#: refused, so a future message cannot be smuggled past a controller that does
+#: not understand it.
+_INCOMING_BY_TYPE: Final[dict[str, type[IncomingMessage]]] = {
+    MessageType.HEARTBEAT.value: Heartbeat,
+    MessageType.CONFIG_REQUEST.value: ConfigRequest,
+    MessageType.CONFIG_ACK.value: ConfigAck,
+    MessageType.CONFIG_NACK.value: ConfigNack,
+}

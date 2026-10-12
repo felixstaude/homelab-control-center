@@ -80,9 +80,9 @@ Reasons are in the ADRs; the summary is:
 | Stage | State |
 | --- | --- |
 | 1. Preflight and architecture | ✅ |
-| 2. Configuration persistence | ⬜ |
-| 3. Configuration APIs | ⬜ |
-| 4. Configuration synchronisation | ⬜ |
+| 2. Configuration persistence | ✅ |
+| 3. Configuration APIs | ✅ |
+| 4. Configuration synchronisation | ✅ controller half; agent half next |
 | 5. Scheduling engine | ⬜ |
 | 6. Core collectors | ⬜ |
 | 7. Telemetry transport | ⬜ |
@@ -105,10 +105,28 @@ Reasons are in the ADRs; the summary is:
 | SHA | Subject |
 | --- | --- |
 | `30c3a9f` | Milestone 1.8 (10/10): the three defects the full suite found |
+| `3bb73b0` | NIGHTSHIFT (1/?): configuration persistence and the contracts under it |
+| `6bfb3ac` | NIGHTSHIFT (2/?): the configuration API, split across two gates |
 
 ---
 
+## Verified so far
+
+Re-run these; do not trust the numbers.
+
+| Gate | Command | Result |
+| --- | --- | --- |
+| Backend unit | `make test-server` | 798 passed |
+| Backend integration | `make test-integration` | 1,608 passed |
+| Frontend unit | `make test-web` | 407 passed |
+| OpenAPI drift | `./scripts/openapi-snapshot.sh --check` | up to date |
+| Docs | `./scripts/check-docs.sh` | 10/10 |
+
 ## Next exact action
 
-Stage 2: the module registry (`hcc/monitoring/modules.py`) and the schedule
-model (`hcc/monitoring/schedule.py`), then migration `0007_monitoring_config`.
+Stage 4's agent half, in Go: `internal/protocol` gains the five configuration
+frames, `internal/config` gains the document model and its validation,
+`internal/agent` applies atomically and acknowledges by version **and**
+checksum, keeping the last known good document on a rejection.
+
+Then Stage 5 (the agent scheduler) and Stage 6 (the collectors).

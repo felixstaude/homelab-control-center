@@ -322,12 +322,15 @@ class MonitoringConfigService:
         prompted this — a revision committed separately from the override that
         caused it is a window in which the two disagree.
 
-        The caller is responsible for having taken the host's lock. Stated
-        rather than enforced, because the lock is transaction-scoped and
-        re-taking it here would be a silent no-op that read as a guarantee:
-        every write path in this module locks before it reads.
+        Takes the host's advisory lock itself. ``pg_advisory_xact_lock`` is
+        counted per transaction, so a caller that already holds it — every
+        write path in this module does — pays one cheap no-op rather than
+        deadlocking. That is worth the redundancy: the alternative was a
+        documented precondition, and the agent-connection path is a caller
+        outside this module which would have had to know about it.
         """
         moment = now or datetime.now(UTC)
+        await self._lock_host(db, host_id)
         effective = await self.effective(db, host_id)
         latest = await self.latest_revision(db, host_id)
 
@@ -393,13 +396,20 @@ class MonitoringConfigService:
         update: ModuleSettingUpdate,
         context: AuditContext,
         now: datetime | None = None,
-    ) -> tuple[ModuleSetting, list[uuid.UUID]]:
+    ) -> tuple[ModuleSetting, list[tuple[uuid.UUID, int]]]:
         """Set or clear a global default, and regenerate affected hosts' revisions.
 
-        Returns the stored setting and the hosts whose configuration changed as
-        a result — which is not every host: a host that overrides the module is
-        unaffected, and saying so lets the interface report "12 of 30 hosts
-        changed" rather than implying the whole fleet moved.
+        Returns the stored setting and ``(host_id, new_version)`` for each host
+        whose configuration changed — which is not every host: a host that
+        overrides the module is unaffected, and saying so lets the interface
+        report "12 of 30 hosts changed" rather than implying the whole fleet
+        moved.
+
+        The versions are returned rather than left to be looked up, because
+        the caller's next act is to notify those agents and the notification
+        carries a version. Re-reading each host's newest revision to find out
+        what was just written would be a query per host for a fact this method
+        already had.
 
         Raises:
             UnknownModuleError: the module is not in the registry.
@@ -608,12 +618,14 @@ class MonitoringConfigService:
         reason: str,
         context: AuditContext,
         now: datetime,
-    ) -> list[uuid.UUID]:
+    ) -> list[tuple[uuid.UUID, int]]:
         """Regenerate revisions for every host, returning those that changed.
 
-        Hosts are locked **in id order**, which is the deadlock argument in the
-        module docstring: two concurrent global saves that locked in query
-        order would deadlock and PostgreSQL would kill one of them.
+        Hosts are visited **in id order**, and :meth:`ensure_revision` takes
+        each one's lock on entry — so every transaction walks the same path.
+        That is the deadlock argument in the module docstring: two concurrent
+        global saves locking in whatever order a query returned would
+        deadlock, and PostgreSQL would resolve it by killing one of them.
 
         Bounded by :data:`MAX_EAGER_REGENERATION`. Past that the remaining
         hosts are left to pick the change up on their next connection, which
@@ -636,9 +648,8 @@ class MonitoringConfigService:
                 reason=reason,
             )
 
-        changed: list[uuid.UUID] = []
+        changed: list[tuple[uuid.UUID, int]] = []
         for host_id in host_ids:
-            await self._lock_host(db, host_id)
             outcome = await self.ensure_revision(
                 db,
                 host_id,
@@ -647,7 +658,7 @@ class MonitoringConfigService:
                 now=now,
             )
             if outcome.created:
-                changed.append(host_id)
+                changed.append((host_id, outcome.revision.version))
         return changed
 
     # --- Agent-reported state ---------------------------------------------

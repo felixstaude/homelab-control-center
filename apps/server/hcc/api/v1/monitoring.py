@@ -61,6 +61,7 @@ schema for what it reads.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Annotated, Any, Final
 
@@ -69,6 +70,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from hcc.agents.registry import ConnectionRegistry
 from hcc.api.deps import (
     AdminDep,
     AuditContextDep,
@@ -76,6 +78,7 @@ from hcc.api.deps import (
     SessionDep,
     ViewerDep,
 )
+from hcc.api.v1.agents import ConnectionRegistryDep, config_available_frame
 from hcc.errors import NotFoundError, ValidationFailedError
 from hcc.logging import get_logger
 from hcc.models.host import Host
@@ -524,6 +527,31 @@ def _require_known_module(module_id: str) -> registry.ModuleDescriptor:
         ) from exc
 
 
+def _notify(registry: ConnectionRegistry, changed: Iterable[tuple[uuid.UUID, int]]) -> int:
+    """Tell any connected agent that a newer configuration exists.
+
+    **Best effort, and deliberately so.** Returns how many agents this process
+    was able to notify, which may be fewer than the hosts that changed — a host
+    may be offline, or its socket may be held by another worker.
+
+    Nothing depends on the notification arriving. Every heartbeat
+    acknowledgement states the version the controller believes is current, so
+    an agent that missed this asks within one heartbeat interval. The push
+    exists to turn "up to thirty seconds" into "milliseconds" for the common
+    case, which is an operator watching the interface after clicking save.
+
+    Called **after** the commit, never before. A notification sent inside the
+    transaction would race its own commit: the agent could ask for the
+    configuration and be served the previous revision, then never ask again
+    because the notification had already been spent.
+    """
+    return sum(
+        1
+        for host_id, version in changed
+        if registry.notify(host_id, config_available_frame(version))
+    )
+
+
 def _validation_failed(exc: ScheduleError) -> ValidationFailedError:
     """Turn a schedule refusal into a 422 that lists every problem.
 
@@ -609,6 +637,7 @@ async def set_global_default(
     monitoring: MonitoringConfigServiceDep,
     context: AuditContextDep,
     payload: ModuleSettingRequest,
+    registry: ConnectionRegistryDep,
     _admin: AdminDep,
     module_id: ModuleIdPath,
 ) -> GlobalDefaultSavedResponse:
@@ -639,11 +668,13 @@ async def set_global_default(
     # never saved.
     await db.commit()
 
+    notified = _notify(registry, changed)
     logger.info(
         "monitoring_global_default_saved",
         module=module_id,
         enabled=setting.enabled,
         hosts_changed=len(changed),
+        agents_notified=notified,
     )
     return GlobalDefaultSavedResponse(
         module_id=module_id,
@@ -710,6 +741,7 @@ async def set_host_override(
     monitoring: MonitoringConfigServiceDep,
     context: AuditContextDep,
     payload: ModuleSettingRequest,
+    registry: ConnectionRegistryDep,
     _admin: AdminDep,
     host_id: uuid.UUID,
     module_id: ModuleIdPath,
@@ -740,6 +772,9 @@ async def set_host_override(
 
     await db.commit()
 
+    if outcome.created:
+        _notify(registry, [(host_id, outcome.revision.version)])
+
     host = await _load_host(db, host_id)
     sync = await monitoring.sync_state(db, host)
     logger.info(
@@ -769,6 +804,7 @@ async def reset_host_override(
     db: SessionDep,
     monitoring: MonitoringConfigServiceDep,
     context: AuditContextDep,
+    registry: ConnectionRegistryDep,
     _admin: AdminDep,
     host_id: uuid.UUID,
     module_id: ModuleIdPath,
@@ -795,6 +831,9 @@ async def reset_host_override(
         raise NotFoundError("No such host.") from exc
 
     await db.commit()
+
+    if outcome.created:
+        _notify(registry, [(host_id, outcome.revision.version)])
 
     host = await _load_host(db, host_id)
     stored = await monitoring.host_overrides(db, host_id)

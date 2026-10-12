@@ -27,6 +27,11 @@ from hcc.agents.protocol import (
     SUPPORTED_PROTOCOL_VERSIONS,
     Close,
     CloseReason,
+    ConfigAck,
+    ConfigAvailable,
+    ConfigNack,
+    ConfigRequest,
+    ConfigSnapshot,
     Heartbeat,
     HeartbeatAck,
     MessageType,
@@ -124,7 +129,9 @@ def test_a_frame_exactly_at_the_limit_is_parsed() -> None:
     padding = "a" * MAX_AGENT_VERSION_LENGTH
     body = frame(agent_version=padding)
     assert len(body.encode()) <= MAX_MESSAGE_BYTES
-    assert parse_agent_frame(body).agent_version == padding
+    parsed = parse_agent_frame(body)
+    assert isinstance(parsed, Heartbeat)
+    assert parsed.agent_version == padding
 
 
 def test_the_size_is_measured_in_bytes_not_characters() -> None:
@@ -209,7 +216,10 @@ def test_a_validation_failure_does_not_leak_the_field_report() -> None:
     with pytest.raises(ProtocolError) as caught:
         parse_agent_frame(frame(uptime_seconds=-1))
 
-    assert caught.value.detail == "heartbeat failed validation"
+    # The model's class name, which is safe: it comes from the closed dispatch
+    # table rather than from the frame, so it is one of four constants and not
+    # agent-supplied text.
+    assert caught.value.detail == "Heartbeat failed validation"
 
 
 # ---------------------------------------------------------------------------
@@ -225,6 +235,7 @@ def test_a_minimal_heartbeat_is_valid() -> None:
     """
     parsed = parse_agent_frame(frame())
 
+    assert isinstance(parsed, Heartbeat)
     assert parsed.agent_version is None
     assert parsed.platform is None
     assert parsed.uptime_seconds is None
@@ -235,6 +246,9 @@ def test_a_full_heartbeat_round_trips() -> None:
         frame(agent_version="0.1.0", platform="linux/amd64", uptime_seconds=3600)
     )
 
+    # `parse_agent_frame` returns a union now that configuration frames share
+    # the socket, so the narrowing is part of what each test asserts.
+    assert isinstance(parsed, Heartbeat)
     assert parsed.agent_version == "0.1.0"
     assert parsed.platform == "linux/amd64"
     assert parsed.uptime_seconds == 3600
@@ -289,15 +303,34 @@ def test_no_message_type_carries_anything_executable() -> None:
     be a one-line change that no behavioural test would notice.
     """
     forbidden = ("command", "cmd", "exec", "script", "shell", "run", "argv", "path")
-    for model in (Heartbeat, HeartbeatAck, Close):
+    for model in (
+        Heartbeat,
+        HeartbeatAck,
+        Close,
+        ConfigAvailable,
+        ConfigSnapshot,
+        ConfigRequest,
+        ConfigAck,
+        ConfigNack,
+    ):
         for name in model.model_fields:
             assert not any(word in name.lower() for word in forbidden), (
                 f"{model.__name__}.{name} looks executable"
             )
+    # Pinned so that adding a message type is a deliberate, reviewed change.
+    # Configuration arriving on this socket (phase 2, ADR-049) is the closest
+    # thing to an instruction that crosses the boundary, and it is still not
+    # one: a document names modules from a registry compiled into the agent,
+    # never a path, a binary or a collector to load.
     assert set(MessageType) == {
         MessageType.HEARTBEAT,
         MessageType.HEARTBEAT_ACK,
         MessageType.CLOSE,
+        MessageType.CONFIG_AVAILABLE,
+        MessageType.CONFIG_REQUEST,
+        MessageType.CONFIG_SNAPSHOT,
+        MessageType.CONFIG_ACK,
+        MessageType.CONFIG_NACK,
     }
 
 
