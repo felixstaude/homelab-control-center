@@ -108,6 +108,13 @@ jobs:
           HCC_DATABASE_URL: postgresql://hcc:hcc_ci@localhost:5432/hcc_test
         run: alembic check
 
+      - name: Verify the OpenAPI snapshot is current
+        # The web client's types are validated against this snapshot, so a
+        # stale one means the client may be typed against an API that no
+        # longer exists. Run from the repository root.
+        working-directory: .
+        run: ./scripts/openapi-snapshot.sh --check
+
   # ==========================================================================
   # Frontend
   # ==========================================================================
@@ -219,6 +226,82 @@ jobs:
             GOOS=${target%/*} GOARCH=${target#*/} go build -o /dev/null ./cmd/hcc-agent
             echo "✓ $target"
           done
+
+  # ==========================================================================
+  # Browser end-to-end
+  # ==========================================================================
+  e2e:
+    name: End-to-end (browser)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      # A real PostgreSQL: `scripts/e2e.sh` creates its own disposable
+      # database inside it, so nothing here shares state with the other jobs.
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: hcc
+          POSTGRES_PASSWORD: hcc_local_dev
+          POSTGRES_DB: hcc
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U hcc -d hcc"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: apps/server/pyproject.toml
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install the backend
+        # Into the venv path scripts/e2e.sh expects, so the script is the same
+        # one a developer runs rather than a CI-only variant.
+        run: |
+          python -m venv apps/server/.venv
+          apps/server/.venv/bin/pip install --quiet --upgrade pip
+          apps/server/.venv/bin/pip install --quiet -e 'apps/server[dev]'
+
+      - name: Install the frontend
+        working-directory: apps/web
+        run: npm ci
+
+      - name: Install Chromium
+        working-directory: apps/web
+        # --with-deps pulls the system libraries a headless browser needs on a
+        # bare runner.
+        run: npx playwright install --with-deps chromium
+
+      - name: Run the browser journey
+        # Stands up a disposable installation, builds the client, serves it
+        # with the /api proxy, and drives it with a real browser.
+        run: ./scripts/e2e.sh
+
+      - name: Upload failure artefacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-failure
+          path: |
+            apps/web/test-results/
+            /tmp/hcc-e2e-*.log
+          retention-days: 7
+          if-no-files-found: ignore
 
   # ==========================================================================
   # Repository hygiene

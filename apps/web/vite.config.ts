@@ -16,6 +16,26 @@ import { defineConfig } from 'vitest/config';
  * served together — so CORS is not silently relied upon in development and
  * then missing in production.
  */
+/**
+ * Where the control plane listens.
+ *
+ * Configurable so the end-to-end run can point at its own disposable
+ * instance on a different port without editing this file. Defaults to the
+ * port `make dev-server` uses.
+ */
+const BACKEND = process.env.HCC_DEV_BACKEND ?? 'http://127.0.0.1:8000';
+
+/**
+ * Paths the backend owns. Shared by `server` and `preview` so the built
+ * client is served the same way the dev client is — see the note on
+ * `preview` below.
+ */
+const API_PROXY = {
+  '/api': { target: BACKEND, changeOrigin: true },
+  '/healthz': { target: BACKEND, changeOrigin: true },
+  '/readyz': { target: BACKEND, changeOrigin: true },
+};
+
 export default defineConfig({
   plugins: [react(), tailwindcss()],
 
@@ -30,14 +50,22 @@ export default defineConfig({
     // Fail instead of silently moving to another port: a surprise port breaks
     // the backend's configured CORS origin and the proxy assumptions above.
     strictPort: true,
-    proxy: {
-      '/api': {
-        target: 'http://127.0.0.1:8000',
-        changeOrigin: true,
-      },
-      '/healthz': { target: 'http://127.0.0.1:8000', changeOrigin: true },
-      '/readyz': { target: 'http://127.0.0.1:8000', changeOrigin: true },
-    },
+    proxy: API_PROXY,
+  },
+
+  /**
+   * `vite preview` serves the production build, and needs the same proxy.
+   *
+   * Without it, previewing the built client would hit `/api` on the preview
+   * server and get a 404 — so the one mode that exercises the shipped bundle
+   * would be the one mode that cannot talk to the backend. The browser
+   * end-to-end tests run against this, which is why they test the real build
+   * rather than the dev server's transformed source.
+   */
+  preview: {
+    port: 4173,
+    strictPort: true,
+    proxy: API_PROXY,
   },
 
   build: {

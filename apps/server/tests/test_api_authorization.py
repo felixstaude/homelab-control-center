@@ -758,9 +758,7 @@ class TestSetupStatus:
         assert "before any credential" in reason
         assert len(reason) > 40
 
-    async def test_state_changing_methods_are_not_offered(
-        self, api_factory: ApiFactory
-    ) -> None:
+    async def test_state_changing_methods_are_not_offered(self, api_factory: ApiFactory) -> None:
         # Public *and* mutating would be the setup endpoint ADR-033 refuses.
         async with api_factory() as client:
             for method in ("POST", "PUT", "PATCH", "DELETE"):

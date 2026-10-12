@@ -166,8 +166,16 @@ agent-run: ## Run the agent against the local control plane
 # ============================================================================
 
 .PHONY: check
-check: check-docs check-server check-web check-agent ## Run every quality gate (what CI runs)
+check: check-docs check-contract check-server check-web check-agent ## Run the local quality gates
+# Not everything CI runs: CI additionally executes the PostgreSQL integration
+# tests, the migration apply/reverse/check cycle, the frontend production
+# build, Go cross-compilation and the browser end-to-end suite. Use
+# `make test-integration`, `make smoke` and `make e2e` for those locally.
 	@echo "✓ All checks passed"
+
+.PHONY: check-contract
+check-contract: ## Fail if the API contract changed without regenerating the snapshot
+	@./scripts/openapi-snapshot.sh --check
 
 .PHONY: check-docs
 check-docs: ## Validate documentation links, anchors, ADR numbering and roadmap
@@ -202,6 +210,16 @@ test-server: ## Run backend unit tests (no services required)
 .PHONY: smoke
 smoke: ## End-to-end smoke test against a running database (requires make db-up)
 	@./scripts/smoke-test.sh
+
+.PHONY: e2e
+e2e: ## Browser end-to-end tests (requires make db-up)
+# Creates its own disposable database and ports, so it never touches the
+# development installation — see scripts/e2e.sh.
+	@./scripts/e2e.sh
+
+.PHONY: openapi
+openapi: ## Regenerate the OpenAPI snapshot the web client's types are checked against
+	@./scripts/openapi-snapshot.sh
 
 .PHONY: test-integration
 test-integration: ## Run backend integration tests (requires make db-up)

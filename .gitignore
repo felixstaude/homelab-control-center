@@ -28,6 +28,13 @@ node_modules/
 apps/web/dist/
 apps/web/dev-dist/
 .vite/
+
+# ---- Browser end-to-end artefacts ----
+# Traces and screenshots, kept only for a failing run (playwright.config.ts).
+apps/web/test-results/
+apps/web/playwright-report/
+apps/web/blob-report/
+apps/web/.playwright/
 *.tsbuildinfo
 pnpm-debug.log*
 npm-debug.log*
