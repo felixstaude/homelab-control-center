@@ -313,6 +313,26 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "Controller:      %s\n", cfg.ControllerURL)
 	fmt.Fprintf(stdout, "Credential file: %s\n", cfg.CredentialFile)
 
+	// The controller URL is checked here, not only by `enroll` and `run`.
+	//
+	// Found by the security suite: without this, `status` reported
+	// "Enrolled: yes" for a host whose plaintext controller URL the agent
+	// would refuse on every connection attempt — so the one command an
+	// operator runs to diagnose "why is this host not appearing" told them
+	// everything was fine. A diagnostic that cannot see the most common
+	// misconfiguration is not a diagnostic.
+	info := buildinfo.Get()
+	if _, err := controller.New(controller.Config{
+		BaseURL:      cfg.ControllerURL,
+		CAFile:       cfg.CAFile,
+		AgentVersion: info.Version,
+		Platform:     info.Platform,
+	}); err != nil {
+		fmt.Fprintf(stdout, "Controller URL:  UNUSABLE\n\n")
+		fmt.Fprintf(stderr, "hcc-agent: %v\n", err)
+		return exitBadConfig
+	}
+
 	_, err := credentials.Load(cfg.CredentialFile)
 	switch {
 	case err == nil:

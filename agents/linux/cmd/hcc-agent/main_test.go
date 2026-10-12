@@ -292,6 +292,38 @@ func TestEnrollRefusesToReplaceAnExistingCredentialWithoutForce(t *testing.T) {
 	}
 }
 
+func TestStatusReportsAnUnusableControllerURL(t *testing.T) {
+	// `status` is the command an operator runs to diagnose "why is this host
+	// not appearing", so it has to be able to see the most common
+	// misconfiguration. Before this check it reported "Enrolled: yes" for a
+	// host whose plaintext controller URL the agent would refuse on every
+	// connection attempt — found by the browser security suite, which is the
+	// only place the two halves were exercised together.
+	clearAgentEnv(t)
+	path := filepath.Join(t.TempDir(), "credential")
+	if err := os.WriteFile(path, []byte(strings.Repeat("c", 43)), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	t.Setenv("HCC_AGENT_CONTROLLER_URL", "http://hcc.example.com")
+	t.Setenv("HCC_AGENT_CREDENTIAL_FILE", path)
+
+	code, stdout, stderr := captureRun(t, []string{"status"})
+
+	if code != exitBadConfig {
+		t.Errorf("exit code = %d, want %d", code, exitBadConfig)
+	}
+	if !strings.Contains(stdout, "UNUSABLE") {
+		t.Errorf("status should say the URL is unusable, got: %q", stdout)
+	}
+	if !strings.Contains(stderr, "in the clear") {
+		t.Errorf("the error should explain why, got: %q", stderr)
+	}
+	// And it must not go on to report the host as fine.
+	if strings.Contains(stdout, "Enrolled:        yes") {
+		t.Errorf("status reported a working host behind an unusable URL: %q", stdout)
+	}
+}
+
 func TestEnrollRefusesAPlaintextControllerURL(t *testing.T) {
 	// Plain HTTP would send this host's credential in the clear, and the
 	// refusal happens before the credential is spent.
