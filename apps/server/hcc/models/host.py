@@ -536,6 +536,35 @@ class Host(Base):
         doc="When the agent last reported its configuration state.",
     )
 
+    # --- Telemetry queue health ------------------------------------------
+    #
+    # What §26 asks for: the queue depth and the dropped count, so an operator
+    # can see a backlog building *before* it starts dropping, and see that it
+    # dropped. A silent queue would hide both.
+    #
+    # Stored on the host row rather than as history, for the reason there is no
+    # row per heartbeat: the only consumer is "what is this agent's queue doing
+    # now", and a row per report would be millions a day to answer it.
+
+    reported_buffered_items: Mapped[int | None] = mapped_column(
+        nullable=True,
+        doc=(
+            "Collections the agent has queued and in flight. NULL means it has "
+            "not said — an agent too old to report it, or one that has never "
+            "connected — which must not be rendered as zero."
+        ),
+    )
+
+    reported_dropped_items: Mapped[int | None] = mapped_column(
+        BigInteger,
+        nullable=True,
+        doc=(
+            "Collections the agent has ever discarded for want of queue "
+            "capacity, cumulative since it started. A number that goes *down* "
+            "means the agent restarted, which is itself worth seeing."
+        ),
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

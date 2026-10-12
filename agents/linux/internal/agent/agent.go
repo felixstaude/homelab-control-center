@@ -44,11 +44,14 @@ import (
 	"time"
 
 	"github.com/felixstaude/homelab-control-center/agents/linux/internal/buildinfo"
+	"github.com/felixstaude/homelab-control-center/agents/linux/internal/collect"
 	"github.com/felixstaude/homelab-control-center/agents/linux/internal/config"
 	"github.com/felixstaude/homelab-control-center/agents/linux/internal/controller"
 	"github.com/felixstaude/homelab-control-center/agents/linux/internal/credentials"
 	"github.com/felixstaude/homelab-control-center/agents/linux/internal/monitoring"
 	"github.com/felixstaude/homelab-control-center/agents/linux/internal/protocol"
+	"github.com/felixstaude/homelab-control-center/agents/linux/internal/scheduler"
+	"github.com/felixstaude/homelab-control-center/agents/linux/internal/telemetry"
 )
 
 // defaultHeartbeatInterval is used until the controller states its own.
@@ -97,6 +100,21 @@ type Agent struct {
 	// rejected document leaves this untouched, which is what "keep running
 	// the last known good one" means in practice.
 	config *monitoring.Stored
+
+	// queue buffers collected measurements until the controller stores them.
+	// Nil only in tests that do not exercise collection.
+	queue *telemetry.Queue
+	// collectorCtx is the scheduler's context, needed by Apply. Set by Run and
+	// nil before it, which is why every use is guarded: a configuration that
+	// arrives before Run has started has nowhere to be applied, and the
+	// stored copy is applied by Run itself.
+	collectorCtx context.Context
+	// collector runs the enabled modules on their schedules. It outlives
+	// individual connections — collection continues through a controller
+	// outage, which is the whole point of the queue (AGENT_ARCHITECTURE.md
+	// §8) — so it is started by Run and stopped when Run returns, not per
+	// session.
+	collector *scheduler.Scheduler
 }
 
 // Configuration returns the configuration in force, or nil.
@@ -201,6 +219,27 @@ func New(cfg config.Config, logger *slog.Logger, opts ...Option) (*Agent, error)
 		opt(a)
 	}
 
+	if a.queue == nil {
+		a.queue = telemetry.New(cfg.QueueCapacity)
+	}
+	if a.collector == nil {
+		// The /proc root is the real one. Per-core CPU is off unless the
+		// configuration turns it on — it multiplies the cpu module's
+		// cardinality by the core count, which is a cost the operator opts
+		// into rather than discovers.
+		a.collector = scheduler.New(
+			logger.With("component", "scheduler"),
+			a.queue,
+			[]collect.Collector{
+				collect.NewCPU(cfg.ProcRoot, cfg.CollectPerCore),
+				collect.NewMemory(cfg.ProcRoot),
+				collect.NewSwap(cfg.ProcRoot),
+				collect.NewLoad(cfg.ProcRoot),
+				collect.NewUptime(cfg.ProcRoot),
+			},
+		)
+	}
+
 	if a.dial == nil {
 		info := buildinfo.Get()
 		client, err := controller.New(controller.Config{
@@ -262,6 +301,19 @@ func (a *Agent) loadStoredConfiguration() {
 	}
 }
 
+// WithQueue replaces the telemetry queue. Intended for tests.
+func WithQueue(queue *telemetry.Queue) Option {
+	return func(a *Agent) { a.queue = queue }
+}
+
+// WithScheduler replaces the collection scheduler. Intended for tests.
+func WithScheduler(collector *scheduler.Scheduler) Option {
+	return func(a *Agent) { a.collector = collector }
+}
+
+// Queue exposes the telemetry queue, for `status` and for tests.
+func (a *Agent) Queue() *telemetry.Queue { return a.queue }
+
 // Run connects to the controller and stays connected until ctx is cancelled.
 //
 // Returns nil on a clean, context-cancelled shutdown. [ErrRevoked] when the
@@ -284,10 +336,28 @@ func (a *Agent) Run(ctx context.Context) error {
 		"controller_url", a.cfg.ControllerURL,
 		"credential_file", a.cfg.CredentialFile,
 	)
-	a.logger.Info("no data is collected in this release",
-		"detail", "this agent reports its liveness and its own version; "+
-			"metric collection lands in Phase 2",
-	)
+	// Collection runs for the whole lifetime of the process, not per
+	// connection. That is the point of the queue: a controller outage must not
+	// create a monitoring gap (AGENT_ARCHITECTURE.md §8), so the scheduler
+	// keeps collecting into the buffer and the connection drains it when there
+	// is one.
+	collectorCtx, stopCollecting := context.WithCancel(ctx)
+	collectorDone := make(chan struct{})
+	go func() {
+		defer close(collectorDone)
+		a.collector.Run(collectorCtx)
+	}()
+	defer func() {
+		stopCollecting()
+		<-collectorDone
+	}()
+
+	// Applied before the first connection, so a restarted agent resumes
+	// collecting from its stored configuration immediately.
+	if stored := a.Configuration(); stored != nil {
+		a.collector.Apply(collectorCtx, stored.Document)
+	}
+	a.collectorCtx = collectorCtx
 
 	wait := a.cfg.ReconnectMinWait
 	var attempts uint64
@@ -392,6 +462,11 @@ func (a *Agent) session(ctx context.Context) (productive bool, err error) {
 		return false, err
 	}
 	defer connection.Close()
+	// Whatever was in flight when this connection ended goes back to the
+	// front of the queue, so it is sent again on the next one. Without this an
+	// unacknowledged batch would be lost on every disconnection — which is
+	// the window at-least-once delivery exists to close.
+	defer a.queue.Requeue()
 
 	a.logger.Info("connected to the controller")
 
@@ -434,9 +509,22 @@ func (a *Agent) session(ctx context.Context) (productive bool, err error) {
 	// controller could provoke.
 	timer := a.clock.After(interval)
 	for {
+		// Re-read on every iteration: the channel is replaced after each
+		// wakeup, so holding the old one would mean never being woken again.
+		pending := a.queue.Notify()
+
 		select {
 		case <-ctx.Done():
 			return productive, ctx.Err()
+
+		case <-pending:
+			// Something to send. Drained and sent here, in the reader
+			// goroutine, because a WebSocket must be written by exactly one
+			// task — and because a sender goroutine would need its own
+			// shutdown and its own error path for no benefit.
+			if err := a.sendTelemetry(ctx, connection); err != nil {
+				return productive, err
+			}
 
 		case <-timer:
 			if err := a.sendHeartbeat(ctx, connection); err != nil {
@@ -477,6 +565,9 @@ func (a *Agent) session(ctx context.Context) (productive bool, err error) {
 				if err := a.handleConfigSnapshot(ctx, connection, result.frame.Snapshot); err != nil {
 					return productive, err
 				}
+
+			case protocol.TypeTelemetryAck:
+				a.handleTelemetryAck(result.frame.TelemetryAck)
 
 			case protocol.TypeClose:
 				return productive, a.handleClose(result.frame.Close)
@@ -572,13 +663,19 @@ func (a *Agent) sendHeartbeat(ctx context.Context, connection Connection) error 
 		version = current.Document.Version
 		checksum = current.Checksum
 	}
-	return connection.Send(ctx, protocol.NewHeartbeat(
-		info.Version,
-		info.Platform,
-		int64(a.uptime().Seconds()),
-		version,
-		checksum,
-	))
+	state := protocol.HeartbeatState{
+		AgentVersion:   info.Version,
+		Platform:       info.Platform,
+		UptimeSeconds:  int64(a.uptime().Seconds()),
+		ConfigVersion:  version,
+		ConfigChecksum: checksum,
+	}
+	if a.queue != nil {
+		stats := a.queue.Stats()
+		state.BufferedItems = stats.Queued + stats.InFlight
+		state.DroppedItems = stats.Dropped
+	}
+	return connection.Send(ctx, protocol.NewHeartbeat(state))
 }
 
 // reconcileConfig asks for a configuration when the controller has a
@@ -656,11 +753,93 @@ func (a *Agent) handleConfigSnapshot(
 	}
 
 	a.setConfiguration(outcome.Applied)
+	// Applied to the scheduler *before* acknowledging, so the controller's
+	// "up to date" means collection has actually started. Acknowledging first
+	// and reconfiguring after would leave a window in which the interface
+	// claimed a module was live and nothing was collecting it — which is
+	// exactly the gap between desired and applied state that §23 asks the
+	// product not to paper over.
+	if a.collectorCtx != nil {
+		a.collector.Apply(a.collectorCtx, outcome.Applied.Document)
+	}
 	a.logger.Info("applied a new configuration",
 		"version", outcome.Version,
 		"enabled_modules", strings.Join(outcome.Applied.Document.EnabledModules(), ","),
 	)
 	return connection.Send(ctx, protocol.NewConfigAck(outcome.Version, outcome.Checksum))
+}
+
+// sendTelemetry drains one batch and sends it.
+//
+// Does nothing when the queue is empty, which is the common case between
+// collections — the notification channel can fire for an enqueue that a
+// previous iteration already drained.
+//
+// The batch is **not** removed from the queue here; it is marked in flight and
+// removed only when the controller acknowledges it. That is what makes
+// delivery survive a dropped connection: an unacknowledged batch is still
+// there when the socket comes back.
+func (a *Agent) sendTelemetry(ctx context.Context, connection Connection) error {
+	seq, batch := a.queue.Drain()
+	if len(batch) == 0 {
+		return nil
+	}
+
+	entries := make([]protocol.TelemetryEntry, 0, len(batch))
+	for _, entry := range batch {
+		samples := make([]protocol.MetricSample, 0, len(entry.Samples))
+		for _, sample := range entry.Samples {
+			samples = append(samples, protocol.MetricSample{
+				Metric: sample.Metric,
+				Value:  sample.Value,
+				Labels: sample.Labels,
+			})
+		}
+		entries = append(entries, protocol.TelemetryEntry{
+			Module:        entry.Module,
+			SchemaVersion: entry.SchemaVersion,
+			// RFC 3339 with nanoseconds, in UTC. The controller parses an
+			// aware datetime and refuses a naive one, so the zone is not
+			// optional — and UTC rather than local, because a host whose zone
+			// changes must not appear to have moved its measurements.
+			CollectedAt: entry.CollectedAt.UTC().Format(time.RFC3339Nano),
+			DurationMs:  entry.DurationMs,
+			Error:       entry.Error,
+			Samples:     samples,
+		})
+	}
+
+	return connection.Send(ctx, protocol.NewTelemetry(seq, entries))
+}
+
+// handleTelemetryAck clears the in-flight batch.
+//
+// A rejection count is logged rather than retried. The controller refuses a
+// sample for reasons retrying cannot fix — a module no longer enabled, a
+// metric this agent's registry declares and the controller's does not — so
+// re-sending would be an infinite loop against a permanent answer. The count
+// and the reason are what the operator needs instead.
+func (a *Agent) handleTelemetryAck(ack *protocol.TelemetryAck) {
+	if !a.queue.Ack(ack.Seq) {
+		// An acknowledgement for a batch this agent is not waiting on: a
+		// stale frame from a previous connection. Ignored rather than acted
+		// on, because clearing the wrong batch would discard data the
+		// controller has not stored.
+		a.logger.Debug("ignoring a telemetry acknowledgement for an unknown batch",
+			"seq", ack.Seq,
+		)
+		return
+	}
+	if ack.Rejected > 0 {
+		a.logger.Warn("the controller refused some samples",
+			"seq", ack.Seq,
+			"accepted", ack.Accepted,
+			"rejected", ack.Rejected,
+			"detail", ack.Detail,
+		)
+		return
+	}
+	a.logger.Debug("telemetry stored", "seq", ack.Seq, "samples", ack.Accepted)
 }
 
 // jitter spreads a backoff delay across [d/2, d).

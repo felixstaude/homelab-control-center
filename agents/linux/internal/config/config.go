@@ -42,8 +42,16 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
+
+	// Imported for the bounds they own, rather than restating them here.
+	// Neither package imports this one, so there is no cycle — and a
+	// duplicated constant is exactly the drift this project spends effort
+	// avoiding elsewhere.
+	"github.com/felixstaude/homelab-control-center/agents/linux/internal/collect"
+	"github.com/felixstaude/homelab-control-center/agents/linux/internal/telemetry"
 )
 
 // Environment variable names. All agent configuration is prefixed HCC_AGENT_.
@@ -51,6 +59,9 @@ const (
 	EnvControllerURL    = "HCC_AGENT_CONTROLLER_URL"
 	EnvCredentialFile   = "HCC_AGENT_CREDENTIAL_FILE"
 	EnvConfigFile       = "HCC_AGENT_CONFIG_FILE"
+	EnvQueueCapacity    = "HCC_AGENT_QUEUE_CAPACITY"
+	EnvProcRoot         = "HCC_AGENT_PROC_ROOT"
+	EnvCollectPerCore   = "HCC_AGENT_COLLECT_PER_CORE"
 	EnvEnrollmentToken  = "HCC_AGENT_ENROLLMENT_TOKEN" //nolint:gosec // a variable name, not a credential
 	EnvEnrollmentFile   = "HCC_AGENT_ENROLLMENT_TOKEN_FILE"
 	EnvCAFile           = "HCC_AGENT_CA_FILE"
@@ -128,6 +139,28 @@ type Config struct {
 	// for the controller.
 	ConfigFile string
 
+	// QueueCapacity bounds how many collections the agent buffers while the
+	// controller is unreachable. Oldest are dropped first, and the drops are
+	// counted and reported on the next heartbeat.
+	QueueCapacity int
+
+	// ProcRoot is where /proc is mounted. Configurable for one real reason
+	// and one convenience: an agent in a container may have the host's /proc
+	// bind-mounted somewhere else, and the collector tests read recorded
+	// fixtures. Not a security boundary — an operator who can set this can
+	// already read /proc.
+	ProcRoot string
+
+	// CollectPerCore adds a series per logical CPU to the cpu module.
+	//
+	// Off by default and deliberately a *local* setting rather than part of
+	// the controller's configuration document: it multiplies this module's
+	// cardinality by the host's core count, and a 256-core host is a decision
+	// about that host rather than about the fleet. A later release may move it
+	// into the module's options, which is where it belongs once module
+	// options exist.
+	CollectPerCore bool
+
 	// CAFile optionally points at a PEM bundle to trust in addition to the
 	// system roots. For an internal CA the operator would rather not install
 	// host-wide.
@@ -151,6 +184,8 @@ func defaults() Config {
 	return Config{
 		CredentialFile:   DefaultCredentialFile,
 		ConfigFile:       DefaultConfigFile,
+		QueueCapacity:    telemetry.DefaultCapacity,
+		ProcRoot:         collect.DefaultProcRoot,
 		ShutdownTimeout:  DefaultShutdownGrace,
 		ReconnectMinWait: DefaultReconnectMin,
 		ReconnectMaxWait: DefaultReconnectMax,
@@ -194,6 +229,29 @@ func Load(lookupEnv func(string) (string, bool)) (Config, error) {
 	}
 	if value, ok := lookupEnv(EnvConfigFile); ok && strings.TrimSpace(value) != "" {
 		cfg.ConfigFile = strings.TrimSpace(value)
+	}
+	if value, ok := lookupEnv(EnvProcRoot); ok && strings.TrimSpace(value) != "" {
+		cfg.ProcRoot = strings.TrimSpace(value)
+	}
+	if value, ok := lookupEnv(EnvQueueCapacity); ok && strings.TrimSpace(value) != "" {
+		parsed, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil {
+			problems = append(problems, fmt.Sprintf(
+				"%s: %q is not a whole number", EnvQueueCapacity, value,
+			))
+		} else {
+			cfg.QueueCapacity = parsed
+		}
+	}
+	if value, ok := lookupEnv(EnvCollectPerCore); ok && strings.TrimSpace(value) != "" {
+		parsed, err := strconv.ParseBool(strings.TrimSpace(value))
+		if err != nil {
+			problems = append(problems, fmt.Sprintf(
+				"%s: %q is not a boolean", EnvCollectPerCore, value,
+			))
+		} else {
+			cfg.CollectPerCore = parsed
+		}
 	}
 	if value, ok := lookupEnv(EnvCAFile); ok {
 		cfg.CAFile = strings.TrimSpace(value)
@@ -308,6 +366,17 @@ func (c *Config) Validate() error {
 
 	if strings.TrimSpace(c.CredentialFile) == "" {
 		problems = append(problems, fmt.Sprintf("%s must not be empty", EnvCredentialFile))
+	}
+
+	if c.QueueCapacity < 1 || c.QueueCapacity > telemetry.MaxCapacity {
+		problems = append(problems, fmt.Sprintf(
+			"%s: must be between 1 and %d, got %d",
+			EnvQueueCapacity, telemetry.MaxCapacity, c.QueueCapacity,
+		))
+	}
+
+	if strings.TrimSpace(c.ProcRoot) == "" {
+		problems = append(problems, fmt.Sprintf("%s must not be empty", EnvProcRoot))
 	}
 
 	if strings.TrimSpace(c.ConfigFile) == "" {

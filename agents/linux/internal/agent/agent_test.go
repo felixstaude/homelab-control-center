@@ -710,11 +710,16 @@ func TestTheAgentNeverLogsTheCredential(t *testing.T) {
 	}
 }
 
-func TestTheStartupLogStatesThatNothingIsCollected(t *testing.T) {
+func TestAnUnconfiguredAgentSaysSoRatherThanLookingLikeItIsMonitoring(t *testing.T) {
 	t.Parallel()
 
-	// Engineering rule 8: the agent must not look like it is monitoring when
-	// it is not. The log is the one place an operator checks.
+	// The agent must not look like it is monitoring when it is not, and the
+	// log is the one place an operator checks.
+	//
+	// This test used to assert the literal sentence "no data is collected in
+	// this release", which was true until collection shipped. The *property*
+	// is what mattered, so it is now asserted as the property: an agent with
+	// no stored configuration says it has none, and starts no collection.
 	var log strings.Builder
 
 	_, _ = runUntil(t, enrolledConfig(t),
@@ -723,8 +728,12 @@ func TestTheStartupLogStatesThatNothingIsCollected(t *testing.T) {
 		},
 		2, &log)
 
-	if !strings.Contains(log.String(), "no data is collected") {
-		t.Errorf("the startup log should say so plainly, got: %s", log.String())
+	if !strings.Contains(log.String(), "no stored configuration") {
+		t.Errorf("the startup log should say there is no configuration, got: %s", log.String())
+	}
+	// And it did not claim to be collecting anything.
+	if strings.Contains(log.String(), "collecting a module") {
+		t.Errorf("an unconfigured agent started a collector: %s", log.String())
 	}
 }
 

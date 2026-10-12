@@ -573,6 +573,8 @@ async def _handle_heartbeat(
             agent=agent,
             agent_version=heartbeat.agent_version,
             platform=heartbeat.platform,
+            buffered_items=heartbeat.buffered_items,
+            dropped_items=heartbeat.dropped_items,
         )
         if applied:
             await monitoring.record_reported_config(

@@ -60,6 +60,11 @@ const (
 	TypeConfigSnapshot  = "config_snapshot"
 	TypeConfigAck       = "config_ack"
 	TypeConfigNack      = "config_nack"
+
+	// Telemetry, phase 3. Measurements flow towards the controller — the
+	// direction that cannot instruct anything — and the reply is two counts.
+	TypeTelemetry    = "telemetry"
+	TypeTelemetryAck = "telemetry_ack"
 )
 
 // Close reasons the controller may send.
@@ -127,18 +132,44 @@ type Heartbeat struct {
 	// version below 1 for exactly that reason.
 	ConfigVersion  int64  `json:"config_version,omitempty"`
 	ConfigChecksum string `json:"config_checksum,omitempty"`
+
+	// BufferedItems and DroppedItems report the telemetry queue, so an
+	// operator can see a backlog building before it starts dropping — and see
+	// that it dropped, which is the thing a silent queue would hide.
+	//
+	// DroppedItems is cumulative rather than since-last-report: a reader that
+	// missed a heartbeat would otherwise under-count, and the controller can
+	// difference two readings itself.
+	BufferedItems int   `json:"buffered_items,omitempty"`
+	DroppedItems  int64 `json:"dropped_items,omitempty"`
+}
+
+// HeartbeatState is everything a heartbeat reports about the agent.
+//
+// A struct rather than seven positional parameters. The function had three and
+// grew to five with configuration and seven with the queue counters, at which
+// point `NewHeartbeat(v, p, 3600, 7, "sha256:…", 12, 0)` is a line nobody can
+// read and a line where two ints can be swapped silently.
+type HeartbeatState struct {
+	AgentVersion  string
+	Platform      string
+	UptimeSeconds int64
+
+	// ConfigVersion and ConfigChecksum describe the configuration currently
+	// applied. Zero and empty when there is none.
+	ConfigVersion  int64
+	ConfigChecksum string
+
+	// BufferedItems and DroppedItems come from the telemetry queue.
+	BufferedItems int
+	DroppedItems  int64
 }
 
 // NewHeartbeat builds a heartbeat frame.
-//
-// configVersion and configChecksum describe the configuration currently
-// applied; pass 0 and "" when there is none.
-func NewHeartbeat(
-	agentVersion, platform string,
-	uptimeSeconds int64,
-	configVersion int64,
-	configChecksum string,
-) Heartbeat {
+func NewHeartbeat(state HeartbeatState) Heartbeat {
+	agentVersion, platform := state.AgentVersion, state.Platform
+	uptimeSeconds := state.UptimeSeconds
+	configVersion, configChecksum := state.ConfigVersion, state.ConfigChecksum
 	// Negative uptime is impossible and the controller refuses it, so a clock
 	// that stepped backwards is clamped rather than turned into a disconnect.
 	// An agent must not be able to lose its connection over a cosmetic field.
@@ -159,6 +190,8 @@ func NewHeartbeat(
 		UptimeSeconds:  uptimeSeconds,
 		ConfigVersion:  configVersion,
 		ConfigChecksum: configChecksum,
+		BufferedItems:  state.BufferedItems,
+		DroppedItems:   state.DroppedItems,
 	}
 }
 
@@ -307,6 +340,69 @@ func NewConfigNack(version int64, checksum string, problems []string) ConfigNack
 	}
 }
 
+// MetricSample is one measurement.
+//
+// Value is a float64 because these are measurements: a utilisation percentage
+// is genuinely fractional. That is the opposite of the rule for configuration,
+// where integers are mandatory because the document is checksummed and two
+// languages' float formatting need not agree. Nothing here is checksummed.
+//
+// Labels is omitted when empty rather than sent as {}, which is most samples —
+// the controller treats an absent map and an empty one identically, and
+// omitting it keeps a per-core batch meaningfully smaller.
+type MetricSample struct {
+	Metric string            `json:"metric"`
+	Value  float64           `json:"value"`
+	Labels map[string]string `json:"labels,omitempty"`
+}
+
+// TelemetryEntry is one module's collection.
+type TelemetryEntry struct {
+	Module        string `json:"module"`
+	SchemaVersion int    `json:"schema_version"`
+	CollectedAt   string `json:"collected_at"`
+	DurationMs    int    `json:"duration_ms,omitempty"`
+	// Error is why this collection produced nothing. Sent *with* an empty
+	// sample list, because a module that has been failing for an hour is
+	// information the operator needs.
+	Error   string         `json:"error,omitempty"`
+	Samples []MetricSample `json:"samples"`
+}
+
+// Telemetry carries a batch of measurements to the controller.
+//
+// **No host identifier**, the same absence [Heartbeat] has and for a sharper
+// reason: the host is decided by the credential that authenticated the
+// connection, so a compromised agent cannot submit telemetry attributed to
+// another host because there is no field in which to name one. The controller
+// forbids unknown fields, so adding one is a protocol error.
+type Telemetry struct {
+	V     int              `json:"v"`
+	Type  string           `json:"type"`
+	Seq   int64            `json:"seq"`
+	Batch []TelemetryEntry `json:"batch"`
+}
+
+// NewTelemetry builds a telemetry frame.
+func NewTelemetry(seq int64, batch []TelemetryEntry) Telemetry {
+	return Telemetry{V: Version, Type: TypeTelemetry, Seq: seq, Batch: batch}
+}
+
+// TelemetryAck is the controller's confirmation that a batch is stored.
+//
+// Rejected is reported rather than being a silent difference: a sample the
+// controller refused — an unknown metric, a module that is no longer enabled —
+// is something the operator should see, and an agent told only "accepted: 11"
+// of twelve would have no way to say which.
+type TelemetryAck struct {
+	V        int    `json:"v"`
+	Type     string `json:"type"`
+	Seq      int64  `json:"seq"`
+	Accepted int    `json:"accepted"`
+	Rejected int    `json:"rejected"`
+	Detail   string `json:"detail,omitempty"`
+}
+
 // ServerFrame is one decoded controller → agent frame.
 //
 // A tagged union rather than an interface, because a caller has to handle
@@ -316,10 +412,11 @@ func NewConfigNack(version int64, checksum string, problems []string) ConfigNack
 type ServerFrame struct {
 	Type string
 
-	Ack       *HeartbeatAck
-	Close     *Close
-	Available *ConfigAvailable
-	Snapshot  *ConfigSnapshot
+	Ack          *HeartbeatAck
+	Close        *Close
+	Available    *ConfigAvailable
+	Snapshot     *ConfigSnapshot
+	TelemetryAck *TelemetryAck
 }
 
 // ErrFrameTooLarge reports a frame the agent refused to decode.
@@ -381,6 +478,13 @@ func ParseServerFrame(raw []byte) (ServerFrame, error) {
 			return ServerFrame{}, fmt.Errorf("malformed %s frame: %w", TypeConfigSnapshot, err)
 		}
 		return ServerFrame{Type: TypeConfigSnapshot, Snapshot: &snapshot}, nil
+
+	case TypeTelemetryAck:
+		var ack TelemetryAck
+		if err := json.Unmarshal(raw, &ack); err != nil {
+			return ServerFrame{}, fmt.Errorf("malformed %s frame: %w", TypeTelemetryAck, err)
+		}
+		return ServerFrame{Type: TypeTelemetryAck, TelemetryAck: &ack}, nil
 
 	default:
 		return ServerFrame{}, fmt.Errorf(

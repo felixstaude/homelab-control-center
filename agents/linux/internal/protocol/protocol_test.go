@@ -11,7 +11,7 @@ import (
 func TestAHeartbeatCarriesTheNegotiatedVersion(t *testing.T) {
 	t.Parallel()
 
-	heartbeat := protocol.NewHeartbeat("0.1.0", "linux/amd64", 3600, 0, "")
+	heartbeat := protocol.NewHeartbeat(protocol.HeartbeatState{AgentVersion: "0.1.0", Platform: "linux/amd64", UptimeSeconds: 3600})
 
 	if heartbeat.V != protocol.Version {
 		t.Errorf("v = %d, want %d", heartbeat.V, protocol.Version)
@@ -27,7 +27,7 @@ func TestANegativeUptimeIsClampedRatherThanSent(t *testing.T) {
 	// The controller refuses a negative uptime, so a clock that stepped
 	// backwards would otherwise cost the agent its connection over a cosmetic
 	// field. NTP stepping a freshly-booted machine is the common cause.
-	heartbeat := protocol.NewHeartbeat("0.1.0", "linux/amd64", -5, 0, "")
+	heartbeat := protocol.NewHeartbeat(protocol.HeartbeatState{AgentVersion: "0.1.0", Platform: "linux/amd64", UptimeSeconds: -5})
 
 	if heartbeat.UptimeSeconds != 0 {
 		t.Errorf("uptime = %d, want it clamped to 0", heartbeat.UptimeSeconds)
@@ -41,7 +41,7 @@ func TestAHeartbeatHasNoFieldForClaimingAHost(t *testing.T) {
 	// credential that authenticated the connection, so there is nothing here
 	// for a compromised agent to claim to be. Asserted against the encoded
 	// form, which is what actually crosses the wire.
-	encoded, err := json.Marshal(protocol.NewHeartbeat("0.1.0", "linux/amd64", 1, 0, ""))
+	encoded, err := json.Marshal(protocol.NewHeartbeat(protocol.HeartbeatState{AgentVersion: "0.1.0", Platform: "linux/amd64", UptimeSeconds: 1}))
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestNoMessageTypeCarriesAnythingExecutable(t *testing.T) {
 	// than trusted, because adding such a field would be a one-line change
 	// that no behavioural test would notice.
 	samples := []any{
-		protocol.NewHeartbeat("v", "p", 1, 0, ""),
+		protocol.NewHeartbeat(protocol.HeartbeatState{AgentVersion: "v", Platform: "p", UptimeSeconds: 1}),
 		protocol.HeartbeatAck{V: 1, Type: protocol.TypeHeartbeatAck, IntervalSeconds: 30},
 		protocol.Close{V: 1, Type: protocol.TypeClose, Reason: protocol.CloseSuperseded},
 	}

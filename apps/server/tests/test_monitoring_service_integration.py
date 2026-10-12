@@ -630,7 +630,10 @@ async def test_a_global_change_regenerates_every_affected_host(
     )
     await db_session.commit()
 
-    assert sorted(changed) == sorted(host.id for host in hosts)
+    # `(host_id, new_version)` pairs: the version is returned so the caller
+    # can notify the agents without a query per host.
+    assert sorted(host_id for host_id, _ in changed) == sorted(host.id for host in hosts)
+    assert {version for _, version in changed} == {2}
     for host in hosts:
         latest = await service.latest_revision(db_session, host.id)
         assert latest is not None
@@ -661,7 +664,7 @@ async def test_a_host_that_overrides_the_module_is_not_reported_as_changed(
     )
     await db_session.commit()
 
-    assert changed == [plain.id]
+    assert [host_id for host_id, _ in changed] == [plain.id]
 
 
 async def test_a_global_save_that_changes_nothing_mints_no_revision(

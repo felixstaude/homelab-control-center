@@ -645,6 +645,8 @@ class AgentEnrollmentService:
         agent: AuthenticatedAgent,
         agent_version: str | None = None,
         platform: str | None = None,
+        buffered_items: int | None = None,
+        dropped_items: int | None = None,
         now: datetime | None = None,
     ) -> bool:
         """Stamp a heartbeat, if this connection is still the current one.
@@ -669,6 +671,13 @@ class AgentEnrollmentService:
             values["agent_version"] = _bounded(agent_version, AGENT_VERSION_MAX_LENGTH)
         if platform is not None:
             values["platform"] = _bounded(platform, PLATFORM_MAX_LENGTH)
+        # Written only when reported, so an agent too old to send them leaves
+        # the columns NULL rather than having them set to zero — which would
+        # claim an empty queue the controller has no evidence for.
+        if buffered_items is not None:
+            values["reported_buffered_items"] = buffered_items
+        if dropped_items is not None:
+            values["reported_dropped_items"] = dropped_items
 
         result = await db.execute(
             sql_update(Host)

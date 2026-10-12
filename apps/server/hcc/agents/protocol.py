@@ -355,6 +355,33 @@ class Heartbeat(AgentMessage):
         ),
     )
 
+    # --- Telemetry queue state, phase 3 -------------------------------------
+    #
+    # Reported so an operator can see a backlog building *before* it starts
+    # dropping, and see that it dropped — which is the thing a silent queue
+    # would hide. Advisory like every other self-reported field: the controller
+    # stores them for display and makes no decision from them.
+
+    buffered_items: int | None = Field(
+        default=None,
+        ge=0,
+        # The agent's own ceiling is 65,536 entries; the bound here is wider so
+        # that a misconfigured agent reports a number rather than losing its
+        # connection over a cosmetic field.
+        le=10_000_000,
+        description="Collections queued and in flight, waiting to be stored.",
+    )
+    dropped_items: int | None = Field(
+        default=None,
+        ge=0,
+        le=2**53,
+        description=(
+            "Collections ever discarded for want of queue capacity. "
+            "Cumulative since the agent started, so a controller that missed "
+            "a heartbeat does not under-count — it differences two readings."
+        ),
+    )
+
     def __repr__(self) -> str:
         """Representation naming the frame, not its contents.
 

@@ -84,9 +84,9 @@ Reasons are in the ADRs; the summary is:
 | 3. Configuration APIs | ✅ |
 | 4. Configuration synchronisation | ✅ |
 | 5. Scheduling engine | ✅ |
-| 6. Core collectors | ✅ built and tested; **not yet wired into the agent** |
-| 7. Telemetry transport | ⬜ next — wires 5 and 6 into the agent |
-| 8. Historical storage | ⬜ |
+| 6. Core collectors | ✅ wired: the agent collects |
+| 7. Telemetry transport | ✅ |
+| 8. Historical storage | ✅ storage and ingestion; query API next |
 | 9. Retention foundation | ⬜ |
 | 10. Host monitoring frontend | ⬜ |
 | 11. Global settings | ⬜ |
@@ -109,6 +109,8 @@ Reasons are in the ADRs; the summary is:
 | `6bfb3ac` | NIGHTSHIFT (2/?): the configuration API, split across two gates |
 | `161c73b` | NIGHTSHIFT (3/?): configuration on the agent socket, controller half |
 | `8add7c6` | NIGHTSHIFT (4/?): the agent applies, acknowledges and refuses configuration |
+| `475674d` | NIGHTSHIFT (5/?): the scheduler, the calendar engine and five real collectors |
+| `35a3b61` | NIGHTSHIFT (6/?): telemetry ingestion and time-partitioned storage |
 
 ---
 
@@ -126,11 +128,11 @@ Re-run these; do not trust the numbers.
 
 ## Next exact action
 
-Stage 7, which is also what makes stages 5 and 6 live: a bounded telemetry
-queue in the agent, the telemetry frames, and controller-side ingestion. The
-scheduler and the five collectors are built and tested but **nothing
-constructs them yet** — `internal/agent` does not build a `scheduler.Scheduler`
-or pass it the applied document, so the binary carries them as dead code until
-the queue gives the scheduler a sink to submit to.
+The metrics query API (`/api/v1/hosts/{id}/metrics/...`), then Stage 9's
+retention and rollup job. After that the frontend stages 10–12.
 
-Then Stage 8 (historical storage) and Stage 9 (retention).
+**End to end now works** in tests: an administrator enables a module, the agent
+is sent the configuration, applies it, collects real values from /proc, queues
+them, sends them, and the controller stores them in the partition covering
+their timestamp. Not yet verified against a live controller and a real agent
+process — that is Stage 13.

@@ -43,6 +43,7 @@ EXPECTED_REVISIONS = (
     "0006_host_registry",
     "0007_monitoring_config",
     "0008_metric_storage",
+    "0009_agent_queue_health",
 )
 
 # Every table the chain creates, excluding Alembic's own bookkeeping. Pinned so
@@ -182,6 +183,11 @@ async def test_downgrade_removes_the_table(scratch_database: str) -> None:
     alembic_ok(scratch_database, "upgrade", "head")
     for table in EXPECTED_TABLES:
         assert await table_exists(scratch_database, table), table
+
+    # 0009 drops two columns on `hosts` and nothing else, so the boundary
+    # worth asserting is that the metric tables it sits above survive.
+    alembic_ok(scratch_database, "downgrade", "0008_metric_storage")
+    assert await table_exists(scratch_database, "metric_samples_raw")
 
     # 0008 drops the metric tables — the partitioned parents taking every
     # partition with them — and leaves the configuration tables alone.
