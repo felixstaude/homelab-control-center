@@ -79,12 +79,19 @@ from __future__ import annotations
 
 import enum
 import json
+
+# Imported at runtime, not under TYPE_CHECKING: Pydantic resolves field
+# annotations when the model class is defined, so a type that exists only for
+# the type checker is unresolvable — the same constraint hcc/api/deps.py
+# documents for FastAPI, and the same trap.
+from datetime import datetime  # noqa: TC003
 from typing import Any, Final, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
 from hcc.models.monitoring import MAX_PROBLEM_LENGTH, MAX_PROBLEMS
 from hcc.monitoring.canonical import CHECKSUM_LENGTH
+from hcc.monitoring.modules import MAX_MODULE_ID_LENGTH
 
 #: The protocol version this controller speaks. Bumped for a breaking change
 #: to the frame format or to the meaning of a field.
@@ -128,6 +135,46 @@ HEARTBEAT_TIMEOUT_SECONDS: Final = 120
 MAX_AGENT_VERSION_LENGTH: Final = 64
 MAX_PLATFORM_LENGTH: Final = 64
 MAX_CLOSE_REASON_LENGTH: Final = 123
+
+#: Bounds on one telemetry frame.
+#:
+#: Every one of these is a denial-of-service bound, and the batch limits are
+#: the ones that matter: an agent is an authenticated peer running on a machine
+#: whose security the controller does not own, so a compromised host presents
+#: exactly this interface. Without them, one agent can submit a frame
+#: containing a million samples and the controller allocates for all of them
+#: before deciding whether it wants any.
+#:
+#: The numbers are sized from the real workload rather than guessed. Five
+#: modules produce at most about thirty samples a collection — the per-core CPU
+#: series dominates — so a 32-entry batch at 512 samples is twenty collections'
+#: worth of backlog in one frame, comfortably more than a reconnecting agent
+#: needs and comfortably inside :data:`MAX_MESSAGE_BYTES`.
+MAX_BATCH_ENTRIES: Final = 32
+MAX_BATCH_SAMPLES: Final = 512
+MAX_SAMPLE_LABELS: Final = 4
+MAX_LABEL_KEY_LENGTH: Final = 32
+MAX_LABEL_VALUE_LENGTH: Final = 64
+MAX_COLLECTOR_ERROR_LENGTH: Final = 256
+
+#: How far into the future a sample's timestamp may be before it is refused.
+#:
+#: Two minutes, which is NTP slop and nothing more. A host whose clock is
+#: further ahead than that is reporting measurements that have not happened,
+#: and storing them would put a point in the future on every chart and make
+#: "latest" mean a value nobody has measured yet. Refused rather than
+#: rewritten to the controller's clock: a sample whose timestamp the controller
+#: invented is a sample whose timestamp is a lie.
+MAX_CLOCK_SKEW_SECONDS: Final = 120
+
+#: How far into the past a sample may be and still be stored.
+#:
+#: Seven days, matching the default raw retention: a sample older than the
+#: retention window would be written and immediately become eligible for
+#: deletion, which is work for nothing. It also bounds what a compromised
+#: agent can do to the partition set — backfilling a year of samples would
+#: create a year of daily partitions.
+MAX_BACKFILL_SECONDS: Final = 7 * 24 * 60 * 60
 
 #: Largest configuration version an agent may claim to be running.
 #:
@@ -176,6 +223,15 @@ class MessageType(enum.StrEnum):
     #: Agent → controller. "I refused this version, and here is every reason."
     #: The agent keeps running its last known good configuration.
     CONFIG_NACK = "config_nack"
+
+    # --- Telemetry, phase 3 -------------------------------------------------
+
+    #: Agent → controller. A batch of collected measurements.
+    TELEMETRY = "telemetry"
+    #: Controller → agent. "I have stored this batch." The agent frees the
+    #: queue space only on this, which is what makes delivery at-least-once
+    #: across a reconnection rather than best-effort.
+    TELEMETRY_ACK = "telemetry_ack"
 
 
 class CloseReason(enum.StrEnum):
@@ -488,9 +544,180 @@ class ConfigNack(AgentMessage):
         return clamped
 
 
+class MetricSample(BaseModel):
+    """One measurement.
+
+    ``value`` is a float because these are measurements: a utilisation
+    percentage is genuinely fractional. That is the opposite of the rule for
+    *configuration*, where integers are mandatory (ADR-019) precisely because
+    a configuration document is checksummed and two languages' float
+    formatting need not agree. Nothing here is checksummed.
+
+    ``allow_inf_nan=False`` is the important part. A NaN is what a division by
+    a zero total produces — a swapless host, a zero-length interval — and
+    JSON has no way to express it, so an agent sending one has either a bug or
+    a hand-built frame. It is refused here rather than stored, because a NaN
+    in a numeric column is a value no chart can render and no query can filter
+    on.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    metric: str = Field(
+        max_length=MAX_MODULE_ID_LENGTH,
+        description=(
+            "The metric identifier within the module. Checked against the "
+            "module's declared metrics, so a typo is a refused sample rather "
+            "than a new series nobody expected."
+        ),
+    )
+    value: float = Field(allow_inf_nan=False)
+    labels: dict[str, str] = Field(
+        default_factory=dict,
+        max_length=MAX_SAMPLE_LABELS,
+        description=(
+            "The declared dimensions: {'core': '3'}, {'window': '1m'}. "
+            "Bounded in count, key length and value length, because labels "
+            "are what turn a series into a thousand series — and cardinality "
+            "is the one cost of a metric system that an operator cannot see "
+            "coming."
+        ),
+    )
+
+    @field_validator("labels")
+    @classmethod
+    def _bound_labels(cls, value: dict[str, str]) -> dict[str, str]:
+        """Refuse an oversized label rather than truncating it.
+
+        Truncation is right for a *diagnostic* string — a rejection problem —
+        and wrong here: two labels that differ only past the truncation point
+        would collapse into one series, silently merging two cores' data. A
+        refusal loses one sample; a collapse corrupts a series.
+        """
+        for key, entry in value.items():
+            if len(key) > MAX_LABEL_KEY_LENGTH:
+                raise ValueError(f"label key exceeds {MAX_LABEL_KEY_LENGTH} characters")
+            if len(entry) > MAX_LABEL_VALUE_LENGTH:
+                raise ValueError(f"label value exceeds {MAX_LABEL_VALUE_LENGTH} characters")
+        return value
+
+
+class TelemetryEntry(BaseModel):
+    """One module's collection: its samples, or the reason there are none."""
+
+    model_config = {"extra": "forbid"}
+
+    module: str = Field(max_length=MAX_MODULE_ID_LENGTH)
+    schema_version: int = Field(
+        ge=1,
+        le=1_000,
+        description=(
+            "The module's metric payload version, so the controller can "
+            "interpret a payload from an agent older than itself."
+        ),
+    )
+    collected_at: datetime = Field(
+        description=(
+            "When the agent took the measurement, on the agent's clock. "
+            "Validated against the controller's, because a host whose clock "
+            "is wrong would otherwise write points in the future."
+        )
+    )
+    duration_ms: int | None = Field(
+        default=None,
+        ge=0,
+        le=600_000,
+        description="How long the collection took. Advisory; for the agent health view.",
+    )
+    error: str | None = Field(
+        default=None,
+        max_length=MAX_COLLECTOR_ERROR_LENGTH,
+        description=(
+            "Why this collection produced nothing. Present *with* an empty "
+            "sample list: a module that has been failing for an hour is "
+            "information an operator needs, and an entry carrying only an "
+            "absence could not express it."
+        ),
+    )
+    samples: list[MetricSample] = Field(default_factory=list, max_length=MAX_BATCH_SAMPLES)
+
+
+class Telemetry(AgentMessage):
+    """Agent → controller: a batch of measurements.
+
+    **There is no ``host_id``**, and the absence is the design — the same
+    absence :class:`Heartbeat` has, for a sharper reason. The host is decided
+    by the credential that authenticated the connection, so a compromised
+    agent cannot submit telemetry attributed to another host, because there is
+    no field in which to name one (§15). A check could be forgotten; a missing
+    field cannot.
+
+    ``seq`` is for **observability, not correctness**. It is monotonic per
+    agent process and resets when the agent restarts, so it cannot be the
+    basis of deduplication. What makes duplicates harmless is that storage is
+    keyed on ``(series, recorded_at)`` and a repeat write is an upsert that
+    changes nothing — so the delivery model is at-least-once with idempotent
+    writes, which is the honest description and is not exactly-once.
+    """
+
+    type: Literal[MessageType.TELEMETRY] = MessageType.TELEMETRY
+
+    seq: int = Field(
+        ge=0,
+        le=2**53,
+        description=(
+            "Monotonic per agent process, reset on restart. For gap and "
+            "duplicate *reporting*; never used to decide whether to store."
+        ),
+    )
+    batch: list[TelemetryEntry] = Field(min_length=1, max_length=MAX_BATCH_ENTRIES)
+
+    def total_samples(self) -> int:
+        """How many samples this frame carries, across every entry."""
+        return sum(len(entry.samples) for entry in self.batch)
+
+    def __repr__(self) -> str:
+        """Representation naming the shape, not the contents.
+
+        This appears in protocol error messages sent *to the agent*, and a
+        message echoing a frame back would make the controller a reflector for
+        whatever an agent chose to put in it.
+        """
+        return f"Telemetry(v={self.v}, seq={self.seq}, entries={len(self.batch)})"
+
+    __str__ = __repr__
+
+
+class TelemetryAck(BaseModel):
+    """Controller → agent: this batch is stored.
+
+    The agent frees its queue space on this and not before, which is what
+    makes delivery survive a reconnection: a batch sent and not acknowledged
+    is still in the agent's queue when the socket comes back.
+
+    ``rejected`` is reported rather than being a silent difference. A sample
+    the controller refused — an unknown metric, a timestamp too far ahead — is
+    something the operator should be able to see, and an agent that was told
+    only "accepted: 11" of twelve would have no way to say which.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    v: int = PROTOCOL_VERSION
+    type: Literal[MessageType.TELEMETRY_ACK] = MessageType.TELEMETRY_ACK
+    seq: int = Field(description="The sequence number this acknowledges.")
+    accepted: int = Field(ge=0, description="Samples stored.")
+    rejected: int = Field(ge=0, description="Samples refused.")
+    detail: str | None = Field(
+        default=None,
+        max_length=MAX_CLOSE_REASON_LENGTH,
+        description="Why samples were refused, when any were. Never a stack trace.",
+    )
+
+
 #: Every frame an agent may send. A closed union, so an unrecognised ``type``
 #: is refused rather than ignored.
-IncomingMessage = Heartbeat | ConfigRequest | ConfigAck | ConfigNack
+IncomingMessage = Heartbeat | ConfigRequest | ConfigAck | ConfigNack | Telemetry
 
 
 class ProtocolError(Exception):
@@ -594,4 +821,5 @@ _INCOMING_BY_TYPE: Final[dict[str, type[IncomingMessage]]] = {
     MessageType.CONFIG_REQUEST.value: ConfigRequest,
     MessageType.CONFIG_ACK.value: ConfigAck,
     MessageType.CONFIG_NACK.value: ConfigNack,
+    MessageType.TELEMETRY.value: Telemetry,
 }

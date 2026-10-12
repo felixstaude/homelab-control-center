@@ -35,7 +35,11 @@ from hcc.agents.protocol import (
     Heartbeat,
     HeartbeatAck,
     MessageType,
+    MetricSample,
     ProtocolError,
+    Telemetry,
+    TelemetryAck,
+    TelemetryEntry,
     is_supported_version,
     parse_agent_frame,
 )
@@ -312,6 +316,10 @@ def test_no_message_type_carries_anything_executable() -> None:
         ConfigRequest,
         ConfigAck,
         ConfigNack,
+        Telemetry,
+        TelemetryAck,
+        MetricSample,
+        TelemetryEntry,
     ):
         for name in model.model_fields:
             assert not any(word in name.lower() for word in forbidden), (
@@ -331,6 +339,11 @@ def test_no_message_type_carries_anything_executable() -> None:
         MessageType.CONFIG_SNAPSHOT,
         MessageType.CONFIG_ACK,
         MessageType.CONFIG_NACK,
+        # Phase 3. Telemetry is measurement data flowing *towards* the
+        # controller — the direction that cannot instruct anything — and the
+        # controller→agent half is an acknowledgement carrying two counts.
+        MessageType.TELEMETRY,
+        MessageType.TELEMETRY_ACK,
     }
 
 

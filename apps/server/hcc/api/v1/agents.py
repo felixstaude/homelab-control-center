@@ -90,6 +90,8 @@ from hcc.agents.protocol import (
     Heartbeat,
     HeartbeatAck,
     ProtocolError,
+    Telemetry,
+    TelemetryAck,
     parse_agent_frame,
 )
 from hcc.agents.registry import (
@@ -116,6 +118,7 @@ from hcc.services.enrollment import (
     AgentEnrollmentService,
     EnrollmentRefusedError,
 )
+from hcc.services.metrics import MetricsService
 from hcc.services.monitoring import (
     REVISION_REASON_FOR_CONNECT,
     MonitoringConfigService,
@@ -204,6 +207,17 @@ def get_monitoring_service(connection: HTTPConnection) -> MonitoringConfigServic
     FastAPI's annotation resolution has caught this module out before.
     """
     service: MonitoringConfigService = connection.app.state.monitoring_config_service
+    return service
+
+
+def get_metrics_service(connection: HTTPConnection) -> MetricsService:
+    """Return the process-wide metrics service.
+
+    Process-wide rather than per request, because it holds the series-identity
+    cache — a per-request instance would start empty and turn every sample
+    into an upsert, which is the cost the cache exists to remove.
+    """
+    service: MetricsService = connection.app.state.metrics_service
     return service
 
 
@@ -410,6 +424,59 @@ class _FrameBudget:
         return True
 
 
+#: Sustained samples one connection may submit per second, and the burst it
+#: may spend at once.
+#:
+#: A reference host — eight cores, five modules, per-core CPU enabled — produces
+#: about thirty samples a collection. At the one-second floor that is thirty a
+#: second, so two hundred is nearly seven times what the fastest legitimate
+#: configuration needs. The burst allows a reconnecting agent to drain a
+#: backlog promptly: ten seconds' worth in one go, which is what makes
+#: at-least-once delivery after an outage feel immediate rather than throttled.
+#:
+#: Why this exists on top of the frame budget: five frames a second at the
+#: maximum batch is 2,560 samples a second from one host, which is three orders
+#: of magnitude beyond a reference host and enough that five hundred of them
+#: would be the only thing the database did. The frame budget bounds *calls*;
+#: this bounds *work*.
+MAX_SAMPLES_PER_SECOND: Final = 200
+SAMPLE_BURST: Final = 2_000
+
+
+class _SampleBudget:
+    """A token bucket bounding one connection's sample rate.
+
+    The same shape as :class:`_FrameBudget` and deliberately a separate
+    instance rather than a parameterised one: the two have different units and
+    different burst sizes, and a single class taking a rate would invite a
+    future caller to share a bucket between them.
+    """
+
+    __slots__ = ("_last", "_tokens")
+
+    def __init__(self) -> None:
+        self._tokens = float(SAMPLE_BURST)
+        self._last = time.monotonic()
+
+    def spend(self, samples: int) -> bool:
+        """Consume ``samples`` from the budget, or return ``False``.
+
+        A monotonic clock, for the reason :class:`_FrameBudget` gives: an NTP
+        step backwards on a freshly booted machine would otherwise either grant
+        an unbounded refill or stall the bucket.
+        """
+        now = time.monotonic()
+        self._tokens = min(
+            float(SAMPLE_BURST),
+            self._tokens + (now - self._last) * MAX_SAMPLES_PER_SECOND,
+        )
+        self._last = now
+        if self._tokens < samples:
+            return False
+        self._tokens -= samples
+        return True
+
+
 def _close_reason(raw: str | None) -> CloseReason:
     """Map a registry-supplied reason onto the protocol vocabulary.
 
@@ -534,6 +601,7 @@ async def connect(
     database: Annotated[Database, Depends(get_database)],
     registry: Annotated[ConnectionRegistry, Depends(get_connection_registry)],
     monitoring: Annotated[MonitoringConfigService, Depends(get_monitoring_service)],
+    metrics: Annotated[MetricsService, Depends(get_metrics_service)],
 ) -> None:
     """The agent's outbound, authenticated, long-lived connection.
 
@@ -652,21 +720,29 @@ async def connect(
         superseded.closing.set()
 
     budget = _FrameBudget()
+    sample_budget = _SampleBudget()
     last_recheck = time.monotonic()
     closing_reason: CloseReason | None = None
     closing_detail: str | None = None
 
-    # The configuration this connection last *sent*. Not what the agent is
-    # running — that is the agent's claim, recorded from its heartbeats — but
-    # what this socket put on the wire, so a `config_request` can be answered
-    # without re-reading the row and an acknowledgement can be matched against
-    # something.
+    # Which modules this connection has told the agent to collect.
+    #
+    # Held here rather than read per batch: telemetry is refused for a module
+    # nobody enabled, and re-reading the host's configuration on every batch
+    # would be two queries per batch per host on the hot path. The set is
+    # replaced whenever this socket sends a revision, which is exactly when it
+    # can change — and an agent that submits for a module it was told to stop
+    # collecting is refused until it applies the new document, which is the
+    # correct answer rather than a race.
+    enabled_modules: frozenset[str] = frozenset()
+
     try:
         async with database.session_factory() as db:
             outcome = await monitoring.ensure_revision(
                 db, agent.host_id, reason=REVISION_REASON_FOR_CONNECT
             )
             await db.commit()
+        enabled_modules = outcome.enabled_modules
         await socket.send_text(_snapshot_frame(outcome.revision))
     except Exception:
         # A configuration the agent cannot be given is not a reason to refuse
@@ -792,6 +868,7 @@ async def connect(
                         db, agent.host_id, reason=REVISION_REASON_FOR_CONNECT
                     )
                     await db.commit()
+                enabled_modules = outcome.enabled_modules
                 await socket.send_text(_snapshot_frame(outcome.revision))
 
             elif isinstance(message, ConfigAck):
@@ -815,6 +892,39 @@ async def connect(
                         host_id=str(agent.host_id),
                         version=message.version,
                     )
+
+            elif isinstance(message, Telemetry):
+                samples = message.total_samples()
+                if not sample_budget.spend(samples):
+                    # A bounded, visible refusal rather than an unbounded
+                    # acceptance. The frame budget already caps frames per
+                    # second; this caps *samples*, because one agent sending
+                    # the maximum batch at the maximum frame rate is two and a
+                    # half thousand samples a second from a single host —
+                    # three orders of magnitude more than a reference host
+                    # produces, and enough that five hundred of them would be
+                    # the only thing the database did.
+                    closing_reason = CloseReason.RATE_LIMITED
+                    closing_detail = f"more than {MAX_SAMPLES_PER_SECOND} samples per second"
+                    break
+
+                async with database.session_factory() as db:
+                    ingested = await metrics.ingest(
+                        db,
+                        host_id=agent.host_id,
+                        entries=message.batch,
+                        enabled_modules=enabled_modules,
+                    )
+                    await db.commit()
+
+                await socket.send_text(
+                    TelemetryAck(
+                        seq=message.seq,
+                        accepted=ingested.accepted,
+                        rejected=ingested.rejected,
+                        detail=ingested.detail,
+                    ).model_dump_json()
+                )
 
             elif isinstance(message, ConfigNack):
                 async with database.session_factory() as db:

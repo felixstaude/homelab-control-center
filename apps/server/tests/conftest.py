@@ -76,6 +76,15 @@ _TRUNCATED_TABLES = (
     "host_enrollments",
     "host_module_overrides",
     "hosts",
+    # The partitioned sample tables are truncated through their parents, which
+    # cascades to every partition. `metric_partitions` is *not* truncated: it
+    # is the catalogue of tables that physically exist, and emptying it while
+    # leaving the partitions in place would make the maintenance job try to
+    # create ones that already do.
+    "metric_samples_1h",
+    "metric_samples_5m",
+    "metric_samples_raw",
+    "metric_series",
     "installation",
     "sessions",
     "users",

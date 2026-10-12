@@ -42,6 +42,7 @@ EXPECTED_REVISIONS = (
     "0005_user_management",
     "0006_host_registry",
     "0007_monitoring_config",
+    "0008_metric_storage",
 )
 
 # Every table the chain creates, excluding Alembic's own bookkeeping. Pinned so
@@ -57,6 +58,11 @@ EXPECTED_TABLES = frozenset(
         "host_enrollments",
         "host_module_overrides",
         "hosts",
+        "metric_partitions",
+        "metric_samples_1h",
+        "metric_samples_5m",
+        "metric_samples_raw",
+        "metric_series",
         "installation",
         "sessions",
         "users",
@@ -176,6 +182,14 @@ async def test_downgrade_removes_the_table(scratch_database: str) -> None:
     alembic_ok(scratch_database, "upgrade", "head")
     for table in EXPECTED_TABLES:
         assert await table_exists(scratch_database, table), table
+
+    # 0008 drops the metric tables — the partitioned parents taking every
+    # partition with them — and leaves the configuration tables alone.
+    alembic_ok(scratch_database, "downgrade", "0007_monitoring_config")
+    assert not await table_exists(scratch_database, "metric_samples_raw")
+    assert not await table_exists(scratch_database, "metric_series")
+    assert not await table_exists(scratch_database, "metric_partitions")
+    assert await table_exists(scratch_database, "host_config_revisions")
 
     # 0007 drops the three monitoring configuration tables and leaves the host
     # registry alone — the boundary worth asserting, because the override and
@@ -436,6 +450,71 @@ async def test_monitoring_config_triggers_the_models_cannot_express_exist(
     assert revisions == set()
 
 
+async def test_metric_storage_is_actually_partitioned(scratch_database: str) -> None:
+    """The one thing in ``0008`` the models structurally cannot express.
+
+    SQLAlchemy's DDL has no ``PARTITION BY``, so the three sample tables are
+    created by raw SQL and `alembic check` compares them against plain-table
+    models — which means a migration that created them *unpartitioned* would
+    pass every other gate. Retention would then be a ``DELETE`` over hundreds
+    of millions of rows instead of a ``DROP TABLE``, and the first sign would
+    be a production database that locked up during a nightly job.
+
+    Also asserts the DEFAULT partition, because its absence is the difference
+    between "the maintenance job fell behind" and "ingestion started failing".
+    """
+    alembic_ok(scratch_database, "upgrade", "head")
+
+    engine = create_async_engine(
+        make_url(scratch_database).set(drivername="postgresql+asyncpg"), poolclass=NullPool
+    )
+    try:
+        async with engine.connect() as connection:
+            parents: set[str] = set(
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT c.relname FROM pg_class c "
+                            "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                            "WHERE n.nspname = 'public' AND c.relkind = 'p'"
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            defaults: set[str] = set(
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT c.relname FROM pg_class c "
+                            "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                            "WHERE n.nspname = 'public' "
+                            "AND pg_get_expr(c.relpartbound, c.oid) = 'DEFAULT'"
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            catalogued: int = (
+                await connection.execute(text("SELECT count(*) FROM metric_partitions"))
+            ).scalar_one()
+    finally:
+        await engine.dispose()
+
+    assert parents == {"metric_samples_raw", "metric_samples_5m", "metric_samples_1h"}
+    assert defaults == {
+        "metric_samples_raw_default",
+        "metric_samples_5m_default",
+        "metric_samples_1h_default",
+    }
+    # One catalogued partition per tier. The DEFAULT ones are deliberately not
+    # catalogued: the catalogue is what retention drops, and dropping the
+    # safety net would be the opposite of what it is for.
+    assert catalogued == 3
+
+
 async def test_no_schema_drift_between_models_and_migrations(scratch_database: str) -> None:
     # `alembic check` compares ORM metadata against the migrated schema. This
     # is the gate that catches a model edited without a matching migration.
@@ -478,4 +557,14 @@ async def test_migrations_leave_no_unexpected_tables(scratch_database: str) -> N
     finally:
         await engine.dispose()
 
-    assert tables == EXPECTED_TABLES | {"alembic_version"}
+    # The runtime-created partitions are excluded: they are real tables in the
+    # public schema named after the window they cover, so pinning them would
+    # make this test fail on a different day. Their *existence* is asserted by
+    # `test_metric_storage_is_actually_partitioned`.
+    partitions = {
+        name
+        for name in tables
+        if name.startswith(("metric_samples_raw_", "metric_samples_5m_", "metric_samples_1h_"))
+    }
+    assert partitions, "the migration must create at least an initial partition per tier"
+    assert tables - partitions == EXPECTED_TABLES | {"alembic_version"}

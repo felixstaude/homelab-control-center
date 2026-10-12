@@ -154,6 +154,15 @@ class RevisionOutcome:
     #: Adjustments the resolver made — a clamped interval, an unknown stored
     #: module. Not errors; the configuration is valid and in use.
     problems: tuple[str, ...]
+    #: Which modules this revision enables.
+    #:
+    #: Returned rather than left to be derived from the document, because the
+    #: agent connection needs it on the **ingestion** path — a telemetry batch
+    #: is refused for a module nobody enabled — and re-reading the host's
+    #: configuration per batch would be two queries per batch per host. The
+    #: connection holds this set and replaces it whenever it sends a new
+    #: revision, which is exactly when it can change.
+    enabled_modules: frozenset[str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -358,6 +367,7 @@ class MonitoringConfigService:
                 ),
                 created=False,
                 problems=effective.problems,
+                enabled_modules=frozenset(effective.enabled_module_ids),
             )
 
         db.add(
@@ -384,7 +394,12 @@ class MonitoringConfigService:
             reason=reason,
             enabled_modules=list(effective.enabled_module_ids),
         )
-        return RevisionOutcome(revision=candidate, created=True, problems=effective.problems)
+        return RevisionOutcome(
+            revision=candidate,
+            created=True,
+            problems=effective.problems,
+            enabled_modules=frozenset(effective.enabled_module_ids),
+        )
 
     # --- Writing ----------------------------------------------------------
 

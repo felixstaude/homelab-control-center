@@ -34,6 +34,7 @@ from hcc.services.account import AccountService
 from hcc.services.audit import AuditQueryService
 from hcc.services.enrollment import AgentEnrollmentService
 from hcc.services.hosts import HostService
+from hcc.services.metrics import MetricsService
 from hcc.services.monitoring import MonitoringConfigService
 from hcc.services.users import UserService
 
@@ -242,6 +243,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # configuration change and the host mutation beside it land in one
     # transaction and one trail.
     app.state.monitoring_config_service = MonitoringConfigService(audit=app.state.audit_service)
+    # Phase 3. Holds the series-identity cache, so it is per process rather
+    # than per request — a fresh instance would turn every sample into an
+    # upsert, which is the cost the cache exists to remove.
+    app.state.metrics_service = MetricsService()
     # Per *process*, not per application and not shared across workers. This
     # is the honest statement of a real limitation rather than a cache: the
     # connections a worker holds are its own, and connectivity is derived from

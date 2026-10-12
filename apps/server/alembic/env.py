@@ -33,13 +33,48 @@ config.set_main_option("sqlalchemy.url", settings.sqlalchemy_url())
 target_metadata = Base.metadata
 
 
+#: Prefixes of table names Alembic must not try to manage.
+#:
+#: The metric sample tables are ``PARTITION BY RANGE``, and their partitions
+#: are real tables in the public schema created at runtime by the maintenance
+#: job (``hcc/services/metrics.py``) rather than by a migration. Autogenerate
+#: reflects them, finds no model, and proposes dropping them — which would
+#: delete every stored measurement, and would make `alembic check` fail on any
+#: database that had ingested anything.
+#:
+#: Matched by prefix rather than by an exact list because the set changes
+#: daily: a partition is named after the window it covers.
+_PARTITION_PREFIXES = (
+    "metric_samples_raw_",
+    "metric_samples_5m_",
+    "metric_samples_1h_",
+)
+
+
 def _include_object(obj, name, type_, reflected, compare_to) -> bool:  # type: ignore[no-untyped-def]
     """Exclude objects Alembic should not manage.
 
-    Currently a pass-through. It exists as the single hook for excluding
-    TimescaleDB-created artefacts (continuous aggregates, chunks) if the
-    metrics retention design adopts them (see ADR-008).
+    Two kinds, and the second is the one that matters today:
+
+    * TimescaleDB-created artefacts, if the retention design ever adopts them
+      (ADR-008). This hook was added in phase 0 for that possibility.
+    * **Runtime-created partitions** of the metric sample tables. Excluded by
+      name prefix; see :data:`_PARTITION_PREFIXES`.
+
+    Only *reflected* objects are filtered. A model whose name happened to
+    match a prefix should still be managed — the filter exists to stop
+    autogenerate acting on tables it found in the database and has no model
+    for, not to hide anything the codebase declares.
     """
+    if reflected and type_ == "table" and name.startswith(_PARTITION_PREFIXES):
+        return False
+    # An index on an excluded table is excluded with it. Reflected separately
+    # by Alembic, so without this the partitions' primary-key indexes would be
+    # proposed for dropping even though their tables were not.
+    if reflected and type_ == "index":
+        table = getattr(obj, "table", None)
+        if table is not None and str(table.name).startswith(_PARTITION_PREFIXES):
+            return False
     return True
 
 
