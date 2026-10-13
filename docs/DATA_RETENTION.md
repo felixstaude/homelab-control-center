@@ -290,25 +290,53 @@ ADR-003 holds, and §9 names the condition that would overturn it.
 
 ## 8. Benchmarks required before metric storage ships
 
-The figures in §7 are arithmetic, not measurements. The core metrics phase
-(Phase 3) does not ship without these numbers, measured on representative hardware (a mid-range
-homelab machine with a SATA SSD, not a cloud instance with provisioned IOPS):
+The figures in §7 are arithmetic. These six measurements were listed as the
+condition for shipping metric storage; the script is
+`scripts/measure-metrics.py` (`make measure-metrics`), committed and
+repeatable so the numbers can be re-measured after a schema change rather than
+quoted from memory.
 
-1. **Ingestion throughput.** Batched insert rate at which commit latency
-   exceeds 100 ms, with and without indexes, at 10M and 100M existing rows.
-2. **Query latency** for the four windows in §5.1, at 10M, 100M and 500M rows,
-   with partition pruning verified by `EXPLAIN` — a query plan that scans every
-   partition is the failure mode to catch early.
-3. **Rollup job duration** for one day of raw data at the §7.2 rate, and its
-   measured impact on concurrent ingestion.
-4. **Partition drop time** and reclaimed space, confirming retention is O(1)
-   rather than proportional to row count.
-5. **On-disk bytes per row**, measured, to replace the 100-byte estimate.
-6. **Behaviour at the budget ceiling** (§6.3): verify ingestion stops cleanly,
-   the event fires, and the database stays healthy.
+**Three are done, two are partial, one is not applicable yet.** Recorded as
+such rather than marked complete, because a checklist that says "done" when it
+means "done at a twentieth of the scale" is worse than no checklist.
 
-Each benchmark is a committed, repeatable script, so that the numbers can be
-re-measured after a schema change rather than quoted from memory.
+| # | Required | Status |
+| --- | --- | --- |
+| 1 | **Ingestion throughput** — the rate at which commit latency exceeds 100 ms, with and without indexes, at 10M and 100M existing rows | **Partial.** 4,497 samples/s measured through the full validation path at 259k rows, with per-batch median 1.25 ms and p95 2.00 ms. The *saturation point* was not found, and 10M/100M rows were not reached. |
+| 2 | **Query latency** for the four windows in §5.1, at 10M, 100M and 500M rows, with partition pruning verified by `EXPLAIN` | **Partial.** 0.6–0.8 ms for every window, and **partition pruning is verified** — one partition touched of twelve, by index scan, asserted from the plan. At 259k rows, not 10M. |
+| 3 | **Rollup job duration** for one day of raw data, and its impact on concurrent ingestion | **Partial.** 5,000 buckets in 0.46 s — and that run hit `MAX_BUCKETS_PER_RUN`, so it is the cost of a *capped* pass rather than of catching up. The impact on concurrent ingestion is **not measured**: the benchmark is one writer and one reader. |
+| 4 | **Partition drop time** and reclaimed space, confirming retention is O(1) | **Not measured.** Retention is asserted *functionally* — `tests/test_metrics_maintenance.py` proves a dropped partition's table is gone and its catalogue row marked — but no timing was taken. |
+| 5 | **On-disk bytes per row**, to replace the 100-byte estimate | **Done. 88 bytes**, including indexes, from `pg_total_relation_size` summed over the partition tree. The §7 estimate of 100 was 14% high. |
+| 6 | **Behaviour at the budget ceiling** (§6.3) | **Not applicable yet.** The storage budget described in §6.2–6.4 is **not implemented**. There is no configured ceiling, nothing stops ingestion on volume, and no event fires. See the note below. |
+
+### The storage budget is not implemented
+
+§6.2 to §6.4 describe a configured storage budget, projection at
+configuration time, explicit over-budget behaviour and enforced floors. Of
+those, **only the floors exist** — each module declares a
+`min_interval_seconds` and an interval below it is refused rather than clamped.
+
+The budget itself is deferred, and deliberately: a ceiling that stops
+ingestion is a mechanism that can lose data, and getting it wrong is worse
+than not having it. Retention bounds growth in the meantime — seven days raw,
+ninety at five minutes, two years hourly — which is a bound, just not a
+configurable one. §7's projection is the number to reason with until then.
+
+### Not caught by any of the six, and worth recording
+
+Two defects in this area were found by *reading the benchmark's output* rather
+than by any of the measurements above:
+
+1. Partitions were created only ahead of now, so backfilled samples landed in
+   the DEFAULT partition — which is never catalogued and therefore never
+   dropped, making retention silently not apply to them. See
+   [ADR-052](ARCHITECTURE.md#adr-052-postgresql-native-partitioning-not-timescaledb)
+   and `PARTITIONS_BEHIND` in `hcc/services/retention.py`.
+2. The per-host sample count was O(every sample in the installation) — 37 ms
+   for a host with a hundred samples, independent of the host.
+
+Neither would have been found by benchmark 4 or 6. A list of measurements is
+not the same as looking at what the system does.
 
 ---
 

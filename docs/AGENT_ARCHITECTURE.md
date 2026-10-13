@@ -22,6 +22,29 @@ controller is unreachable.
 
 ---
 
+
+## 0. What is implemented, as of Phase 3
+
+The agent connects, enrols, receives its configuration, collects from `/proc`
+and delivers telemetry. Specifically:
+
+| Specified | State |
+| --- | --- |
+| Enrolment with a one-time credential; `0600` credential file | **Implemented.** Replay of a spent credential is refused. |
+| Agent-initiated WebSocket, heartbeat, derived connectivity | **Implemented.** |
+| Configuration synchronisation (§6) | **Implemented**, on the existing socket rather than a fetch endpoint — [ADR-049](ARCHITECTURE.md#adr-049-configuration-travels-on-the-agents-existing-connection). Atomic write, apply-before-acknowledge, version **and** checksum, NACK listing every problem. |
+| Telemetry delivery | **Implemented.** Bounded in-memory queue, oldest dropped first, loss counted and reported in every heartbeat — [ADR-051](ARCHITECTURE.md#adr-051-the-agents-telemetry-queue-is-in-memory-with-no-disk-spool). |
+| Capability reporting | **Not implemented.** The agent reports no module availability, so the controller cannot explain why a module would not run on a particular host. |
+| Disk spool for telemetry | **Not implemented, by decision.** ADR-051 records why. |
+| Any remote execution | **Does not exist and will not.** The agent runs no command on the host; the protocol has no message type that could ask it to. |
+
+The agent writes exactly two files — its credential and its configuration
+document — both under `HCC_AGENT_CONFIG_FILE`'s directory, and reads `/proc`.
+Nothing else. It needs no Linux capability for the five modules that exist,
+which is why the unit in
+[the Debian guide](development/ENABLING_MONITORING_DEBIAN.md) drops all of
+them.
+
 ## 1. Topology
 
 One controller, many agents. Every agent is a client; the controller is never

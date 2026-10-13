@@ -18,6 +18,25 @@ job and periodic task. Defined once so that an operator learns it once.
 
 ---
 
+
+## 0. What is implemented, as of Phase 3
+
+This document specifies the whole scheduling model. Delivered so far:
+
+| Specified | State |
+| --- | --- |
+| `interval` schedules, integer seconds, with jitter | **Implemented**, controller and agent. |
+| `calendar` schedules with IANA time zones, DST policies, `on_missed` | **Implemented** on the controller — including next-run preview — and in the agent. But **no module in this phase permits `calendar`**: all five declare `interval` only, because all five are samplers and a sampler on a calendar is a gap with extra steps. So the calendar path is exercised by unit tests and the shared contract cases, and is not reachable through the API today: a `PUT` naming a calendar schedule for any existing module is refused with that module's permitted kinds. The code is there for the task-shaped modules of later phases. |
+| `event` and `manual` kinds | **Named in the enum, not implemented.** They exist so a module descriptor can declare them without the enum moving later. No parser, no evaluation, no module uses either. |
+| Per-module interval floors | **Implemented and enforced on both sides.** A value below the floor is refused and not stored — never clamped. |
+| Anchored phase, overrun skipping, execution counters | **Implemented** in the agent's scheduler. |
+| Fleet-wide jitter verification | **Not measured.** Jitter is applied per execution; no fleet-scale de-synchronisation measurement exists. |
+
+DST correctness is held by 14 shared contract cases in
+`contracts/calendar-cases.json`, generated from the controller and asserted by
+both implementations — including Lord Howe Island's thirty-minute transition,
+which is the case that breaks implementations assuming an hour.
+
 ## 1. Why one model
 
 Four scheduling kinds cover everything the product needs:

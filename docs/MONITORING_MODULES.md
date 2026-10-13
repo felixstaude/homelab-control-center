@@ -84,6 +84,43 @@ Scheduling kinds are defined in
 | `systemd` | Unit active/sub state, restarts, failures | D-Bus | interval, event, manual | 5 s | D-Bus access |
 | `sessions` | screen and tmux session inventory | socket directories, `screen -ls` / `tmux ls` | interval, manual | 10 s | matching tooling |
 
+### 3.2 What is implemented today
+
+The table above is the designed catalogue across the whole product. **Five
+modules exist**, and this is them — generated from
+`contracts/monitoring-modules.json`, which is produced from the server's
+registry and drift-checked by `make check-contract`, so this table cannot
+quietly stop matching the code.
+
+| Id | Name | Metrics | Kinds | Default | Floor |
+| --- | --- | --- | --- | --- | --- |
+| `cpu` | CPU utilisation | `utilisation`, `core_utilisation` (by core), `logical_cpus` | interval | 10 s | 1 s |
+| `memory` | Memory | `utilisation`, `total`, `available`, `used` | interval | 10 s | 1 s |
+| `swap` | Swap | `utilisation`, `total`, `used` | interval | 10 s | 1 s |
+| `load` | Load average | `average` (by window) | interval | 30 s | 5 s |
+| `uptime` | System uptime | `seconds` | interval | 300 s | 60 s |
+
+Three differences from §3 worth naming rather than leaving to be noticed:
+
+* **Load average is its own module, not part of `cpu`.** §3 lists
+  `/proc/loadavg` under `cpu`. It is separate because its floor is different —
+  five seconds, not one — and the kernel's load average is already a smoothed
+  value over one, five and fifteen minutes, so sampling it faster measures the
+  smoothing rather than the machine. One module cannot have two floors.
+* **`swap` is separate from `memory`**, where §3 folds it in. A host with no
+  swap has no swap usage, and that is not zero: the module reports **no
+  samples** on such a host and the interface renders an absence. Folded into
+  `memory`, that distinction would have had nowhere to live —
+  [ADR-048](ARCHITECTURE.md#adr-048-five-collection-modules-in-the-first-delivery-not-two).
+* **`uptime` is new**, not in §3 at all. It is the only counter rather than
+  gauge in this set and the only one whose natural interval is minutes, which
+  is what proves the schedule is per-module rather than per-host.
+
+Everything else in §3 — `disk_usage`, `disk_io`, `temperature`, `network`,
+`docker`, the log modules, SMART, `raid`, `systemd`, `sessions` — **does not
+exist yet**. The interface lists exactly these five, so a module that is
+absent is absent rather than appearing with no data.
+
 ### 3.1 Notes on specific modules
 
 **`disk_io` and `network` are rate counters.** The kernel exposes monotonic

@@ -716,7 +716,7 @@ A role grants nothing on a host whose capability is off.
 | Operator | ✓ | ✓ | ✓ | ✓ | | |
 | Administrator | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 
-### The permissions matrix as implemented (1.7)
+### The permissions matrix as implemented (through Phase 3)
 
 The table above is the designed model across the whole product. This is the
 part that exists today, endpoint by endpoint, with every row enforced
@@ -738,6 +738,49 @@ caller.
 | Reactivate a user | `POST /api/v1/users/{id}/reactivate` | | | ✓ |
 | Revoke another user's sessions | `POST /api/v1/users/{id}/sessions/revoke` | | | ✓ |
 | Read the audit trail | `GET /api/v1/audit/events` | | | ✓ |
+| List hosts | `GET /api/v1/hosts` | ✓ | ✓ | ✓ |
+| View one host | `GET /api/v1/hosts/{id}` | ✓ | ✓ | ✓ |
+| Register a host | `POST /api/v1/hosts` | | | ✓ |
+| Edit a host's labels | `PATCH /api/v1/hosts/{id}` | | | ✓ |
+| Disable / enable a host | `POST /api/v1/hosts/{id}/disable`, `…/enable` | | | ✓ |
+| Issue an enrolment credential | `POST /api/v1/hosts/{id}/enrollment` | | | ✓ |
+| Revoke a pending enrolment | `POST /api/v1/hosts/{id}/enrollment/revoke` | | | ✓ |
+| Revoke an agent credential | `POST /api/v1/hosts/{id}/credential/revoke` | | | ✓ |
+| Read the module catalogue | `GET /api/v1/monitoring/modules` | ✓ | ✓ | ✓ |
+| Read global monitoring defaults | `GET /api/v1/monitoring/defaults` | ✓ | ✓ | ✓ |
+| Read a host's monitoring config | `GET /api/v1/hosts/{id}/monitoring` | ✓ | ✓ | ✓ |
+| Read a host's config revisions | `GET /api/v1/hosts/{id}/monitoring/revisions` | ✓ | ✓ | ✓ |
+| **Change a global default** | `PUT /api/v1/monitoring/defaults/{module}` | | | ✓ |
+| **Change a host's override** | `PUT /api/v1/hosts/{id}/monitoring/modules/{module}` | | | ✓ |
+| **Clear a host's override** | `DELETE /api/v1/hosts/{id}/monitoring/modules/{module}` | | | ✓ |
+| Read a host's current values | `GET /api/v1/hosts/{id}/metrics/latest` | ✓ | ✓ | ✓ |
+| Read a host's series | `GET /api/v1/hosts/{id}/metrics/series` | ✓ | ✓ | ✓ |
+| Read a series' history | `GET /api/v1/hosts/{id}/metrics/range` | ✓ | ✓ | ✓ |
+| Read collection status | `GET /api/v1/hosts/{id}/metrics/status` | ✓ | ✓ | ✓ |
+
+Three things that matrix is saying deliberately:
+
+* **Every role reads monitoring; only an administrator changes it.** A Viewer
+  who cannot see which modules are collecting cannot interpret a chart, so the
+  reads are open. The writes are not, and the reason is narrower than
+  caution: enabling a module *starts reading a machine*, and someone who could
+  do that without an administrator could begin collecting data about a host
+  nobody agreed to monitor. That is a privacy decision rather than an
+  operational one. It is also narrower than the designed model above, which
+  puts configuration at Operator — the table here describes what is enforced
+  today, and the web client's `configureMonitoring` flag tracks *this* table
+  rather than the design, so the interface never offers a control the API
+  answers 403 to.
+* **There is no write path for metrics at all**, at any role. Measurements
+  arrive over the authenticated agent connection and nowhere else; an endpoint
+  that accepted a reading from a browser session would be a way to fabricate
+  history. A test asserts the metric paths accept only `GET`, so one cannot be
+  added without the assertion failing.
+* **Per-host authorization does not exist yet.** Every authenticated role may
+  read every host's metrics. Series ids are sequential, so the host is checked
+  on every range query — but that protects *attribution* (a chart must not
+  show host A's data under host B's name) rather than access. Open design
+  question 2 in `ARCHITECTURE.md` tracks the per-host axis.
 
 Three structural points about how that is enforced:
 
@@ -1381,7 +1424,7 @@ authentication endpoints face an untrusted network.
 2. ~~Role authorization has no production call site yet.~~ **Closed in 1.7.**
    The user-administration and audit routers are Administrator-only, gated at
    the router, with every row of
-   [the permissions matrix](#the-permissions-matrix-as-implemented-17) tested
+   [the permissions matrix](#the-permissions-matrix-as-implemented-through-phase-3) tested
    for all three roles and for an unauthenticated caller.
 3. **The capability axis is not implemented.** Its interface exists and fails
    closed, so nothing can accidentally rely on it. Per-host capability

@@ -139,7 +139,77 @@ copy of the derivation rule.
 
 ---
 
-## 4. What has not been measured
+## 4. Metric storage and querying: **measured in Phase 3**
+
+From `make measure-metrics` (`scripts/measure-metrics.py`), against a
+disposable database: 20 hosts, six hours of history each, a ten-second
+interval, `cpu` and `memory` enabled — the shape the
+[Debian guide](development/ENABLING_MONITORING_DEBIAN.md) tells an operator to
+start with. 259,200 samples.
+
+| What | Measured |
+| --- | --- |
+| Ingestion throughput | **4,497 samples/s** through the real validation path |
+| Per batch | **1.25 ms** median, **2.00 ms** p95 |
+| Raw storage | **88 bytes per sample**, including indexes |
+| Five-minute tier | **30.5:1** smaller than the raw it replaces |
+| Current values for one host | **0.5 ms** |
+| Series list for one host | **0.4 ms** |
+| Range query, any window | **0.6–0.8 ms**, index scan, one partition touched of twelve |
+| Rollup | **5,000 buckets in 0.46 s** — and it hit the per-run bound |
+
+Deliberately through `MetricsService.ingest` rather than `COPY`: the four
+validation layers, the series cache and the partition router are what this
+system costs, and a `COPY` benchmark would measure PostgreSQL instead.
+
+### Extrapolated, and labelled as such
+
+A hundred hosts collecting CPU and memory every ten seconds is nine samples
+per host per interval, so **4.4 GiB of raw data for seven days** at 88 bytes
+each. That is arithmetic on a measured per-sample cost, not a measurement —
+it assumes the per-row cost holds at thirty times the volume, which is likely
+and unverified.
+
+### The rollup run hit its bound, and that is reported
+
+`MAX_BUCKETS_PER_RUN` is 5,000, and the run above reached it. So 0.46 s is the
+cost of a *capped* pass, not of catching up: an installation whose job has
+been broken for a day needs several passes. Quoting the duration without the
+cap would have understated it.
+
+### `sample_count` costs more than its SQL, and it is not clear why
+
+The count query plans in 0.46 ms and executes in 0.56 ms. The service method
+measured in the latency table costs roughly ten times that on a database with
+twenty-one partitions. It is **not** the ORM — `in_()` and `ANY()` were
+measured as identical — and the cause is not established. It grows with
+partition count, so it is recorded here as a characteristic to watch rather
+than a number to rely on.
+
+It matters less than it would have: the endpoint that uses it is fetched once
+per page visit rather than polled. It was briefly polled every thirty
+seconds, which was a defect, found by reading this benchmark's output.
+
+### Two defects this benchmark found
+
+Worth recording, because both were invisible to the test suite:
+
+1. **Backfilled samples went to a partition nothing ever drops.** Partitions
+   were created only *ahead* of now, so any sample timestamped before the
+   current window — legitimate backfill, up to the protocol's seven-day bound
+   — landed in the DEFAULT partition, which is never catalogued and therefore
+   never expired. The benchmark writes history backwards and made it obvious:
+   189,120 of 259,200 rows. Fixed by `PARTITIONS_BEHIND`; the job now also
+   reports rows in DEFAULT as a warning, because it cannot fix that condition
+   itself.
+2. **`sample_count` was O(every sample in the installation).** 37 ms for a
+   host with a hundred samples — the same as for a host with half a million,
+   because the filter was on a joined table and the planner could not use the
+   index. 0.044 ms after resolving the series ids first.
+
+---
+
+## 5. What has not been measured
 
 Listed because a performance document that only contains good news is one
 nobody should trust.
@@ -149,12 +219,15 @@ nobody should trust.
 | A thousand **distinct peers** | Everything above is one client on loopback. Real peers cost kernel buffers, file descriptors and TCP state per connection. | Before any claim above 500 hosts |
 | A real network | No latency, no loss, no proxy. A reverse proxy's own connection limits are a likely first bottleneck. | Before a deployment guide claims a fleet size |
 | Sustained load | Minutes, not days. A slow leak and a connection that is never reclaimed both look fine for minutes. | Before Phase 3's metric ingestion |
-| Metric ingestion | Nothing is collected yet, so there is nothing to measure. The figures in [`DATA_RETENTION.md §7`](DATA_RETENTION.md#7-expected-volume) remain arithmetic. | Phase 3, and [§8 there](DATA_RETENTION.md#8-benchmarks-required-before-metric-storage-ships) says so |
+| Concurrent ingestion and maintenance | §4 is one writer and one reader. Contention between the rollup job and live ingestion is not exercised. | Before a fleet large enough for the two to overlap continuously |
+| A cold cache | Everything in §4 is in PostgreSQL's shared buffers. A real ninety-day query reads from disk. | Before quoting a query figure for a long window |
+| Ninety days of real data | §4 writes hours. Retention totals are extrapolated per sample. | When an installation has been running that long |
+| Fleet-scale ingestion | §4's samples are written by one process in a loop, so it measures the storage path and not the socket, the scheduler, or a hundred real agents. | Before claiming a host count for collection |
 | Two controller processes | ADR-046 states the degradation rather than measuring it. | When configuration distribution needs a real channel |
 
 ---
 
-## 5. The machine these figures came from
+## 6. The machine these figures came from
 
 Figures are comparative, not absolute, and they are worth nothing without
 this:

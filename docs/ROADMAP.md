@@ -10,7 +10,7 @@ feature three phases away.
 
 No dates. This is a side project; sequence is a commitment, schedule is not.
 
-**Legend:** ✅ done · ⬜ not started. A phase heading without ✅ or ⬜ is in
+**Legend:** ✅ done · 🟡 partially done, with what is missing stated · ⬜ not started. A phase heading without ✅ or ⬜ is in
 progress.
 
 **Restructured** for the configurability requirements. The configuration and
@@ -136,7 +136,7 @@ not been measured.
 
 ---
 
-## Phase 2 — Configuration and scheduling ⬜
+## Phase 2 — Configuration and scheduling 🟡
 
 **Goal:** an operator can enable a module, schedule it, and see the agent
 acknowledge it. No module actually collects anything yet — the plumbing every
@@ -149,29 +149,33 @@ first module to be made configurable would pay for the whole subsystem.
 Specifications: [`SCHEDULING.md`](SCHEDULING.md),
 [`AGENT_ARCHITECTURE.md §6`](AGENT_ARCHITECTURE.md#6-configuration-synchronisation).
 
-| # | Milestone | Exit criterion |
-| --- | --- | --- |
-| 2.1 | Schedule model | `interval`/`calendar`/`event`/`manual` persisted; durations in integer seconds (ADR-019); unit tests for every validation rule |
-| 2.2 | Calendar evaluation | Next-run computation with IANA time zones; tests covering spring-forward, fall-back and both DST policies (ADR-020) |
-| 2.3 | Config schema | `agent_configs` with per-host monotonic version and checksum; module and capability entries |
-| 2.4 | Layer resolution | Global defaults plus per-host overrides resolved server-side; API reports whether each value is inherited or overridden |
-| 2.5 | Config fetch endpoint | Agent retrieves its resolved document; scoped by credential so no host can read another's |
-| 2.6 | Agent apply and ACK | Atomic write, apply, acknowledge by version **and** checksum |
-| 2.7 | Agent reject and NACK | Invalid config keeps the last known good one; NACK lists every problem; rejection surfaced in the UI |
-| 2.8 | Drift detection | Heartbeat reports running version; up-to-date / pending / rejected / stale shown per host |
-| 2.9 | Capability reporting | Agent reports module availability with reasons; UI explains why a module cannot run here |
-| 2.10 | Agent scheduler | Modules scheduled independently; anchored phase so drift does not accumulate; overrun skips rather than queues; counters exposed |
-| 2.11 | Jitter | Fleet-wide de-synchronisation; verified with simulated agents |
-| 2.12 | Module registry | Internal module interface plus descriptor; one trivial reference module end to end |
-| 2.13 | Configuration UI | Enable/disable a module, pick a preset or custom schedule, see projected storage cost |
-| 2.14 | Limit enforcement | Interval floors and ceilings enforced on controller and agent; all errors returned at once |
+| # | Milestone | Exit criterion | Status |
+| --- | --- | --- | --- |
+| 2.1 | Schedule model | `interval`/`calendar`/`event`/`manual` persisted; durations in integer seconds (ADR-019); unit tests for every validation rule | 🟡 `interval` and `calendar` are implemented, validated and persisted, with integer seconds throughout. `event` and `manual` exist in the enum so a descriptor can name them without the enum moving later, but have **no parser and no implementation** — no module in this phase uses either. |
+| 2.2 | Calendar evaluation | Next-run computation with IANA time zones; tests covering spring-forward, fall-back and both DST policies (ADR-020) | ✅ |
+| 2.3 | Config schema | `agent_configs` with per-host monotonic version and checksum; module and capability entries | ✅ Tables are `global_module_defaults`, `host_module_overrides` and `host_config_revisions` rather than one `agent_configs`; capability entries are not in the document. |
+| 2.4 | Layer resolution | Global defaults plus per-host overrides resolved server-side; API reports whether each value is inherited or overridden | ✅ |
+| 2.5 | Config fetch endpoint | Agent retrieves its resolved document; scoped by credential so no host can read another's | ✅ Delivered over the agent's existing WebSocket rather than as a fetch endpoint — [ADR-049](ARCHITECTURE.md#adr-049-configuration-travels-on-the-agents-existing-connection). |
+| 2.6 | Agent apply and ACK | Atomic write, apply, acknowledge by version **and** checksum | ✅ |
+| 2.7 | Agent reject and NACK | Invalid config keeps the last known good one; NACK lists every problem; rejection surfaced in the UI | ✅ |
+| 2.8 | Drift detection | Heartbeat reports running version; up-to-date / pending / rejected / stale shown per host | ✅ |
+| 2.9 | Capability reporting | Agent reports module availability with reasons; UI explains why a module cannot run here | ⬜ **Not done.** The agent reports no module availability, so the interface cannot explain why a module could not run on a particular host. Every module in this phase runs anywhere Linux does, so nothing is blocked by the absence. |
+| 2.10 | Agent scheduler | Modules scheduled independently; anchored phase so drift does not accumulate; overrun skips rather than queues; counters exposed | ✅ |
+| 2.11 | Jitter | Fleet-wide de-synchronisation; verified with simulated agents | 🟡 Jitter is in the schedule document and resolved per host, and the agent applies it. **Not verified with simulated agents** — there is no fleet-scale de-synchronisation measurement. |
+| 2.12 | Module registry | Internal module interface plus descriptor; one trivial reference module end to end | ✅ Five reference modules rather than one — [ADR-048](ARCHITECTURE.md#adr-048-five-collection-modules-in-the-first-delivery-not-two). |
+| 2.13 | Configuration UI | Enable/disable a module, pick a preset or custom schedule, see projected storage cost | 🟡 Enable/disable and interval editing are delivered, per host and globally. **No projected storage cost**, because the storage budget it would project against is not implemented — see [`DATA_RETENTION.md §8`](DATA_RETENTION.md#8-benchmarks-required-before-metric-storage-ships). |
+| 2.14 | Limit enforcement | Interval floors and ceilings enforced on controller and agent; all errors returned at once | ✅ Floors enforced on both sides; every problem returned at once. Ceilings exist in configuration but are not per-module. |
 
 **Phase 2 delivers:** a working configuration and scheduling plane. Useful on
 its own only as groundwork, which is why it is small and tightly scoped.
 
+**What is not delivered:** capability reporting (2.9), fleet-scale jitter
+verification (2.11) and the projected storage cost in the configuration UI
+(2.13). None of them block Phase 3, and each is listed above with why.
+
 ---
 
-## Phase 3 — Core metrics ⬜
+## Phase 3 — Core metrics 🟡
 
 **Goal:** real resource data from real hosts, with history. The first phase
 that is genuinely useful standalone.
@@ -179,27 +183,37 @@ that is genuinely useful standalone.
 Specifications: [`MONITORING_MODULES.md`](MONITORING_MODULES.md),
 [`DATA_RETENTION.md`](DATA_RETENTION.md).
 
-| # | Milestone | Exit criterion |
-| --- | --- | --- |
-| 3.1 | Metric schema | `metric_series` plus time-partitioned sample tables; partition creation automated and monitored |
-| 3.2 | **Storage benchmarks** | All six measurements in [`DATA_RETENTION.md §8`](DATA_RETENTION.md#8-benchmarks-required-before-metric-storage-ships) recorded as repeatable scripts; schema not frozen until they pass |
-| 3.3 | Ingestion endpoint | Batched, gzipped, size- and rate-limited; server-side attribution |
-| 3.4 | Agent buffering | Survives a controller outage; bounded, oldest-dropped-first, loss counted and reported |
-| 3.5 | `cpu` module | `/proc/stat` and `/proc/loadavg`; tests against recorded fixtures |
-| 3.6 | `memory` module | `/proc/meminfo`; values match `free -b` in a test |
-| 3.7 | `disk_usage` module | Per-filesystem capacity and inodes; pseudo-filesystems excluded |
-| 3.8 | `disk_io` module | `/proc/diskstats` as rates; counter resets detected and recorded as gaps, never spikes |
-| 3.9 | `network` module | `/proc/net/dev` as rates; same reset handling |
-| 3.10 | Hardware inventory | CPU model, core count, total memory, OS release |
-| 3.11 | Rollup job | min/max/avg/count/first/last; idempotent; late data recomputes a sealed bucket |
-| 3.12 | Retention enforcement | Per-category retention; expiry by partition drop, verified O(1) |
-| 3.13 | Storage budget | Projection shown at configuration time; over-budget rejected; hard limit stops ingestion loudly |
-| 3.14 | Metrics query API | Resolution selection; response states which tier answered; empty buckets null, never interpolated |
-| 3.15 | Hosts page | Real host list with live metrics, replacing the placeholder |
-| 3.16 | Host detail page | Per-host charts; downsampled series render as a min–max band, not a single line |
-| 3.17 | **Overview page rewrite** | `src/mocks/` **deleted**; Overview reads the real API (ADR-012) |
+| # | Milestone | Exit criterion | Status |
+| --- | --- | --- | --- |
+| 3.1 | Metric schema | `metric_series` plus time-partitioned sample tables; partition creation automated and monitored | ✅ |
+| 3.2 | **Storage benchmarks** | All six measurements in [`DATA_RETENTION.md §8`](DATA_RETENTION.md#8-benchmarks-required-before-metric-storage-ships) recorded as repeatable scripts; schema not frozen until they pass | 🟡 Three of six measurements done, two partial, one not applicable — each stated in [`DATA_RETENTION.md §8`](DATA_RETENTION.md#8-benchmarks-required-before-metric-storage-ships). The schema was frozen on that evidence. |
+| 3.3 | Ingestion endpoint | Batched, gzipped, size- and rate-limited; server-side attribution | ✅ Over the agent WebSocket rather than an HTTP endpoint, so no gzip layer; size- and rate-limited, attribution server-side. |
+| 3.4 | Agent buffering | Survives a controller outage; bounded, oldest-dropped-first, loss counted and reported | ✅ |
+| 3.5 | `cpu` module | `/proc/stat` and `/proc/loadavg`; tests against recorded fixtures | ✅ `/proc/stat`; `/proc/loadavg` is its own `load` module. |
+| 3.6 | `memory` module | `/proc/meminfo`; values match `free -b` in a test | ✅ Cross-checked against the kernel's own `MemTotal` in `make monitoring-e2e`. |
+| 3.7 | `disk_usage` module | Per-filesystem capacity and inodes; pseudo-filesystems excluded | ⬜ **Not done.** No `disk_usage` module. |
+| 3.8 | `disk_io` module | `/proc/diskstats` as rates; counter resets detected and recorded as gaps, never spikes | ⬜ **Not done.** No `disk_io` module. |
+| 3.9 | `network` module | `/proc/net/dev` as rates; same reset handling | ⬜ **Not done.** No `network` module. |
+| 3.10 | Hardware inventory | CPU model, core count, total memory, OS release | ⬜ **Not done.** No hardware inventory beyond the platform string the agent reports about itself. |
+| 3.11 | Rollup job | min/max/avg/count/first/last; idempotent; late data recomputes a sealed bucket | ✅ |
+| 3.12 | Retention enforcement | Per-category retention; expiry by partition drop, verified O(1) | 🟡 Per-tier retention by partition drop, with raw held back until rollups catch up. **O(1) not verified by timing** — only functionally. |
+| 3.13 | Storage budget | Projection shown at configuration time; over-budget rejected; hard limit stops ingestion loudly | ⬜ **Not done.** No storage budget, no projection, no hard limit. Deferred deliberately: a ceiling that stops ingestion can lose data. Retention bounds growth meanwhile. |
+| 3.14 | Metrics query API | Resolution selection; response states which tier answered; empty buckets null, never interpolated | ✅ |
+| 3.15 | Hosts page | Real host list with live metrics, replacing the placeholder | 🟡 The Overview's host table is real, with live CPU, memory and uptime. The dedicated **Hosts** page still lists registry state without metrics. |
+| 3.16 | Host detail page | Per-host charts; downsampled series render as a min–max band, not a single line | ✅ Downsampled series render a min–max band; gaps render as breaks. |
+| 3.17 | **Overview page rewrite** | `src/mocks/` **deleted**; Overview reads the real API (ADR-012) | 🟡 Overview reads the real API for hosts and utilisation. **`src/mocks/` is not deleted**: container and log cards are still fixtures, because Docker discovery is Phase 4 and log collection Phase 6. They sit in a separately banded region rather than mixed with real totals. |
 
-**Phase 3 delivers:** a configurable multi-host resource monitor with history.
+**Phase 3 delivers:** a configurable multi-host resource monitor with history,
+for **CPU, memory, swap, load and uptime**. Proven end to end against a real
+agent reading real `/proc` (`make monitoring-e2e`, 60 checks) and against
+process failures (`make reliability-e2e`, 24 checks).
+
+**What is not delivered:** the disk, disk-I/O, network and hardware-inventory
+modules (3.7–3.10), the storage budget (3.13), and the deletion of
+`src/mocks/` (3.17) — the container and log cards are still fixtures because
+the features behind them are Phase 4 and Phase 6. The phase heading is 🟡 for
+those reasons and not because the delivered half is provisional: it is in use,
+measured and tested.
 
 ---
 

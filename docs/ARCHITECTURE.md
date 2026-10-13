@@ -2510,6 +2510,193 @@ track for advisories. Accepted, and much the smaller cost of the three.
 
 ---
 
+### ADR-048: Five collection modules in the first delivery, not two
+
+**Decision.** The Phase 3 module registry declares five modules — `cpu`,
+`memory`, `swap`, `load` and `uptime` — rather than the two (CPU and memory)
+that the minimum useful product needs.
+
+**Why more than the minimum.** Each of the extra three exists to force a design
+question that two modules would have let us answer wrongly and discover later:
+
+* **`swap` can be legitimately absent.** A host with no swap has no swap
+  usage, and that is not zero. With only CPU and memory, every module always
+  produces a value, and the "a module that collects nothing is not a module
+  reporting zero" rule would have been a sentence in a document rather than a
+  path with a test. The agent returns no samples for a swapless host and the
+  interface renders an absence — a distinction that is very hard to retrofit
+  once something downstream assumes every enabled module yields a number.
+* **`load` has a different interval floor.** Five seconds rather than one,
+  because the kernel's load average is itself a smoothed value and sampling it
+  faster measures the smoothing. One floor shared by every module would have
+  become a constant, and the per-module floor is what makes the refusal in
+  `PUT …/monitoring/modules/load` a real rule rather than a formality.
+* **`uptime` is the only module whose value is a counter rather than a
+  gauge**, and the only one whose natural interval is minutes. It is what
+  proves the schedule is per-module rather than per-host.
+
+**What it cost.** Three more collectors, three more sets of `/proc` fixtures,
+and a contract file that has to stay in step across two languages. All of it
+mechanical.
+
+**What it bought.** The registry is a closed set with five genuinely different
+entries, so the generic paths — resolution, validation, scheduling, ingestion,
+rendering — were written against variety from the start instead of against two
+near-identical cases.
+
+---
+
+### ADR-049: Configuration travels on the agent's existing connection
+
+**Decision.** An agent receives its monitoring configuration as messages on the
+WebSocket it already holds (`config_available`, `config_request`,
+`config_snapshot`, `config_ack`, `config_nack`), not by polling an HTTP
+endpoint.
+
+**Why not an endpoint.** A `GET /agents/configuration` would have been simpler
+to write and worse in three specific ways:
+
+1. **Latency would be the poll interval.** Enabling a module is an action an
+   administrator takes while watching the screen, and "it will start within
+   five minutes" is a different product from "it starts now". The controller
+   cannot dial out
+   ([ADR-018](#adr-018-agent-initiated-websocket-replaces-command-polling)), so
+   the only way to push is down a connection the agent opened.
+2. **It would be a second authentication surface** for the same credential, on
+   a path that returns the agent's own configuration. The socket is already
+   authenticated, already epoch-guarded, and already closes on revocation; a
+   polling endpoint would need all of that again, correctly, separately.
+3. **Acknowledgement would have nowhere to go.** The thing that makes desired
+   state distinguishable from applied state (§23) is the agent reporting what
+   it is running. On a connection that is a message; over polling it would be
+   a second endpoint that writes — and the monitoring protocol deliberately
+   has no general write surface for agents beyond telemetry and configuration
+   acknowledgement ([`SECURITY.md`](SECURITY.md)).
+
+**Cost.** The message set grew by five, and the socket loop has to handle
+configuration and telemetry on one connection — which it does, and which is
+asserted by a test that exercises both in one session.
+
+---
+
+### ADR-050: The configuration checksum is computed over the transmitted bytes
+
+**Decision.** The controller stores a configuration revision as the exact
+UTF-8 byte string it will send, and the checksum is SHA-256 over **those
+bytes**. The agent verifies the checksum over the bytes it received, before
+parsing them. Both sides canonicalise identically: sorted keys, no whitespace,
+no floating-point values.
+
+**Why over bytes and not over the document.** Hashing a parsed structure means
+each side hashes its own idea of that structure, and the two ideas are written
+in different languages. Python's `json.dumps` and Go's `encoding/json` do not
+agree on key order, on whitespace, or on how a number is spelled — so a
+document-level hash would match until the day a value serialised differently,
+and then it would report corruption that had not happened. Hashing the wire
+form removes the question: there is one byte string, and either it arrived
+intact or it did not.
+
+**Why no floats.** `0.1` has no exact binary representation, and the two
+languages print it differently in some ranges. Every numeric value in a
+configuration document is therefore an integer — intervals in whole seconds,
+jitter in whole seconds. That is a real constraint on the schema, accepted
+deliberately: sub-second collection is not a homelab requirement, and a
+checksum that silently disagrees across languages is a debugging session
+nobody should have.
+
+**How it is kept honest.** `contracts/monitoring-modules.json` and
+`contracts/calendar-cases.json` are generated from the Python side, committed,
+and compared against the Go implementation by `make check-contract` — so the
+two canonicalisations cannot drift without CI failing. A revision also carries
+a second checksum over the *content* only, excluding `generated_at`, which is
+what makes regeneration idempotent: saving a setting that resolves to the same
+configuration produces no new revision and pushes nothing.
+
+---
+
+### ADR-051: The agent's telemetry queue is in memory, with no disk spool
+
+**Decision.** Samples the agent has collected but not yet delivered are held in
+a bounded in-memory queue. When it is full the **oldest** are dropped and
+counted. There is no disk spool, and the agent does not persist telemetry
+across a restart.
+
+**Why bounded.** §16: an unbounded queue is a memory leak with a delay. An
+agent on a host that cannot reach its controller for a week must not consume
+the memory of the machine it is monitoring — a monitoring agent that causes the
+outage it would have reported is the worst possible failure.
+
+**Why oldest-first.** When a choice has to be made, recent data is worth more:
+an operator looking at a chart after an outage wants to know what is happening
+now, and the gap is information too. Dropping the newest would keep a record of
+the start of the incident and lose the present.
+
+**Why no disk spool.** It was considered and rejected for this phase:
+
+* It needs its own bounded size, its own corruption handling, its own
+  fsync policy and its own upgrade story for the on-disk format — four new
+  failure modes on the agent, which is the component that runs unattended on
+  machines nobody logs into.
+* The agent writes to `/etc/hcc-agent` and nothing else. A spool means it
+  writes data, which means disk-full becomes an agent failure mode, on a host
+  whose disk the controller is supposed to be *watching*.
+* The data it would save is the data least worth saving. A restart is usually
+  seconds; a week-long outage overflows any plausible spool anyway.
+
+**What is claimed.** At-least-once delivery for what the queue holds, with
+idempotent writes making a re-send a no-op. **Exactly-once is not claimed and
+is not provided**: SIGKILL loses the queue. `scripts/reliability-e2e.sh`
+asserts exactly that distinction — that stored data survives and collection
+resumes, not that nothing was ever lost.
+
+**What is reported.** Every heartbeat carries `buffered_items` and
+`dropped_items`, so loss is a number the controller records rather than
+something the operator infers from a gap in a chart.
+
+---
+
+### ADR-052: PostgreSQL native partitioning, not TimescaleDB
+
+**Decision.** Metric storage uses PostgreSQL's own declarative range
+partitioning on `recorded_at`, with a controller-side rollup job. TimescaleDB
+is not a dependency.
+
+**Why this is an ADR at all.** TimescaleDB is the obvious answer for time-series
+in PostgreSQL, and continuous aggregates would replace the rollup job entirely.
+Not adopting it needs a reason, and "we did not get round to it" is not one.
+
+**Why not.** The deciding factor is deployment, not capability:
+
+1. **It is an extension**, so it has to be installed in the database the
+   operator already runs. A homelab controller is often pointed at an existing
+   PostgreSQL — a container, a NAS package, a managed instance — and requiring
+   an extension turns "give me a connection string" into "rebuild your
+   database server". That is a large ask for a self-hosted tool.
+2. **The rollup job is testable in process.** Continuous aggregates are
+   configured in SQL and run on the database's schedule, so verifying them
+   means asserting against a background worker somebody else owns. The job
+   here is a function with a `now` parameter, which is why
+   `tests/test_metrics_maintenance.py` can drive a year of retention in
+   milliseconds.
+3. **Measured, PostgreSQL holds.** 4,497 samples a second through the full
+   validation path, 88 bytes a sample including indexes, range queries at
+   0.6–0.8 ms touching one partition of twelve. See
+   [`PERFORMANCE.md`](PERFORMANCE.md). Those are not fleet-scale numbers, and
+   they are enough to say the plain implementation is not the bottleneck yet.
+
+**What it costs.** Partition creation, rollups and retention are code this
+project maintains — roughly 700 lines with its own test file — rather than
+features somebody else maintains. Two defects in it have already been found
+and fixed (see the Phase 3 history), which is the honest price of the choice.
+
+**When to revisit.** If a fleet makes the rollup job the bottleneck, or if
+compression becomes necessary before the hourly tier's two-year retention is
+affordable. The schema is deliberately compatible: `metric_samples_raw` is a
+plain partitioned table, so converting it to a hypertable later is a migration
+rather than a redesign.
+
+---
+
 ## 14. Open design questions
 
 Recorded rather than silently deferred. Each needs an answer before the
@@ -2517,11 +2704,11 @@ milestone that depends on it, not before the next commit.
 
 | # | Question | Blocks | Current leaning |
 | --- | --- | --- | --- |
-| 1 | Does storage volume at realistic fleet size hold up? The figures in [`DATA_RETENTION.md §7`](DATA_RETENTION.md#7-expected-volume) are arithmetic, not measurements. | Phase 3 schema freeze | Benchmark first ([§8 there](DATA_RETENTION.md#8-benchmarks-required-before-metric-storage-ships)); PostgreSQL expected to hold, TimescaleDB as first escalation |
+| 1 | ~~Does storage volume at realistic fleet size hold up?~~ **Answered in Phase 3.** Measured: 88 bytes per raw sample including indexes, 30.5:1 compression into the five-minute tier, 4,497 samples/s ingestion. See [`PERFORMANCE.md`](PERFORMANCE.md) and [ADR-052](#adr-052-postgresql-native-partitioning-not-timescaledb). Not fleet-scale numbers, and enough to freeze the schema. | — | Resolved: PostgreSQL native partitioning |
 | 2 | Per-host role assignment — should a user be an Operator on some hosts and a Viewer on others? | Multi-user milestones | Likely yes, as a third authorization dimension composing with ADR-023; not in the first delivery |
 | 3 | Host groups as a configuration layer. [`AGENT_ARCHITECTURE.md §6.1`](AGENT_ARCHITECTURE.md#61-layering) reserves the slot but defers it. | Fleet-scale configuration | Defer until someone runs enough hosts to need it; two layers cover the homelab case |
-| 4 | Metric identity across config changes: if an operator changes a module's labels, is that the same series or a new one? | Phase 3 schema | Probably a new series, with the UI stitching them for display — but it affects the schema and must be settled before it lands |
+| 4 | ~~Metric identity across config changes.~~ **Answered in Phase 3.** A series is identified by `(host, module, metric, labels_key)`, so a different label set is a different series. The read API returns every series a host has ever produced, including ones that have stopped, so "no CPU data" and "CPU data until Tuesday" stay different answers. Stitching is deferred to the interface and not yet done. | — | Resolved: a new series |
 | 5 | Whether `sessions.control` is worth shipping at all. Attaching to an existing session inherits that session's privileges, including root. | Session management milestone | Possibly read-only only; the control half may be more risk than value |
 | 6 | Agent self-update distribution. Phase 10 lists it as opt-in and signature-verified, but it makes the controller a code-distribution channel — the same concern as plugin question 10. | Phase 10 | Keep opt-in and signed; prefer OS packages over self-update |
-| 7 | Rollup computation location: controller-side job, or PostgreSQL-side with Timescale continuous aggregates. | Phase 3 | Controller-side first (portable, testable); revisit with benchmarks |
+| 7 | ~~Rollup computation location.~~ **Answered in Phase 3:** controller-side, in a single `INSERT … SELECT … ON CONFLICT DO UPDATE` per tier. See [ADR-052](#adr-052-postgresql-native-partitioning-not-timescaledb) for why not continuous aggregates. | — | Resolved: controller-side |
 | 8 | Whether the terminal needs a break-glass path when the controller is down. Today it does not work offline, by design. | Terminal milestone | Leave it unavailable; a break-glass path is an unaudited backdoor by another name |

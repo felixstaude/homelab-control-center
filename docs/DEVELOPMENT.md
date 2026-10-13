@@ -314,7 +314,25 @@ separate jobs:
 ```bash
 make smoke            # a real uvicorn process, probed over HTTP
 make e2e              # a real browser against a real control plane
+make monitoring-e2e   # a real agent reading this machine's /proc
+make reliability-e2e  # kill the controller, the agent and the connections
+make measure-metrics  # ingestion, storage and query cost
 ```
+
+The last three arrived with Phase 3 and are worth knowing what they do:
+
+| Target | What it runs | Why it cannot be a unit test |
+| --- | --- | --- |
+| `make monitoring-e2e` | A real controller, a real agent built from source reading this machine's real `/proc`, a real WebSocket, real rows in real partitions. 60 checks. | The suites prove each piece behaves; they cannot prove the pieces agree. The checksum the controller computes has to match the one the agent computes over the bytes it received, across two languages. |
+| `make reliability-e2e` | Kills the controller mid-collection, SIGKILLs the agent, terminates every database connection, then checks what survived. 24 checks. | A controller restart losing nothing needs two processes, and one of them has to die. |
+| `make measure-metrics` | Ingestion throughput, bytes per sample, query latency, the query plans, rollup cost. | Numbers, not assertions. Read the output; it ends with a list of what it does *not* show. |
+
+All three create their own disposable database, their own port and their own
+`mktemp` agent state directory, and drop everything on every exit path. None
+of them touches your development database, writes a credential to `/etc`, or
+enrols this machine into anything that outlives the run. `reliability-e2e`'s
+"database outage" terminates only its own database's sessions, selected by
+`datname` — the PostgreSQL server is never stopped.
 
 **There is no Prettier configuration, and Prettier is not the formatter.**
 Frontend style is whatever ESLint accepts; running `npx prettier --write`
