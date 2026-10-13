@@ -664,16 +664,41 @@ class MetricsService:
     async def sample_count(self, db: AsyncSession, host_id: uuid.UUID) -> int:
         """How many raw samples a host has stored.
 
-        For the host page's "is anything actually arriving?" line and for
-        tests. Counts across every partition, so it is not a cheap query — the
-        interface asks for it once per page load and not per chart.
+        For the host page's "is anything actually arriving?" line.
+
+        ## Two queries, deliberately
+
+        The obvious single query joins ``metric_series`` and filters on
+        ``host_id``, and it is **O(every sample in the installation)**: the
+        filter is on the joined table, so the planner has no way to prune
+        partitions or use the ``(series_id, recorded_at)`` index, and it
+        sequentially scans every partition whatever host is asked about.
+        Measured, it cost 37 ms for a host with a hundred samples — the same
+        as for a host with half a million, because the work is proportional to
+        everybody else's data.
+
+        Resolving the series ids first and counting by them is 0.044 ms for
+        that same host, and scales with the host's own data rather than the
+        installation's. ``scripts/measure-metrics.py`` is where the numbers
+        come from.
+
+        The extra round trip is worth it twice over: a host with no series at
+        all returns zero without touching the sample tables, and that is the
+        newly-enrolled host — previously the most expensive case and the one
+        most likely to be looked at.
         """
+        series_ids = (
+            (await db.execute(select(MetricSeries.id).where(MetricSeries.host_id == host_id)))
+            .scalars()
+            .all()
+        )
+        if not series_ids:
+            return 0
         return (
             await db.execute(
                 select(func.count())
                 .select_from(MetricSampleRaw)
-                .join(MetricSeries, MetricSeries.id == MetricSampleRaw.series_id)
-                .where(MetricSeries.host_id == host_id)
+                .where(MetricSampleRaw.series_id.in_(series_ids))
             )
         ).scalar_one()
 

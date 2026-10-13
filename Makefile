@@ -312,3 +312,9 @@ monitoring-e2e: ## Real agent, real /proc, real database: the monitoring pipelin
 # never touches the development installation or writes a credential to /etc —
 # see scripts/monitoring-e2e.sh.
 	@./scripts/monitoring-e2e.sh
+
+.PHONY: measure-metrics
+measure-metrics: ## Measure metric ingestion, storage and query cost (requires make db-up)
+# Creates its own disposable database, so it never touches the development
+# installation — see scripts/measure-metrics.py.
+	@apps/server/.venv/bin/python scripts/measure-metrics.py

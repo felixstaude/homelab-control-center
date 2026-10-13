@@ -3,9 +3,12 @@
 Phase 3, implementing ``docs/DATA_RETENTION.md`` §3 and §4. One periodic job
 with three responsibilities, in this order and for this reason:
 
-1. **Create partitions ahead of time.** A row whose timestamp falls outside
-   every partition lands in the DEFAULT one, which is a safety net and not a
-   plan — so the job stays several periods ahead and the gap is visible.
+1. **Create the partitions the data needs**, behind as well as ahead. A row
+   whose timestamp falls outside every partition lands in the DEFAULT one,
+   which is a safety net and not a plan: it is never catalogued and therefore
+   never dropped, so whatever reaches it is kept for ever. Staying ahead
+   handles the clock moving forward; staying *behind* handles backfill, which
+   is the case that was missed and measured — see :data:`PARTITIONS_BEHIND`.
 2. **Roll up sealed buckets.** Aggregate raw samples into the five-minute and
    hourly tiers, preserving min, max, first, last and count.
 3. **Drop expired partitions**, and only then.
@@ -90,6 +93,31 @@ METRIC_LOCK_KEY: Final = 1
 #: broken for two days, which is longer than anyone takes to notice.
 PARTITIONS_AHEAD: Final = 3
 
+#: How many periods *behind* now each tier keeps partitions.
+#:
+#: Not symmetry with :data:`PARTITIONS_AHEAD` — this exists because of
+#: backfill, and the numbers come from how far back an agent is allowed to
+#: reach. ``protocol.MAX_BACKFILL_SECONDS`` is seven days, so an agent
+#: reconnecting after a week-long outage delivers samples timestamped up to
+#: seven days ago, and a partition has to exist for each of them.
+#:
+#: Without this, those samples land in the DEFAULT partition — which is a
+#: safety net, is never catalogued in ``metric_partitions``, and is therefore
+#: **never dropped by retention**. Backfilled data would accumulate there for
+#: ever, invisibly, which is §19's "the first symptom is a disk filling weeks
+#: later" arriving by a different route. Measured on a benchmark that wrote six
+#: hours of history backwards from now: 189,120 of 259,200 rows landed in
+#: DEFAULT, because only the current day's partition existed.
+#:
+#: The counts differ because the partition widths do. Raw is daily, so seven
+#: days needs seven. The five-minute tier is weekly and the hourly tier
+#: monthly, so one each already spans more than the backfill window.
+PARTITIONS_BEHIND: Final[dict[str, int]] = {
+    TIER_RAW: 7,
+    TIER_5M: 1,
+    TIER_1H: 1,
+}
+
 #: How long a bucket must be closed before it is rolled up.
 #:
 #: Ten minutes, from ``DATA_RETENTION.md`` §3.2. Long enough for an agent that
@@ -167,6 +195,13 @@ class MaintenanceOutcome:
     #: Partitions that *should* exist and do not, by tier. Non-empty means the
     #: job is not keeping up and inserts are landing in a DEFAULT partition.
     gaps: dict[str, int] | None = None
+    #: Rows sitting in each tier's DEFAULT partition, by tier.
+    #:
+    #: Non-empty is a problem that does not resolve itself: the DEFAULT
+    #: partition is never catalogued and never dropped, so whatever reaches it
+    #: is kept for ever. Reported rather than only logged, so an operator
+    #: endpoint could surface it.
+    default_rows: dict[str, int] | None = None
     #: Set when the lock was held by another process, so the run did nothing.
     #: Not an error: the other run is doing the work.
     skipped: bool = False
@@ -217,19 +252,35 @@ class RetentionService:
         await db.commit()
 
         gaps = await self._partition_gaps(db, moment)
+        default_rows = await self._default_partition_rows(db)
 
         outcome = MaintenanceOutcome(
             partitions_created=created,
             partitions_dropped=dropped,
             buckets_rolled_up=rolled,
             gaps=gaps,
+            default_rows=default_rows,
         )
+        if default_rows:
+            # Warned rather than counted quietly: nothing drops these, so the
+            # number only grows, and the remedy is a decision an operator has
+            # to make.
+            logger.warning(
+                "metric_default_partition_in_use",
+                rows=default_rows,
+                detail=(
+                    "Samples landed outside every partition window and are in a "
+                    "DEFAULT partition, which retention never drops. They were "
+                    "timestamped outside the range the job keeps partitions for."
+                ),
+            )
         logger.info(
             "metric_maintenance_complete",
             partitions_created=created,
             partitions_dropped=dropped,
             buckets_rolled_up=rolled,
             gaps=gaps,
+            default_rows=default_rows,
         )
         return outcome
 
@@ -269,20 +320,63 @@ class RetentionService:
     # --- Partitions -------------------------------------------------------
 
     async def _ensure_partitions(self, db: AsyncSession, now: datetime) -> int:
-        """Create the partitions each tier needs, now and ahead.
+        """Create the partitions each tier needs: behind, now, and ahead.
 
         Creates nothing that exists. The catalogue is consulted first, and the
         ``CREATE TABLE`` is guarded by its own uniqueness — so a race with
         another process is a caught error rather than a failed run.
+
+        ## A window already past its retention is not created
+
+        Otherwise the job would recreate the partition retention dropped on the
+        previous run, drop it again on the next, and churn for ever. Worse than
+        pointless: a window whose raw data has already been rolled up and
+        expired would start accepting late samples the rollup pass will not
+        revisit — ``_rollup`` starts from the tier watermark — so the data
+        would sit there unaggregated until retention removed it again, and the
+        chart would disagree with the raw table in the meantime.
+
+        So the backward reach stops at the retention cutoff. Samples older than
+        that are refused by the ingestion path's backfill bound or land in
+        DEFAULT, and :meth:`_default_partition_rows` is what makes the latter
+        visible.
         """
         created = 0
         for tier in TIERS:
-            for window in _windows(tier, now, PARTITIONS_AHEAD):
+            cutoff = now - timedelta(days=self._policy.days_for(tier))
+            for window in _windows(tier, now, PARTITIONS_AHEAD, PARTITIONS_BEHIND[tier]):
+                if window.end <= cutoff:
+                    continue
                 if await self._partition_exists(db, tier, window.start):
                     continue
                 if await self._create_partition(db, tier, window):
                     created += 1
         return created
+
+    async def _default_partition_rows(self, db: AsyncSession) -> dict[str, int]:
+        """How many rows are sitting in each tier's DEFAULT partition.
+
+        The DEFAULT partition is a safety net rather than a plan: a row whose
+        timestamp falls outside every window lands there instead of failing the
+        insert, which is the right trade — losing a measurement is worse than
+        storing it awkwardly.
+
+        But it is **never catalogued and never dropped**, so anything that
+        accumulates there is kept for ever. Reporting the count is what turns
+        that from an invisible leak into a number an operator can act on, and
+        it is cheap: the count is per-partition and these should be empty.
+        """
+        counts: dict[str, int] = {}
+        for tier, table in TIER_TABLES.items():
+            # The identifier is derived from TIER_TABLES, through the same
+            # guard every other interpolation in this module uses.
+            name = f"{_metric_table(table)}_default"
+            rows: int = (
+                await db.execute(text(f'SELECT count(*) FROM "{name}"'))  # noqa: S608
+            ).scalar_one()
+            if rows:
+                counts[tier] = rows
+        return counts
 
     async def _partition_exists(self, db: AsyncSession, tier: str, start: datetime) -> bool:
         found = (
@@ -373,8 +467,15 @@ class RetentionService:
         """
         gaps: dict[str, int] = {}
         for tier in TIERS:
+            cutoff = now - timedelta(days=self._policy.days_for(tier))
             missing = 0
-            for window in _windows(tier, now, PARTITIONS_AHEAD):
+            # The same windows `_ensure_partitions` creates, including the
+            # retention skip — otherwise this reports a gap for a window
+            # nothing is ever going to create, and a permanent non-zero gap is
+            # a signal nobody looks at twice.
+            for window in _windows(tier, now, PARTITIONS_AHEAD, PARTITIONS_BEHIND[tier]):
+                if window.end <= cutoff:
+                    continue
                 if not await self._partition_exists(db, tier, window.start):
                     missing += 1
             if missing:
@@ -655,18 +756,26 @@ class _Window:
     suffix: str
 
 
-def _windows(tier: str, now: datetime, ahead: int) -> list[_Window]:
-    """The partition windows a tier should have: the current one and ``ahead``.
+def _windows(tier: str, now: datetime, ahead: int, behind: int = 0) -> list[_Window]:
+    """The partition windows a tier should have, from ``behind`` to ``ahead``.
 
     Boundaries are computed **in UTC**, which is not cosmetic: the migration
     that created the first partition truncates in UTC for the same reason, and
     a job computing them in the session's time zone would try to create a
     partition overlapping one that already existed.
+
+    ``behind`` covers backfill. An agent reconnecting after an outage delivers
+    samples with their original timestamps, and a window has to exist for each
+    or they land in the DEFAULT partition — which nothing ever drops. See
+    :data:`PARTITIONS_BEHIND`.
+
+    Returned oldest first, so a caller creating them produces the past before
+    the future and a partial run leaves the useful half done.
     """
     days = TIER_PARTITION_DAYS[tier]
     current = _floor_to_days(now.astimezone(UTC), days, tier)
     windows: list[_Window] = []
-    for index in range(ahead + 1):
+    for index in range(-behind, ahead + 1):
         start = _advance(current, days, index, tier)
         end = _advance(current, days, index + 1, tier)
         windows.append(_Window(start=start, end=end, suffix=_suffix(tier, start)))

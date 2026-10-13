@@ -71,9 +71,16 @@ export function HostMetricsCard({ host }: { host: Host }) {
   const status = useQuery({
     queryKey: queryKeys.session.metricsStatus(hostId),
     queryFn: ({ signal }) => fetchMetricsStatus(hostId, signal),
-    // Slower than the values: this answers "is anything arriving at all",
-    // which does not change second to second, and it counts rows.
-    refetchInterval: POLL_INTERVAL_MS * 3,
+    // **Not polled.** This endpoint counts stored samples, which costs time
+    // proportional to the host's history — so polling it would make the page
+    // more expensive the longer the installation had been running, to keep a
+    // line of text fresh that does not change meaningfully minute to minute.
+    //
+    // The live signal is `latest` above, which polls every ten seconds and is
+    // cheap. This is fetched once per visit and left alone; enabling or
+    // disabling a module invalidates the metrics root, so the one event that
+    // really changes the answer does refresh it.
+    staleTime: 5 * 60_000,
   });
 
   const values = useMemo(

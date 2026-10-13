@@ -55,6 +55,7 @@ from hcc.services.retention import (
     METRIC_LOCK_CLASS,
     METRIC_LOCK_KEY,
     PARTITIONS_AHEAD,
+    PARTITIONS_BEHIND,
     RetentionPolicy,
     RetentionService,
     _floor_to,
@@ -179,8 +180,12 @@ async def test_a_run_creates_the_current_window_and_the_ones_ahead(
     outcome = await service.run(db_session, now=ERA)
     await service.release_lock(db_session)
 
-    # Three tiers, each wanting the current window plus PARTITIONS_AHEAD.
-    assert outcome.partitions_created == 3 * (PARTITIONS_AHEAD + 1)
+    # Each tier wants the current window, PARTITIONS_AHEAD after it, and
+    # PARTITIONS_BEHIND before it — the last of those for backfill.
+    expected = sum(
+        PARTITIONS_AHEAD + 1 + PARTITIONS_BEHIND[tier] for tier in (TIER_RAW, TIER_5M, TIER_1H)
+    )
+    assert outcome.partitions_created == expected
     # And none missing afterwards, which is the property an operator monitors.
     assert outcome.gaps == {}
 
@@ -257,6 +262,8 @@ async def test_the_hourly_tier_is_partitioned_by_calendar_month(
     rows = (await db_session.execute(era_only)).scalars().all()
 
     assert sorted(row.table_name for row in rows) == [
+        # One behind, for backfill, then the current month and three ahead.
+        "metric_samples_1h_202105",
         "metric_samples_1h_202106",
         "metric_samples_1h_202107",
         "metric_samples_1h_202108",
@@ -292,6 +299,159 @@ async def test_a_sample_lands_in_the_partition_covering_its_timestamp(
         )
     ).scalar_one()
     assert physical == "metric_samples_raw_20210614"
+
+
+# ---------------------------------------------------------------------------
+# Backfill, and the partition that nothing drops
+# ---------------------------------------------------------------------------
+
+
+async def test_partitions_are_created_behind_now_for_backfill(
+    db_session: AsyncSession, service: RetentionService
+) -> None:
+    """Regression: a backfilled sample must have a partition to land in.
+
+    An agent reconnecting after an outage delivers samples with their original
+    timestamps, up to the protocol's seven-day backfill bound. Before this,
+    the job created only the current window and three ahead — so every one of
+    those samples landed in the DEFAULT partition, which is never catalogued
+    and never dropped, and would have been kept for ever.
+
+    Found by `scripts/measure-metrics.py`, which writes history backwards from
+    now: 189,120 of 259,200 rows went to DEFAULT.
+    """
+    await service.run(db_session, now=ERA)
+    await service.release_lock(db_session)
+
+    starts = {
+        row.range_start
+        for row in (
+            await db_session.execute(
+                select(MetricPartition).where(
+                    MetricPartition.tier == TIER_RAW,
+                    MetricPartition.range_start < datetime(2022, 1, 1, tzinfo=UTC),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    }
+
+    # Seven days behind the current window, through to three ahead.
+    for days_back in range(1, 8):
+        expected = datetime(2021, 6, 14, tzinfo=UTC) - timedelta(days=days_back)
+        assert expected in starts, f"no partition for {expected.date()}"
+    assert datetime(2021, 6, 17, tzinfo=UTC) in starts
+
+
+async def test_a_backfilled_sample_lands_in_a_real_partition(
+    db_session: AsyncSession, service: RetentionService
+) -> None:
+    """The property the windows exist for, asserted through ``tableoid``.
+
+    Visibility through the parent proves nothing — a row in DEFAULT is visible
+    too. What matters is that the row is in a table retention can drop.
+    """
+    await service.run(db_session, now=ERA)
+    await service.release_lock(db_session)
+    series_id = await seed_series(db_session)
+
+    six_days_ago = ERA - timedelta(days=6)
+    await add_raw(db_session, series_id, [(six_days_ago, 42.0)])
+    await db_session.commit()
+
+    physical: str = (
+        await db_session.execute(
+            text(
+                "SELECT tableoid::regclass::text FROM metric_samples_raw "
+                "WHERE series_id = :series_id"
+            ).bindparams(series_id=series_id)
+        )
+    ).scalar_one()
+
+    assert physical == "metric_samples_raw_20210608"
+    assert not physical.endswith("_default")
+
+
+async def test_rows_in_the_default_partition_are_reported(
+    db_session: AsyncSession, service: RetentionService
+) -> None:
+    """An invisible leak becomes a number.
+
+    Nothing drops the DEFAULT partition, so a row that reaches it is kept for
+    ever. The job cannot fix that — the data is real and deleting it would be
+    worse — so the remedy is an operator decision, and this is what tells them
+    a decision is needed.
+    """
+    await service.run(db_session, now=ERA)
+    await service.release_lock(db_session)
+    series_id = await seed_series(db_session)
+
+    # Far outside every window the job keeps, which is what DEFAULT is for.
+    await add_raw(db_session, series_id, [(datetime(2019, 3, 1, tzinfo=UTC), 7.0)])
+    await db_session.commit()
+
+    in_default: str = (
+        await db_session.execute(
+            text("SELECT tableoid::regclass::text FROM metric_samples_raw LIMIT 1")
+        )
+    ).scalar_one()
+    assert in_default.endswith("_default"), in_default
+
+    outcome = await service.run(db_session, now=ERA)
+    await service.release_lock(db_session)
+
+    assert outcome.default_rows is not None
+    assert outcome.default_rows[TIER_RAW] == 1
+    # And the rollup tiers too, which is worth noticing: aggregating a sample
+    # that is in a DEFAULT partition produces a rollup row whose bucket is
+    # also outside every window, so it lands in DEFAULT as well. The leak
+    # propagates through the tiers rather than being confined to raw.
+    assert outcome.default_rows[TIER_5M] == 1
+    assert outcome.default_rows[TIER_1H] == 1
+
+
+async def test_a_window_past_its_retention_is_not_recreated(
+    db_session: AsyncSession, service: RetentionService
+) -> None:
+    """Otherwise the job churns: create, drop, create, for ever.
+
+    And worse than churn. A window whose raw data has been rolled up and
+    expired would start accepting late samples the rollup will not revisit —
+    ``_rollup`` starts from the tier watermark — so the data would sit
+    unaggregated until retention removed it again, and the chart would
+    disagree with the raw table in the meantime.
+    """
+    # One-day raw retention, so six of the seven backward windows are already
+    # past their cutoff.
+    aggressive = RetentionService(RetentionPolicy(raw_days=1))
+    await aggressive.run(db_session, now=ERA)
+    await aggressive.release_lock(db_session)
+
+    starts = {
+        row.range_start
+        for row in (
+            await db_session.execute(
+                select(MetricPartition).where(
+                    MetricPartition.tier == TIER_RAW,
+                    MetricPartition.range_start < datetime(2022, 1, 1, tzinfo=UTC),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    }
+
+    # The window two days back ends before the one-day cutoff, so it is not
+    # created. The current one and those ahead are.
+    assert datetime(2021, 6, 12, tzinfo=UTC) not in starts
+    assert datetime(2021, 6, 14, tzinfo=UTC) in starts
+    assert datetime(2021, 6, 15, tzinfo=UTC) in starts
+
+    # And a second run creates nothing new, which is what "no churn" means.
+    second = await aggressive.run(db_session, now=ERA)
+    await aggressive.release_lock(db_session)
+    assert second.partitions_created == 0
 
 
 # ---------------------------------------------------------------------------
@@ -795,6 +955,120 @@ async def test_the_watermark_is_the_older_of_the_two_tiers(
     await db_session.commit()
 
     assert await rollup_watermark(db_session) == older
+
+
+# ---------------------------------------------------------------------------
+# Query cost
+# ---------------------------------------------------------------------------
+
+
+async def test_counting_one_hosts_samples_is_cheaper_than_the_obvious_query(
+    db_session: AsyncSession, service: RetentionService
+) -> None:
+    """Regression: the count must cost what one host has, not what everyone has.
+
+    The obvious query joins ``metric_series`` and filters on ``host_id``. The
+    filter is then on the joined table, so the planner cannot use the
+    ``(series_id, recorded_at)`` index and sequentially scans every partition
+    whatever host is asked about — measured at 37 ms for a host with a hundred
+    samples, the same as for a host with half a million, because the work is
+    proportional to other hosts' data.
+
+    Asserted by **comparing the two plans' estimated costs** rather than by
+    timing or by looking for a scan node. Timing would pass with either
+    implementation on a small test database and would be flaky on a loaded
+    machine. Looking for ``Seq Scan`` fails for the wrong reason: PostgreSQL
+    scans every partition when the filter is not on the partition key, and
+    scanning an *empty* partition costs nothing — the first version of this
+    test rejected a perfectly good plan for that.
+
+    The cost ratio is the property. It is a planner estimate, which is exactly
+    what decides whether this query is affordable at scale.
+    """
+    await service.run(db_session, now=ERA)
+    await service.release_lock(db_session)
+
+    # Two hosts: the one being asked about has three samples, the other has
+    # enough that scanning it would be the dominant cost.
+    quiet = await seed_series(db_session)
+    busy = await seed_series(db_session)
+    base = datetime(2021, 6, 14, 12, 0, tzinfo=UTC)
+    await add_raw(db_session, quiet, [(base + timedelta(seconds=i), 1.0) for i in range(3)])
+    await add_raw(db_session, busy, [(base + timedelta(seconds=i), 2.0) for i in range(3000)])
+    await db_session.commit()
+    await db_session.execute(text("ANALYZE metric_samples_raw"))
+    await db_session.execute(text("ANALYZE metric_series"))
+
+    host_of_quiet: uuid.UUID = (
+        await db_session.execute(
+            text("SELECT host_id FROM metric_series WHERE id = :id").bindparams(id=quiet)
+        )
+    ).scalar_one()
+
+    async def total_cost(statement: str, **parameters: object) -> float:
+        rows = (
+            await db_session.execute(text(f"EXPLAIN {statement}").bindparams(**parameters))
+        ).all()
+        head = rows[0][0]
+        # "Aggregate  (cost=11.89..11.90 rows=1 width=8)" — the second number
+        # is the estimated total.
+        return float(head.split("cost=")[1].split("..")[1].split(" ")[0])
+
+    joined = await total_cost(
+        "SELECT count(*) FROM metric_samples_raw s "
+        "JOIN metric_series e ON e.id = s.series_id WHERE e.host_id = :host",
+        host=host_of_quiet,
+    )
+    by_series = await total_cost(
+        "SELECT count(*) FROM metric_samples_raw WHERE series_id = ANY(:ids)",
+        ids=[quiet],
+    )
+
+    assert by_series < joined / 4, (
+        f"counting by series id is not meaningfully cheaper than joining: "
+        f"{by_series:.2f} vs {joined:.2f}"
+    )
+
+
+async def test_the_count_is_still_right_after_being_made_cheap(
+    db_session: AsyncSession, service: RetentionService
+) -> None:
+    """The optimisation must not change the answer.
+
+    Two queries instead of one, so there is a new way to be wrong: counting
+    the wrong host's series, or returning a partial count when a host has
+    several. Both hosts have data, and both answers are checked.
+    """
+    from hcc.services.metrics import MetricsService
+
+    await service.run(db_session, now=ERA)
+    await service.release_lock(db_session)
+
+    quiet = await seed_series(db_session)
+    other = await seed_series(db_session, metric="core_utilisation")
+    base = datetime(2021, 6, 14, 12, 0, tzinfo=UTC)
+    await add_raw(db_session, quiet, [(base + timedelta(seconds=i), 1.0) for i in range(5)])
+    await add_raw(db_session, other, [(base + timedelta(seconds=i), 2.0) for i in range(7)])
+    await db_session.commit()
+
+    host_of_quiet: uuid.UUID = (
+        await db_session.execute(
+            text("SELECT host_id FROM metric_series WHERE id = :id").bindparams(id=quiet)
+        )
+    ).scalar_one()
+    host_of_other: uuid.UUID = (
+        await db_session.execute(
+            text("SELECT host_id FROM metric_series WHERE id = :id").bindparams(id=other)
+        )
+    ).scalar_one()
+
+    metrics = MetricsService()
+    assert await metrics.sample_count(db_session, host_of_quiet) == 5
+    assert await metrics.sample_count(db_session, host_of_other) == 7
+    # A host that has never produced a series returns zero without touching
+    # the sample tables at all — the newly-enrolled case, which used to be the
+    # most expensive one.
+    assert await metrics.sample_count(db_session, uuid.uuid4()) == 0
 
 
 # ---------------------------------------------------------------------------
