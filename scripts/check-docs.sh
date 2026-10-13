@@ -64,6 +64,7 @@ DOC_PATHS = sorted(
         *Path("docs").glob("*.md"),
         *Path("docs/plans").glob("*.md"),
         *Path("docs/development").glob("*.md"),
+        *Path("docs/security").glob("*.md"),
         Path("README.md"),
         Path("CONTRIBUTING.md"),
         Path("SECURITY.md"),

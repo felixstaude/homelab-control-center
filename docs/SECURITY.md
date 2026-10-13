@@ -1125,6 +1125,13 @@ The credentials in `deploy/compose.yaml` and `apps/server/.env.example`
 They are committed so a fresh checkout works with no setup, and are documented
 as never to be reused.
 
+Those two, and the test fixtures that resemble credentials, are what a
+generic secret scanner reports against this repository. Each one has been
+investigated and classified in
+[`security/2026-10-13-secret-scanning-investigation.md`](security/2026-10-13-secret-scanning-investigation.md),
+so a repeat report can be checked against that table rather than
+re-derived — and so that a finding which is *not* on it stands out as new.
+
 ### Never logged (implemented)
 
 - `config.Config.String()` **and** `LogValue()` both redact the agent token.
