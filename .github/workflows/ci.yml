@@ -425,6 +425,41 @@ jobs:
           if-no-files-found: ignore
 
   # ==========================================================================
+  # The Compose deployment, from nothing to a working installation
+  # ==========================================================================
+  deployment:
+    name: Deployment (Compose)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build, start, bootstrap, sign in, restart
+        # An image building is not evidence of a working deployment, and a
+        # Compose file parsing is not evidence that `up -d` produces something
+        # you can log in to. This builds the real image from the real
+        # Dockerfile, brings the real stack up, runs `hcc bootstrap-admin`
+        # through `compose exec`, signs in through the published port, checks
+        # the web client is served from the same origin as the API, and
+        # restarts the whole thing to prove the volume persists.
+        #
+        # Docker Compose specifically: podman-compose 1.6.0 hangs on this
+        # stack's `depends_on` conditions, so the script skips rather than
+        # hanging when Docker is absent — which means this job is the only
+        # place it actually runs.
+        run: ./scripts/deployment-e2e.sh
+
+      - name: Upload failure artefacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-failure
+          path: /tmp/hcc-deploy-*/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # ==========================================================================
   # The installation lifecycle, against real systemd
   # ==========================================================================
   install-matrix:

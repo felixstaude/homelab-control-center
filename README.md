@@ -337,6 +337,7 @@ Conventions, troubleshooting and the full setup guide:
 | [DATA_RETENTION.md](docs/DATA_RETENTION.md) | Retention, downsampling, storage limits, volume figures |
 | [REMOTE_MANAGEMENT.md](docs/REMOTE_MANAGEMENT.md) | Capability model, authorization chain, remote terminal |
 | [PLUGINS.md](docs/PLUGINS.md) | Future extension points; why no plugin system now |
+| [DEPLOYMENT.md](docs/DEPLOYMENT.md) | Installing the controller with Compose, HTTPS, upgrades, backup and restore |
 | [RELEASING.md](docs/RELEASING.md) | How artifacts are built, what is verified, what a user can check |
 | [PHASE_0_PLAN.md](docs/PHASE_0_PLAN.md) | What Phase 0 set out to do, and its accepted deviations |
 

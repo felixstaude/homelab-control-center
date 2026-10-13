@@ -39,6 +39,7 @@ from hcc.services.metrics import MetricsService
 from hcc.services.monitoring import MonitoringConfigService
 from hcc.services.retention import RetentionService, policy_from_settings
 from hcc.services.users import UserService
+from hcc.web import mount_web_client
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -420,5 +421,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health.router)
     # Product API is versioned.
     app.include_router(v1_router, prefix=f"{settings.api_prefix}/v1")
+
+    # The web client, last, because its fallback matches every path.
+    #
+    # Unset in development, where Vite serves the client on its own port with
+    # a CORS exception. Set in the container image, which is the deployment
+    # the security model is actually written for: one origin, so session
+    # cookies are SameSite=Lax, the CSRF Origin check has something to compare
+    # against, and CORS needs no entries at all. See hcc/web.py.
+    if settings.web_root is not None:
+        mount_web_client(app, settings.web_root, api_prefix=settings.api_prefix)
 
     return app

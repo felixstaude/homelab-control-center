@@ -76,6 +76,19 @@ class Settings(BaseSettings):
     port: int = Field(default=8000, ge=1, le=65535)
     api_prefix: str = "/api"
 
+    # Where the built web client lives, if this deployment serves one.
+    #
+    # Set in the container image, which serves the API and the client from one
+    # origin — the arrangement the session cookies, the CSRF Origin check and
+    # the empty production CORS list are all written for. Unset in
+    # development, where Vite serves the client on :5173 and `cors_origins`
+    # names it.
+    #
+    # A path that is set and holds no built client makes startup fail, because
+    # the alternative is a container that reports itself ready and answers
+    # every page with a 404 — healthy, and useless. See hcc/web.py.
+    web_root: Path | None = None
+
     # Browser origins permitted to call the API. Empty by default: the
     # production deployment serves the web client from the same origin and
     # therefore needs no CORS exception. Development adds the Vite dev server.
@@ -534,11 +547,38 @@ class Settings(BaseSettings):
 
 #: ``HCC_``-prefixed variables that are deliberately not settings.
 #:
-#: Only one: the integration-test harness reads ``HCC_TEST_DATABASE_URL`` to
-#: decide whether to run database-backed tests. It shares the prefix for
-#: discoverability, so it has to be exempted by name rather than by pattern —
-#: a pattern would reopen the hole this check exists to close.
-KNOWN_NON_SETTING_VARIABLES: Final = frozenset({"HCC_TEST_DATABASE_URL"})
+#: Each is read by something *other* than this model and shares the prefix for
+#: discoverability, so each has to be exempted by name. Deliberately not a
+#: pattern: a pattern would reopen the hole the unknown-variable check exists
+#: to close, which is a typo'd setting being silently ignored.
+#:
+#: Adding a variable to the container entrypoint without adding it here makes
+#: the application **refuse to start** — which is the check working, and is
+#: also why ``tests/test_deployment.py`` asserts that the entrypoint and the
+#: Compose file name nothing this set and the model do not between them cover.
+KNOWN_NON_SETTING_VARIABLES: Final = frozenset(
+    {
+        # The integration-test harness reads this to decide whether to run
+        # database-backed tests.
+        "HCC_TEST_DATABASE_URL",
+        # Read by deploy/docker-entrypoint.sh, which runs before the
+        # application and is not configured by it.
+        #
+        # Whether to run `alembic upgrade head` before binding a port. False
+        # is for an operator who would rather run the migration themselves and
+        # watch it.
+        "HCC_AUTO_MIGRATE",
+        # The four parts the entrypoint assembles HCC_DATABASE_URL from when
+        # the URL is not given directly. The password comes from a *file* so
+        # that it is never in the container's configured environment, where
+        # `docker inspect` would show it and an issue report would carry it.
+        "HCC_DATABASE_PASSWORD_FILE",
+        "HCC_DATABASE_HOST",
+        "HCC_DATABASE_PORT",
+        "HCC_DATABASE_NAME",
+        "HCC_DATABASE_USER",
+    }
+)
 
 
 def unknown_environment_variables(environ: Mapping[str, str] | None = None) -> list[str]:

@@ -54,7 +54,12 @@ AGENT_LDFLAGS   := -s -w \
 help: ## Show this help
 	@echo "Homelab Control Center — development targets"
 	@echo
-	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
+# The character class includes digits, which it did not until now: every
+# target with a number in its name — `e2e`, `monitoring-e2e`,
+# `reliability-e2e`, `deployment-e2e` — had a `##` description and was absent
+# from this list, so four gates were documented in the file and invisible to
+# the command that lists them.
+	@grep -hE '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 		| sort \
 		| awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}'
 	@echo
@@ -343,6 +348,27 @@ measure-metrics: ## Measure metric ingestion, storage and query cost (requires m
 # Creates its own disposable database, so it never touches the development
 # installation — see scripts/measure-metrics.py.
 	@apps/server/.venv/bin/python scripts/measure-metrics.py
+
+.PHONY: image
+image: ## Build the controller container image
+	@test -n "$(COMPOSE)" || { echo "No container runtime found."; exit 1; }
+	@$(firstword $(COMPOSE)) build \
+		--build-arg HCC_VERSION="$$(tr -d '[:space:]' < VERSION)" \
+		--build-arg HCC_COMMIT="$(AGENT_COMMIT)" \
+		--build-arg HCC_BUILD_DATE="$(AGENT_BUILDDATE)" \
+		-t hcc:local -f Dockerfile .
+	@echo "✓ Built hcc:local"
+
+.PHONY: deployment-e2e
+deployment-e2e: ## Build the image, run the Compose stack, bootstrap, sign in, restart
+# Needs Docker Compose: podman-compose 1.6.0 hangs on this stack's
+# depends_on conditions, so the script skips rather than hanging. Its own
+# project name, volumes and generated secret, all removed on exit.
+	@./scripts/deployment-e2e.sh
+
+.PHONY: backup
+backup: ## Back up the Compose deployment's database into ./  (see scripts/backup.sh --help)
+	@./scripts/backup.sh
 
 .PHONY: install-matrix
 install-matrix: ## Install the agent into a real-systemd container and exercise its whole lifecycle (requires make db-up)

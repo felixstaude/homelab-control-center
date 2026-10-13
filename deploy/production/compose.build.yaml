@@ -1,0 +1,30 @@
+# Build the image from a source checkout instead of pulling it.
+#
+#   docker compose -f compose.yaml -f compose.build.yaml up -d --build
+#
+# This exists because `compose.yaml` names a registry tag that **does not
+# exist yet**: no release of this project has been published and nothing has
+# been pushed to any registry. Rather than have compose.yaml build by default
+# — which would make every `up -d` recompile a web client and a set of Python
+# C extensions — the pull path is the documented one and this overlay is how
+# it is actually run today.
+#
+# When the first image is published, this file stays: building from source is
+# what a contributor does, and the stack they test should be the stack that
+# ships.
+#
+# `context: ../..` because this file lives two directories below the
+# repository root, and the Dockerfile copies from apps/.
+
+services:
+  hcc:
+    image: hcc:local
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        # Passed through so the image can say what it is. A build with no
+        # arguments labels itself "unknown", which is honest.
+        HCC_VERSION: ${HCC_VERSION:-unknown}
+        HCC_COMMIT: ${HCC_COMMIT:-unknown}
+        HCC_BUILD_DATE: ${HCC_BUILD_DATE:-unknown}

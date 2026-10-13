@@ -1,0 +1,84 @@
+# TLS, for a deployment that does not already have a reverse proxy.
+#
+#   docker compose -f compose.yaml -f compose.tls.yaml up -d
+#
+# Adds Caddy in front and stops publishing the controller's own port, so the
+# only thing listening on the host is 80 and 443.
+#
+# Two documented variants exist because the homelab split is real: people who
+# want TLS handled for them, and people who already run Traefik or nginx and
+# want one more backend. This is the first. The second is `compose.yaml`
+# alone, which publishes 127.0.0.1:8000 for an existing proxy — see
+# docs/DEPLOYMENT.md for the headers that proxy has to set.
+#
+# ## Why Caddy
+#
+# It obtains and renews a certificate from Let's Encrypt with no configuration
+# beyond the name, and it proxies WebSockets without being told to. Both
+# matter here: the agent connection *is* a WebSocket, and a proxy that needed
+# an explicit upgrade rule would work for the interface and silently fail for
+# every agent.
+#
+# ## For a LAN-only deployment
+#
+# A name that is not publicly resolvable cannot get a Let's Encrypt
+# certificate. Two options, both set through HCC_TLS_DIRECTIVE in .env and
+# both in docs/DEPLOYMENT.md:
+#
+#   * `tls internal` — Caddy issues from its own local CA, and you install
+#     that CA on the machines that use the interface *and* pass `--ca-file`
+#     to `hcc-agent install` on every host.
+#   * `tls /tls/cert.pem /tls/key.pem` — a certificate you already have,
+#     placed in ./tls/.
+
+# The controller's own `ports:` entry from compose.yaml is deliberately left
+# alone, rather than overridden away.
+#
+# It publishes on **127.0.0.1 only**, so nothing on the LAN can reach it and
+# Caddy is still the only way in from outside the host. Keeping it is useful —
+# `curl 127.0.0.1:8000/readyz` from the host is how you tell a controller
+# problem from a proxy problem — and removing it would need Compose's
+# `!override` tag, which podman-compose does not understand and which would
+# make this overlay silently unusable for half the people who try it.
+#
+# A mutation sent directly to 127.0.0.1:8000 is refused anyway: its Origin
+# does not match HCC_PUBLIC_ORIGIN, which is the CSRF check doing its job.
+
+services:
+  caddy:
+    image: docker.io/library/caddy:2-alpine
+    container_name: hcc-caddy
+    restart: unless-stopped
+    depends_on:
+      hcc:
+        condition: service_started
+    environment:
+      # The name on the certificate, derived from the one setting the
+      # operator already had to provide. `:80` would serve plain HTTP, which
+      # is why this is required rather than defaulted.
+      HCC_SITE_ADDRESS: ${HCC_SITE_ADDRESS:?set HCC_SITE_ADDRESS in .env — the hostname browsers use}
+      HCC_TLS_DIRECTIVE: ${HCC_TLS_DIRECTIVE:-}
+    ports:
+      - "${HCC_HTTP_PORT:-80}:80"
+      - "${HCC_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates and the account key. A named volume rather than a bind
+      # mount: losing it means re-issuing, and Let's Encrypt rate-limits that.
+      - caddy-data:/data
+      - caddy-config:/config
+      # Only used when serving a certificate the operator already has.
+      - ./tls:/tls:ro
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  caddy-data:
+    driver: local
+  caddy-config:
+    driver: local
