@@ -344,6 +344,15 @@ measure-metrics: ## Measure metric ingestion, storage and query cost (requires m
 # installation — see scripts/measure-metrics.py.
 	@apps/server/.venv/bin/python scripts/measure-metrics.py
 
+.PHONY: install-matrix
+install-matrix: ## Install the agent into a real-systemd container and exercise its whole lifecycle (requires make db-up)
+# A privileged container with systemd as pid 1, a real controller behind real
+# TLS with a real internal CA, and the actual install command. Its own
+# disposable database and container, both removed on every exit path. The
+# container is privileged, which is why this is not part of `make check` —
+# see scripts/install-matrix.sh.
+	@./scripts/install-matrix.sh
+
 .PHONY: reliability-e2e
 reliability-e2e: ## Kill the controller, the agent and the database connections; check what survived (requires make db-up)
 # Its own disposable database and port. The "database outage" terminates only

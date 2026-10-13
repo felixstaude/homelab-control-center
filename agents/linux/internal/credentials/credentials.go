@@ -260,6 +260,22 @@ func checkFile(path string, info fs.FileInfo) error {
 // Root is permitted to own a file the agent reads as another user, because
 // that is the normal arrangement: root installs the credential during
 // enrollment and the service runs as a dedicated unprivileged account.
+//
+// # And root may read a file owned by anyone
+//
+// The reverse arrangement is just as normal and was refused until the
+// installation matrix caught it: `hcc-agent install` writes the credential as
+// root and hands it to the service account, so a root-run `status` or `doctor`
+// on a correctly installed host was told the agent would refuse its own
+// credential. On a *healthy* installation. That is the worst possible
+// diagnostic output — it sends an operator to fix something that is right.
+//
+// Relaxing it costs nothing, because for root the check cannot prevent what it
+// exists to prevent. The question it answers is "could an unprivileged user
+// have substituted this file?", and the set of users who could is exactly the
+// set who can write the file or its directory — which [checkFile]'s mode check
+// and [checkDirectory] already answer. Root can read the file whatever its
+// owner, so the owner tells root nothing further.
 func checkOwner(path string, info fs.FileInfo) error {
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {
@@ -271,6 +287,9 @@ func checkOwner(path string, info fs.FileInfo) error {
 		return nil
 	}
 	uid := os.Getuid()
+	if uid == 0 {
+		return nil
+	}
 	if int(stat.Uid) != uid && stat.Uid != 0 {
 		return &InsecureFileError{
 			Path:   path,

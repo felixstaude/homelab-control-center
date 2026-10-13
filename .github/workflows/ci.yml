@@ -425,6 +425,80 @@ jobs:
           if-no-files-found: ignore
 
   # ==========================================================================
+  # The installation lifecycle, against real systemd
+  # ==========================================================================
+  install-matrix:
+    name: Install (${{ matrix.image }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      # Every distribution runs even when one fails. "It works on Debian and
+      # not on Fedora" is the finding; cancelling the others would hide half
+      # of it.
+      fail-fast: false
+      matrix:
+        image: ['debian:13', 'ubuntu:24.04', 'fedora:42']
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: hcc
+          POSTGRES_PASSWORD: hcc_local_dev
+          POSTGRES_DB: hcc
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U hcc -d hcc"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: apps/server/pyproject.toml
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: agents/linux/go.sum
+
+      - name: Install the backend
+        run: |
+          python -m venv apps/server/.venv
+          apps/server/.venv/bin/pip install --quiet --upgrade pip
+          apps/server/.venv/bin/pip install --quiet -e 'apps/server[dev]'
+
+      - name: Install, collect, diagnose, upgrade, roll back, uninstall
+        # A privileged container with systemd as pid 1, a real controller
+        # behind real TLS with a real internal CA, and the actual `hcc-agent
+        # install` command a person would paste.
+        #
+        # This is the job that proves the hardened unit *works* rather than
+        # merely parses. `systemd-analyze verify` does not execute anything,
+        # and the unit carried `ProcSubset=pid` for several milestones — which
+        # hides every /proc file the agent reads, so the service would have
+        # started, connected, reported itself healthy and collected nothing.
+        # Step 10 of the script enables a module and asserts a row appears.
+        run: ./scripts/install-matrix.sh --image '${{ matrix.image }}'
+
+      - name: Upload failure artefacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: install-matrix-${{ strategy.job-index }}
+          path: /tmp/hcc-inst-*.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # ==========================================================================
   # Browser end-to-end
   # ==========================================================================
   e2e:

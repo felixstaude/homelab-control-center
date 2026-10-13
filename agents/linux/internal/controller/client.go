@@ -62,6 +62,10 @@ import (
 const (
 	pathEnroll  = "/api/v1/agents/enroll"
 	pathConnect = "/api/v1/agents/connect"
+	// pathHealth is the controller's public liveness probe. Used by [Probe]
+	// and by nothing else: it is the one endpoint reachable without a
+	// credential, which is exactly what a reachability check needs.
+	pathHealth = "/healthz"
 )
 
 // Timeouts.
@@ -224,6 +228,96 @@ func newTransport(caFile string) (*http.Transport, error) {
 	}
 	transport.TLSClientConfig.RootCAs = pool
 	return transport, nil
+}
+
+// probeTimeout bounds the reachability check. Short, because it runs before
+// anything has been created and a wrong hostname should fail quickly.
+const probeTimeout = 15 * time.Second
+
+// ProbeResult describes a controller that answered.
+type ProbeResult struct {
+	// TLS is true when the connection was encrypted and the chain verified.
+	// False only for a loopback URL over plain HTTP.
+	TLS bool
+	// Status is the HTTP status the health endpoint returned.
+	Status int
+	// ServerTime is the controller's own clock, from the response's Date
+	// header, or the zero time when it sent none.
+	//
+	// Carried because a host whose clock is days out fails TLS in ways that
+	// read as credential problems — "certificate is not yet valid" sends an
+	// operator to the CA when the fault is NTP. Comparing against a header
+	// every HTTP server sends costs nothing and `hcc-agent doctor` reports it.
+	ServerTime time.Time
+	// RoundTrip is how long the probe took, which bounds how precisely
+	// ServerTime can be compared against the local clock.
+	RoundTrip time.Duration
+}
+
+// Probe checks that the controller is reachable and that its certificate
+// verifies, without presenting any credential.
+//
+// Run by the installer **before** it creates a user or writes a file. A typo
+// in the hostname, a certificate signed by a CA the host does not trust, a
+// reverse proxy that is not routing, a URL that points at something which is
+// not a controller at all — all four are ordinary mistakes, all four are
+// invisible until something tries to connect, and all four should not leave
+// debris behind on a machine. Verifying first costs one request.
+//
+// Deliberately hits the public health endpoint rather than the enrollment one:
+// a probe must not spend, test or even present a credential, and a POST to
+// /enroll with no credential would be a 401 that proves reachability while
+// also putting a line in the audit trail for something that is not an
+// enrollment attempt.
+func (c *Client) Probe(ctx context.Context) (*ProbeResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+
+	target := c.baseURL.String() + pathHealth
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return nil, fmt.Errorf("cannot build the reachability request: %w", err)
+	}
+	request.Header.Set("User-Agent", c.userAgent())
+
+	started := time.Now()
+	response, err := c.http.Do(request)
+	if err != nil {
+		// The error is wrapped rather than rewritten. "x509: certificate
+		// signed by unknown authority" is the single most common enrollment
+		// failure, and replacing it with a friendlier sentence would delete
+		// the one string an operator can search for.
+		return nil, fmt.Errorf("%w: %w", ErrUnavailable, err)
+	}
+	elapsed := time.Since(started)
+	defer response.Body.Close()
+	// Drained so the connection can be reused and so a controller that sends
+	// a body is not left writing into a closed pipe.
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf(
+			"%w: %s returned %d, which is not what a control plane answers",
+			ErrUnavailable, target, response.StatusCode,
+		)
+	}
+
+	var serverTime time.Time
+	if header := response.Header.Get("Date"); header != "" {
+		// Parse failure is ignored: a missing or malformed Date is a reason
+		// not to report clock skew, not a reason to fail a reachability
+		// check.
+		if parsed, parseErr := http.ParseTime(header); parseErr == nil {
+			serverTime = parsed
+		}
+	}
+
+	return &ProbeResult{
+		TLS:        c.baseURL.Scheme == "https",
+		Status:     response.StatusCode,
+		ServerTime: serverTime,
+		RoundTrip:  elapsed,
+	}, nil
 }
 
 // EnrollResult is what a successful enrollment returns.

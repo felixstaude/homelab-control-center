@@ -162,14 +162,30 @@ func TestMissingConfigurationExitsWithBadConfig(t *testing.T) {
 func TestNoSecretIsSettableViaAFlag(t *testing.T) {
 	// Command lines are readable by every local user through /proc, so a
 	// secret must not be a flag. This test fails if somebody adds one.
+	//
+	// The patterns are deliberately precise rather than broad. `--token-file`
+	// is permitted and documented: it takes a *path*, and a path is not a
+	// secret. A pattern of plain "-token" would match it and would therefore
+	// have to be deleted the first time the automation flag landed — which is
+	// how a security test becomes a security test nobody runs.
 	_, stdout, _ := captureRun(t, []string{"-h"})
 
 	for _, forbidden := range []string{
-		"-token", "-credential ", "-credential=", "-secret", "-enrollment-token",
+		"-token ", "-token=", "-token\n",
+		"-credential ", "-credential=",
+		"-secret", "-enrollment-token", "-enrolment-token",
+		"-password", "-key ", "-key=",
 	} {
 		if strings.Contains(stdout, forbidden) {
 			t.Errorf("no secret may be settable via a flag, found %q in usage", forbidden)
 		}
+	}
+
+	// And the path-taking form must stay documented, because the alternative
+	// an operator reaches for without it is an environment variable, which is
+	// readable through /proc/<pid>/environ.
+	if !strings.Contains(stdout, "--token-file") {
+		t.Error("the usage no longer documents --token-file, which is the automation path")
 	}
 }
 

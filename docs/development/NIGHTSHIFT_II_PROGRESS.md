@@ -24,16 +24,16 @@ silently diverges from the code is worse than no design.
 
 | # | Work | Phase | Status |
 | --- | --- | --- | --- |
-| 1 | Release workflow: cross-compile, `checksums.txt`, SBOM, attestation | B | ⬜ |
-| 2 | Agent `install` / `uninstall` / `--dry-run` | C | ⬜ |
-| 3 | Credential prompt on `/dev/tty`, `--token-file`, `--non-interactive` | C | ⬜ |
-| 4 | Distribution matrix in CI: install, start, connect, collect, uninstall | G | ⬜ |
+| 1 | Release workflow: cross-compile, `checksums.txt`, SBOM, attestation | B | ✅ `db6895f` |
+| 2 | Agent `install` / `uninstall` / `--dry-run` | C | ✅ |
+| 3 | Credential prompt on `/dev/tty`, `--token-file`, `--non-interactive` | C | ✅ |
+| 4 | Distribution matrix in CI: install, start, connect, collect, uninstall | G | ✅ |
 | 5 | Controller image, non-root, auto-migrate entrypoint | E | ⬜ |
 | 6 | `compose.yaml`, TLS overlay, `.env.example`, generated DB secret | E | ⬜ |
 | 7 | `install-manifest` endpoint + manifest shipped with the controller | D | ⬜ |
 | 8 | Enrolment dialog: architecture selector, two copy buttons, the command | D | ⬜ |
-| 9 | `hcc-agent doctor` | C/F | ⬜ |
-| 10 | `hcc-agent upgrade`, previous-binary rollback | F | ⬜ |
+| 9 | `hcc-agent doctor` | C/F | ✅ |
+| 10 | `hcc-agent upgrade`, previous-binary rollback | F | ✅ |
 | 11 | Backup and restore scripts, exercised in CI | F | ⬜ |
 | 12 | Documented, tested version-to-version upgrade | F | ⬜ |
 | 13 | `.deb` / `.rpm` | — | deferred, stated below |
@@ -91,6 +91,85 @@ Findings that shaped the order of work:
 5. **No release has ever been published**, so no manifest can reference a real
    URL. The `install-manifest` endpoint and the install command it renders must
    degrade honestly when no release exists rather than printing a 404 download.
+
+---
+
+### Phase B — release pipeline — complete (`db6895f`)
+
+`scripts/build-agent-artifacts.sh`, `verify-artifacts.sh` (33 checks plus a
+19-scenario self-test of its own refusals), `check-reproducible.sh`,
+`check-versions.sh`, `VERSION`, `release-prepare.yml`, an `artifacts` job in
+`ci.yml`, `docs/RELEASING.md`.
+
+Verified: `make check-artifacts`, `make check-reproducible`,
+`./scripts/verify-artifacts.sh --self-test` (19/19 caught by the intended
+check), `./scripts/verify-artifacts.sh --execute`.
+
+### Phase C — installer, diagnostics, upgrade — complete
+
+New packages: `internal/install` (preflight, transaction, rollback, unit,
+uninstall, upgrade), `internal/prompt` (`/dev/tty`, echo off),
+`internal/doctor`. New subcommands: `install`, `uninstall`, `upgrade`,
+`doctor`.
+
+Decisions taken, each against an alternative:
+
+1. **The unit has exactly one copy in the repository**, embedded in the
+   binary at `internal/install/hcc-agent.service`. `deploy/hcc-agent.service`
+   was deleted rather than kept as a documented copy, because two copies
+   drift and the one people read would be the stale one.
+   `install --dry-run` prints the embedded bytes verbatim, and a test asserts
+   the deleted path has not come back.
+2. **Rollback never removes the credential.** A one-time credential has been
+   spent to obtain it. A surviving credential also puts the next `install`
+   into `ModeIncomplete`, which finishes the installation *without* enrolling
+   again — so the remedy for a half-finished install does not cost a second
+   credential.
+3. **A correct installation that has not connected is not rolled back.** The
+   fault is on the network; removing correct files would be the wrong answer
+   to somebody's firewall.
+4. **"Installed" means connected**, proved by the controller's configuration
+   arriving on disk — not by `systemctl is-active`. The installer does not
+   open a WebSocket of its own, because doing so would supersede the
+   service's connection and break what it was checking.
+5. **`--dry-run` reports preflight problems and still prints the plan.** The
+   point of the flag is to read what would happen *before* using sudo.
+
+### Phase G (partial) — the installation matrix — complete
+
+`scripts/install-matrix.sh`: a privileged container with systemd as pid 1, a
+real controller against real PostgreSQL, a real internal CA, a real TLS
+terminator (`scripts/tls-terminator.py`), and the release artifacts built by
+the real build script. 61 assertions, 17 stages. Wired into `ci.yml` as a
+3-way matrix (Debian 13, Ubuntu 24.04, Fedora 42) with `fail-fast: false`.
+
+**Measured locally**: `61 passed, 0 failed` on `debian:13` and on `fedora:42`,
+with Podman. Ubuntu 24.04 is in the CI matrix and has **not** been run
+locally.
+
+#### Three defects it found
+
+1. **`ProcSubset=pid` in the committed unit.** Found by reading, before the
+   matrix ran. It mounts /proc with `subset=pid`, which hides `/proc/stat`,
+   `/proc/meminfo`, `/proc/loadavg` and `/proc/uptime` — the entire data
+   source for every module. The service would have started, connected,
+   reported itself healthy and collected nothing. Nothing had caught it
+   because the unit had never been *started*: `systemd-analyze verify` parses
+   and does not execute. Removed, with the reason in the file, and the matrix
+   now asserts a real sample arrives.
+2. **`credentials.Load` refused root reading a service-owned credential.**
+   Found by the matrix, on a *healthy* installation. The installer writes the
+   credential as root and hands it to `hcc-agent`, so a root-run `doctor` or
+   `status` was told the agent would refuse its own working credential. For
+   root the owner check cannot prevent what it exists to prevent — the mode
+   and directory checks already answer "could an unprivileged user have
+   substituted this?" — so root now accepts any owner. This affected shipped
+   `hcc-agent status` too, not only the new code.
+3. **A test that passed vacuously.** The matrix's rollback stage pointed at an
+   archive path that did not exist, so the upgrade never ran — and the
+   assertion after it ("the previous binary is running again") passed because
+   nothing had changed. Caught because the stage asserts on the specific
+   message rather than on the exit code.
 
 ---
 

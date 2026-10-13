@@ -6,6 +6,10 @@
 //
 // Usage:
 //
+//	hcc-agent install           install, enroll and start the service
+//	hcc-agent upgrade           replace the binary with a verified download
+//	hcc-agent uninstall         remove the service, the unit and the binary
+//	hcc-agent doctor            diagnose this installation, changing nothing
 //	hcc-agent enroll            claim this host with a one-time credential
 //	hcc-agent run               connect and stay connected (the service command)
 //	hcc-agent status            report whether this host is enrolled
@@ -14,6 +18,17 @@
 // Configuration is read from HCC_AGENT_* environment variables; see
 // agents/linux/README.md. No secret is accepted as a flag, because a command
 // line is readable by every local user through /proc.
+//
+// # The binary is its own installer
+//
+// `install` exists so that the artifact somebody verifies with `sha256sum -c`
+// is the artifact that performs the installation and then *is* the installed
+// program. There is no installation shell script and no `curl … | sudo bash`,
+// because that pattern fails three ways at once: unaudited code runs as root,
+// the credential arrives in argv where /proc makes it world-readable, and the
+// whole command lands in shell history. `install --dry-run` prints the exact
+// unit, paths and modes and changes nothing, which is the audit step a pipe
+// into a shell cannot offer.
 //
 // # Why subcommands rather than one mode
 //
@@ -91,6 +106,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "version":
 		fmt.Fprintln(stdout, buildinfo.Get().String())
 		return exitOK
+	case "install":
+		return runInstall(rest, stdout, stderr)
+	case "uninstall":
+		return runUninstall(rest, stdout, stderr)
+	case "upgrade":
+		return runUpgrade(rest, stdout, stderr)
+	case "doctor":
+		return runDoctor(rest, stdout, stderr)
 	case "enroll":
 		return runEnroll(rest, stdout, stderr)
 	case "run":
@@ -111,10 +134,32 @@ func usage(out io.Writer) {
 	fmt.Fprint(out, `hcc-agent — Homelab Control Center Linux agent
 
 Usage:
-  hcc-agent enroll     claim this host using a one-time enrollment credential
-  hcc-agent run        connect to the controller and stay connected
+  hcc-agent <command> [flags]
+
+Installing (needs root):
+  hcc-agent install --controller URL   install, enroll and start the service
+  hcc-agent install --dry-run ...      print exactly what that would do
+  hcc-agent upgrade                    replace the binary with a verified download
+  hcc-agent uninstall                  remove the service, unit and binary
+  hcc-agent uninstall --purge          also the credential and the account
+
+Operating:
+  hcc-agent doctor     diagnose this installation; changes nothing
+  hcc-agent doctor --json  the same, machine-readable
   hcc-agent status     report whether this host is enrolled
   hcc-agent version    print version information
+
+Lower level:
+  hcc-agent enroll     claim this host using a one-time enrollment credential
+  hcc-agent run        connect to the controller and stay connected
+
+Install flags:
+  --controller URL     base URL of the control plane (required, https)
+  --token-file PATH    file holding the one-time enrollment credential
+  --non-interactive    never prompt; the absence of a terminal is an error
+  --ca-file PATH       a CA bundle to trust in addition to the system roots
+  --force              re-enroll a host that is already enrolled
+  --dry-run            print the plan and change nothing
 
 Configuration (environment):
   `+config.EnvControllerURL+`         base URL of the control plane (required, https)
