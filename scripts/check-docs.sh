@@ -54,13 +54,24 @@ def section(title: str) -> None:
 
 # Markdown files tracked as documentation. Excludes node_modules and vendored
 # trees by construction: only these locations are scanned.
+#
+# The community-health files are included because they are the first thing a
+# visitor reads and the ones most likely to link somewhere that has moved.
+# `docs/plans/` and `docs/development/` are included because a design document
+# nobody link-checks rots exactly as fast as one nobody reads.
 DOC_PATHS = sorted(
     {
         *Path("docs").glob("*.md"),
+        *Path("docs/plans").glob("*.md"),
+        *Path("docs/development").glob("*.md"),
         Path("README.md"),
+        Path("CONTRIBUTING.md"),
+        Path("SECURITY.md"),
+        Path("CODE_OF_CONDUCT.md"),
         Path("apps/server/README.md"),
         Path("apps/web/README.md"),
         Path("agents/linux/README.md"),
+        Path("agents/linux/deploy/README.md"),
     }
 )
 

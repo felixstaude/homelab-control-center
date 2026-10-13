@@ -5,8 +5,18 @@
 *.pem
 *.key
 *.crt
+*.cer
+*.p12
+*.pfx
+*.jks
+id_rsa*
+id_ecdsa*
+id_ed25519*
 !**/testdata/**/*.pem
 secrets/
+# The deployment design has the Compose stack generate its own database
+# password into this path; it must never be the thing that gets committed.
+deploy/secrets/
 
 # ---- Python ----
 __pycache__/
@@ -59,3 +69,12 @@ postgres-data/
 *.sqlite3
 *.db
 *.log
+# Database dumps. `pg_dump -Fc` output is a complete copy of the installation,
+# including every password hash and agent credential digest.
+*.dump
+*.sql.gz
+
+# ---- Misc ----
+.direnv/
+*~
+*.tmp

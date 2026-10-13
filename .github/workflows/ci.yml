@@ -505,6 +505,22 @@ jobs:
           fi
           echo "✓ No private keys found"
 
+      - name: Check for key, certificate and database-dump files
+        # The step above reads file *contents*. This one reads file *names*,
+        # which catches the binary formats that carry a key without the PEM
+        # header — a .p12 or a .jks greps as noise — and the database dumps
+        # the backup documentation tells operators to create. A `pg_dump` of
+        # this application is every password hash and credential digest in it.
+        run: |
+          matches=$(git ls-files | grep -E '\.(pem|key|crt|cer|p12|pfx|jks|dump|sqlite3?)$|(^|/)id_(rsa|ecdsa|ed25519)' \
+                    | grep -v -E 'testdata/' || true)
+          if [ -n "$matches" ]; then
+            echo "::error::Files that should never be committed are tracked:"
+            echo "$matches"
+            exit 1
+          fi
+          echo "✓ No key, certificate or dump files tracked"
+
       - name: Check documentation
         # The docs carry the architecture and security model and cross-link
         # heavily; a broken link silently turns a documented decision into an
