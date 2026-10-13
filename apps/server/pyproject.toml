@@ -34,7 +34,7 @@ dev = [
   "pytest-asyncio~=1.2",
   "httpx~=0.28",
   "ruff~=0.14",
-  "mypy~=1.18",
+  "mypy>=1.18,<3.0",
 ]
 
 [project.urls]
