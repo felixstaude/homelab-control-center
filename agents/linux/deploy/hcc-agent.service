@@ -56,15 +56,27 @@ RestartSec=10s
 ; manual, which is the only reason it is not still wrong.
 
 ; --- Filesystem -------------------------------------------------------------
-; The agent reads one file and writes none while running. `enroll` writes the
-; credential and is run by an administrator directly, not through this unit,
-; which is why this unit needs no write access to /etc at all.
+; Exactly one writable directory, and only because the agent genuinely needs
+; it: when the controller sends a monitoring configuration the agent persists
+; it to /etc/hcc-agent/config.json, so that a restart collects what it was
+; last told to collect rather than nothing until the controller reconnects.
+;
+; This was ReadOnlyPaths until the configuration channel shipped. With it
+; read-only the agent connects, receives a configuration, fails to store it,
+; and — correctly — never acknowledges, so the interface shows the host
+; stuck on "Saved, not yet confirmed" for ever and nothing is collected. A
+; hardening directive that silently prevents the product from working is
+; worse than the one it replaced.
+;
+; `enroll` is still run by an administrator directly rather than through this
+; unit, so the credential write is not what this grants.
 ProtectSystem=strict
 ProtectHome=yes
-ReadOnlyPaths=/etc/hcc-agent
+ReadWritePaths=/etc/hcc-agent
 PrivateTmp=yes
-; No writable directory is granted. If a future collector needs scratch space
-; it should be an explicit StateDirectory= rather than a relaxation of this.
+; One writable path, named explicitly. If a future collector needs scratch
+; space it should be an explicit StateDirectory= rather than a widening of
+; this one.
 
 ; --- Privileges -------------------------------------------------------------
 ; The agent is never root and never needs a capability. Both are stated

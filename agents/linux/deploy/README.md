@@ -81,14 +81,20 @@ install -m 0755 hcc-agent /usr/local/bin/hcc-agent
 # A dedicated system account: no login shell, no home directory, no password.
 adduser --system --group --no-create-home --shell /usr/sbin/nologin hcc-agent
 
-# The configuration directory. 0750 and group-readable, so the agent can
-# traverse it and no other local user can.
-install -d -o root -g hcc-agent -m 0750 /etc/hcc-agent
+# The state directory. Owned by the service account, 0750, so the agent can
+# write into it and no other local user can read it.
+install -d -o hcc-agent -g hcc-agent -m 0750 /etc/hcc-agent
 ```
 
 `--system` matters: it allocates a uid below 1000, which keeps the account out
 of the range `login.defs` treats as a human being and out of most "list the
 real users" tooling.
+
+The directory is owned by `hcc-agent` rather than by `root` because the agent
+**writes** into it: when the controller sends a monitoring configuration, the
+agent persists it to `/etc/hcc-agent/config.json` so that a restart resumes
+collecting what it was last told to. A root-owned directory would leave the
+agent connected but permanently unable to apply a configuration.
 
 ---
 
@@ -191,12 +197,20 @@ A healthy start looks like:
 
 ```
 msg="agent starting" version=... controller_url=https://hcc.example.com
-msg="no data is collected in this release"
-msg="connected to the controller"
+msg="connected"
 ```
+
+The exact fields depend on the release; what you are checking is that a line
+at `INFO` says it connected and that nothing after it says it disconnected.
 
 The host's page in the control plane shows **Connected** within a second or
 two, with a real heartbeat timestamp and the agent's real version.
+
+**Nothing is being collected yet, and that is correct.** Every module is off
+until an administrator enables it for this host, so a freshly enrolled agent
+connects and reports nothing. Turning collection on is
+[`docs/development/ENABLING_MONITORING_DEBIAN.md`](../../../docs/development/ENABLING_MONITORING_DEBIAN.md),
+which continues from exactly this point.
 
 ---
 
@@ -276,10 +290,13 @@ commented in the file itself; the ones worth knowing about:
 
 - **Never root, no capabilities.** `CapabilityBoundingSet=` is empty, so even
   an `ExecStart` changed to run as root would gain nothing.
-- **`ProtectSystem=strict` with no writable path.** The running agent writes
-  nothing. Enrollment writes the credential and is run by an administrator
-  directly, not through this unit, so the unit needs no write access to `/etc`
-  at all.
+- **`ProtectSystem=strict` with exactly one writable path.** The whole
+  filesystem is read-only to this service except `/etc/hcc-agent`, named in
+  `ReadWritePaths`. The agent needs that one directory because it persists
+  the configuration the controller sends it, so that a restart resumes
+  collecting what it was last told to rather than nothing. Enrollment writes
+  the credential and is run by an administrator directly, not through this
+  unit.
 - **`RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX`.** No `AF_NETLINK` and
   no `AF_PACKET`: this agent does not read the host's network configuration
   and does not sniff traffic.
