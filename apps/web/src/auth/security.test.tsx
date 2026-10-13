@@ -260,7 +260,12 @@ describe('role handling fails closed', () => {
     expect(permissionsFor('operator')).toEqual({
       viewMonitoring: true,
       controlHosts: true,
-      configureMonitoring: true,
+      // Administrator-only, tracking what the server enforces rather than the
+      // designed model in docs/SECURITY.md: every monitoring mutation is
+      // mounted on the administrator router. Enabling a module starts reading
+      // a machine, so an Operator who could do it could begin collecting data
+      // about a host with no administrator involved.
+      configureMonitoring: false,
       administer: false,
     });
     expect(permissionsFor('admin')).toEqual({
@@ -269,6 +274,16 @@ describe('role handling fails closed', () => {
       configureMonitoring: true,
       administer: true,
     });
+  });
+
+  it('does not offer monitoring configuration to an operator', () => {
+    // Stated as its own case because the shape above is easy to update
+    // mechanically. This is the claim that matters: the flag exists to keep
+    // the interface from offering a control the API answers 403 to, so if the
+    // server ever widens the gate, this test is the thing that should be
+    // changed deliberately rather than noticed later.
+    expect(permissionsFor('operator').configureMonitoring).toBe(false);
+    expect(permissionsFor('admin').configureMonitoring).toBe(true);
   });
 
   it.each([

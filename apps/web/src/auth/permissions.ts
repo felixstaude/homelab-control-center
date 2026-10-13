@@ -78,7 +78,21 @@ export type Permissions = {
   readonly viewMonitoring: boolean;
   /** Start, stop or restart things on a host. Operator and above. */
   readonly controlHosts: boolean;
-  /** Change module, schedule and retention configuration. Operator and above. */
+  /**
+   * Change module, schedule and retention configuration.
+   *
+   * **Administrator only**, which is narrower than the designed model in
+   * `docs/SECURITY.md` — and matches what the server actually enforces: every
+   * monitoring mutation is mounted on the administrator router
+   * (`hcc/api/v1/router.py`). The reason it is not an Operator action is
+   * specific rather than conservative: enabling a module starts reading a
+   * machine, and someone who could do that could begin collecting data about
+   * a host without an administrator ever being involved.
+   *
+   * Set to Operator here it would be a UX bug with a confusing shape — the
+   * interface would offer a control that answers 403 — so the flag tracks the
+   * enforcement, and widening it means widening the server first.
+   */
   readonly configureMonitoring: boolean;
   /** Manage users, agents and global settings. Administrator only. */
   readonly administer: boolean;
@@ -96,7 +110,9 @@ export function permissionsFor(role: UserRole): Permissions {
   return {
     viewMonitoring: true,
     controlHosts: hasAtLeastRole(role, 'operator'),
-    configureMonitoring: hasAtLeastRole(role, 'operator'),
+    // Administrator, tracking the server rather than the designed model. See
+    // the field's own note for why that is not merely cautious.
+    configureMonitoring: hasAtLeastRole(role, 'admin'),
     administer: hasAtLeastRole(role, 'admin'),
   };
 }

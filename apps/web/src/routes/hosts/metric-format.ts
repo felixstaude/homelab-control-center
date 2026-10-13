@@ -1,0 +1,219 @@
+import type { LatestValue, MetricSeries } from '@/api/types';
+
+/**
+ * Turning a number and a unit into text an operator can read.
+ *
+ * In one module because the same value appears in a tile, a chart axis and a
+ * tooltip, and three formatters would disagree about whether 1 GiB is 1024 MiB
+ * or 1000 MB — which is the kind of discrepancy that makes somebody distrust
+ * the whole page.
+ *
+ * ## There is no formatter for "no value"
+ *
+ * Deliberate. Every function here takes a `number`, so a caller holding
+ * `null` cannot route it through and receive `"0%"` or `"—"` by accident: it
+ * has to decide, at the call site, what an absence should look like. That is
+ * the product rule (§21: do not display zero when the actual value is
+ * unknown) expressed as a type rather than as a convention.
+ */
+
+/** Units the backend declares. Anything else is rendered as a bare number. */
+export type MetricUnit = 'percent' | 'bytes' | 'seconds' | 'count' | 'load';
+
+/** A formatted value, split so a tile can style the unit separately. */
+export type FormattedMetric = {
+  /** The number, formatted. Never includes the unit. */
+  value: string;
+  /** The unit as a suffix, or undefined where the value is self-describing. */
+  unit?: string;
+};
+
+/**
+ * Binary multiples, because this is memory and disk.
+ *
+ * The backend reports `MemAvailable` and friends in bytes derived from
+ * kibibytes, so showing them in powers of ten would disagree with every other
+ * tool on the host — `free -h`, `df -h` and the kernel all use binary
+ * multiples, and a dashboard that said 8.6 GB where `free` said 8 GiB would be
+ * read as a bug in one of them.
+ */
+const BINARY_UNITS = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'] as const;
+
+/** Significant digits for a byte count, by magnitude. */
+function byteDigits(scaled: number): number {
+  if (scaled >= 100) return 0;
+  if (scaled >= 10) return 1;
+  return 2;
+}
+
+export function formatBytes(bytes: number): FormattedMetric {
+  const sign = bytes < 0 ? '-' : '';
+  let remaining = Math.abs(bytes);
+  let index = 0;
+  while (remaining >= 1024 && index < BINARY_UNITS.length - 1) {
+    remaining /= 1024;
+    index += 1;
+  }
+  // Bytes themselves are integers; there is no such thing as 1.25 bytes.
+  const digits = index === 0 ? 0 : byteDigits(remaining);
+  // `?? 'B'` is unreachable — `index` is clamped by the loop — but the index
+  // signature on a tuple is not something the compiler can narrow, and an
+  // assertion here would be the one place in this module that could lie.
+  return {
+    value: `${sign}${remaining.toFixed(digits)}`,
+    unit: BINARY_UNITS[index] ?? 'B',
+  };
+}
+
+/**
+ * A percentage.
+ *
+ * One decimal place. Zero would make a CPU moving between 12.4% and 12.6%
+ * look motionless, and two is precision the measurement does not have — the
+ * value is derived from `/proc/stat` deltas over a sampling interval, and the
+ * third digit is noise.
+ */
+export function formatPercent(value: number): FormattedMetric {
+  return { value: value.toFixed(1), unit: '%' };
+}
+
+/**
+ * A duration in seconds, rendered as the largest two units that fit.
+ *
+ * "14d 6h" rather than "1231200s" or "14.26 days": uptime is read at a glance,
+ * and the units an operator thinks in are days and hours. Two components
+ * rather than all four, because "14d 6h 32m 11s" is a precision nobody acts
+ * on and it changes every second.
+ */
+export function formatDuration(seconds: number): FormattedMetric {
+  const total = Math.max(0, Math.floor(seconds));
+  const days = Math.floor(total / 86_400);
+  const hours = Math.floor((total % 86_400) / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+
+  if (days > 0) return { value: `${String(days)}d ${String(hours)}h` };
+  if (hours > 0) return { value: `${String(hours)}h ${String(minutes)}m` };
+  if (minutes > 0) return { value: `${String(minutes)}m ${String(secs)}s` };
+  return { value: String(secs), unit: 's' };
+}
+
+/**
+ * A load average.
+ *
+ * Two decimals and no unit, exactly as `/proc/loadavg` and `uptime` print it.
+ * A load average is not a percentage and must not be shown as one: 2.0 on an
+ * eight-core machine is idle and on a single-core machine is saturated, so a
+ * "200%" rendering would be actively misleading.
+ */
+export function formatLoad(value: number): FormattedMetric {
+  return { value: value.toFixed(2) };
+}
+
+/** A plain count. Grouped, because 1048576 is unreadable and 1,048,576 is not. */
+export function formatCount(value: number): FormattedMetric {
+  return { value: value.toLocaleString() };
+}
+
+/**
+ * A configured interval, in the unit an operator thinks in.
+ *
+ * Distinct from {@link formatDuration}, which renders a *measured* duration
+ * like uptime. An interval of 300 reads as "5 min", not "5m 0s": one is a
+ * setting somebody chose and the other is a clock.
+ */
+export function describeSeconds(seconds: number): string {
+  if (seconds < 60) return `${String(seconds)} s`;
+  if (seconds < 3600) {
+    const minutes = seconds / 60;
+    return `${Number.isInteger(minutes) ? String(minutes) : minutes.toFixed(1)} min`;
+  }
+  const hours = seconds / 3600;
+  return `${Number.isInteger(hours) ? String(hours) : hours.toFixed(1)} h`;
+}
+
+/** Format a value according to the unit its series declares. */
+export function formatMetric(value: number, unit: string): FormattedMetric {
+  switch (unit) {
+    case 'percent':
+      return formatPercent(value);
+    case 'bytes':
+      return formatBytes(value);
+    case 'seconds':
+      return formatDuration(value);
+    case 'load':
+      return formatLoad(value);
+    case 'count':
+      return formatCount(value);
+    default:
+      // A unit this release does not know about. The number is shown with the
+      // unit as a literal suffix rather than hidden: the data exists, and an
+      // operator can read "4 jiffies" even if the client cannot style it.
+      return { value: String(value), unit };
+  }
+}
+
+/** The formatted value and unit joined, for a tooltip or an aria-label. */
+export function formatMetricInline(value: number, unit: string): string {
+  const formatted = formatMetric(value, unit);
+  return formatted.unit === undefined
+    ? formatted.value
+    : `${formatted.value}${formatted.unit === '%' ? '' : ' '}${formatted.unit}`;
+}
+
+/**
+ * A series' display name, including its labels.
+ *
+ * "CPU utilisation" for an unlabelled series, "CPU utilisation (core 3)" for a
+ * labelled one. The labels are rendered rather than dropped because two series
+ * of the same metric are otherwise indistinguishable in a legend, and a chart
+ * with eight identically-named lines is a chart nobody can read.
+ */
+export function seriesLabel(series: MetricSeries): string {
+  const labels = Object.entries(series.labels);
+  if (labels.length === 0) return series.metric_name;
+  const rendered = labels
+    .map(([key, value]) => `${key} ${value}`)
+    .sort((left, right) => left.localeCompare(right))
+    .join(', ');
+  return `${series.metric_name} (${rendered})`;
+}
+
+/**
+ * The y-axis domain for a unit.
+ *
+ * `percent` is pinned to 0–100 so that a quiet host's chart is visibly quiet.
+ * Auto-scaling it would redraw a machine idling between 0.4% and 1.1% as a
+ * dramatic sawtooth filling the panel, which reads as a problem — the single
+ * most misleading thing a CPU chart can do.
+ *
+ * Everything else auto-scales, because there is no meaningful ceiling: memory
+ * depends on the host, load depends on the core count, and a fixed domain
+ * would flatten a real signal.
+ */
+export function axisDomain(unit: string): [number, number] | undefined {
+  return unit === 'percent' ? [0, 100] : undefined;
+}
+
+/**
+ * Order series for display: by module as the catalogue lists them, then name.
+ *
+ * A stable order matters more than which order: values that reshuffle between
+ * polls are unreadable, and the eye learns a fixed position.
+ */
+const MODULE_ORDER = ['cpu', 'memory', 'swap', 'load', 'uptime'];
+
+export function compareSeries(left: MetricSeries, right: MetricSeries): number {
+  const leftModule = MODULE_ORDER.indexOf(left.module);
+  const rightModule = MODULE_ORDER.indexOf(right.module);
+  // A module the client does not know sorts last rather than first, so an
+  // unrecognised series cannot displace the ones an operator came to see.
+  const leftRank = leftModule === -1 ? MODULE_ORDER.length : leftModule;
+  const rightRank = rightModule === -1 ? MODULE_ORDER.length : rightModule;
+  if (leftRank !== rightRank) return leftRank - rightRank;
+  return seriesLabel(left).localeCompare(seriesLabel(right));
+}
+
+export function compareLatest(left: LatestValue, right: LatestValue): number {
+  return compareSeries(left.series, right.series);
+}

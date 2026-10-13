@@ -34,10 +34,17 @@ import { expect, vi } from 'vitest';
 import { CSRF_COOKIE_NAME } from '@/api/client';
 import type {
   AuditEvent,
+  ConfigSync,
   CurrentUser,
+  GlobalDefault,
   Host,
+  LatestValue,
   ManagedUser,
+  MetricRangePoint,
+  MetricSeries,
+  ModuleDescriptor,
   OwnSession,
+  StoredSetting,
   UserRole,
 } from '@/api/types';
 
@@ -142,6 +149,138 @@ export function makeHost(overrides: Partial<Host> = {}): Host {
 }
 
 /** One recorded request, for asserting on headers and bodies. */
+/**
+ * The module catalogue, matching `contracts/monitoring-modules.json`.
+ *
+ * Five modules, because that is what the registry declares — not two. The
+ * floors are the real ones: a test that used 1 s everywhere would not notice
+ * an interface that offered an interval the server refuses.
+ */
+export const FAKE_MODULES: readonly ModuleDescriptor[] = [
+  {
+    id: 'cpu',
+    name: 'CPU',
+    description: 'Processor utilisation, derived from /proc/stat deltas.',
+    platform: 'linux',
+    default_interval_seconds: 10,
+    min_interval_seconds: 1,
+    schedule_kinds: ['interval'],
+    requires_privileges: false,
+    allows_duplicate_runs: false,
+    data_schema_version: 1,
+    metrics: [
+      { id: 'utilisation', name: 'Utilisation', unit: 'percent', kind: 'gauge', label_keys: [] },
+    ],
+  },
+  {
+    id: 'memory',
+    name: 'Memory',
+    description: 'Physical memory in use, from /proc/meminfo.',
+    platform: 'linux',
+    default_interval_seconds: 10,
+    min_interval_seconds: 1,
+    schedule_kinds: ['interval'],
+    requires_privileges: false,
+    allows_duplicate_runs: false,
+    data_schema_version: 1,
+    metrics: [
+      { id: 'used_bytes', name: 'Used', unit: 'bytes', kind: 'gauge', label_keys: [] },
+      { id: 'utilisation', name: 'Utilisation', unit: 'percent', kind: 'gauge', label_keys: [] },
+    ],
+  },
+  {
+    id: 'swap',
+    name: 'Swap',
+    description: 'Swap in use. Reports nothing on a host with no swap.',
+    platform: 'linux',
+    default_interval_seconds: 30,
+    min_interval_seconds: 1,
+    schedule_kinds: ['interval'],
+    requires_privileges: false,
+    allows_duplicate_runs: false,
+    data_schema_version: 1,
+    metrics: [
+      { id: 'used_bytes', name: 'Used', unit: 'bytes', kind: 'gauge', label_keys: [] },
+    ],
+  },
+  {
+    id: 'load',
+    name: 'Load average',
+    description: 'One, five and fifteen minute load averages.',
+    platform: 'linux',
+    default_interval_seconds: 30,
+    min_interval_seconds: 5,
+    schedule_kinds: ['interval'],
+    requires_privileges: false,
+    allows_duplicate_runs: false,
+    data_schema_version: 1,
+    metrics: [
+      { id: 'load1', name: '1 minute', unit: 'load', kind: 'gauge', label_keys: [] },
+    ],
+  },
+  {
+    id: 'uptime',
+    name: 'Uptime',
+    description: 'How long the host has been running.',
+    platform: 'linux',
+    default_interval_seconds: 300,
+    min_interval_seconds: 60,
+    schedule_kinds: ['interval', 'calendar'],
+    requires_privileges: false,
+    allows_duplicate_runs: false,
+    data_schema_version: 1,
+    metrics: [
+      { id: 'seconds', name: 'Uptime', unit: 'seconds', kind: 'gauge', label_keys: [] },
+    ],
+  },
+];
+
+/** A series descriptor, with the registry names the API decorates it with. */
+export function makeSeries(overrides: Partial<MetricSeries> = {}): MetricSeries {
+  return {
+    series_id: 1,
+    module: 'cpu',
+    metric: 'utilisation',
+    labels: {},
+    unit: 'percent',
+    kind: 'gauge',
+    module_name: 'CPU',
+    metric_name: 'Utilisation',
+    last_sample_at: new Date(Date.now() - 5000).toISOString(),
+    ...overrides,
+  };
+}
+
+/** A current value. Recent by default, so it survives the freshness window. */
+export function makeLatest(overrides: Partial<LatestValue> = {}): LatestValue {
+  return {
+    series: makeSeries(),
+    value: 12.5,
+    recorded_at: new Date(Date.now() - 5000).toISOString(),
+    ...overrides,
+  };
+}
+
+/** Nothing configured anywhere: the resting state of a fresh installation. */
+function unsetSetting(): StoredSetting {
+  return { enabled: null, schedule: null };
+}
+
+/** The sync state for a host nothing has been configured for. */
+function noSync(): ConfigSync {
+  return {
+    status: 'none',
+    desired_version: null,
+    desired_checksum: null,
+    generated_at: null,
+    reported_version: null,
+    reported_checksum: null,
+    acknowledged_at: null,
+    rejected_at: null,
+    rejection_problems: [],
+  };
+}
+
 export type RecordedRequest = {
   method: string;
   path: string;
@@ -207,6 +346,41 @@ export type FakeBackendState = {
    * elsewhere cannot pass by coincidence.
    */
   enrollmentCredential: string;
+
+  /* --- Phase 2: monitoring configuration --- */
+
+  /**
+   * Global defaults, keyed by module id.
+   *
+   * Absent means "nothing has been said", which is a third state distinct
+   * from `{enabled: false}` — and the one a fresh installation is in.
+   */
+  globalDefaults: Record<string, StoredSetting>;
+  /** Host overrides, keyed by host id then module id. */
+  hostOverrides: Record<string, Record<string, StoredSetting>>;
+  /** The sync state each host's monitoring response reports. */
+  hostSync: Record<string, ConfigSync>;
+  /** Configuration problems the controller reports for a host. */
+  hostConfigProblems: Record<string, string[]>;
+
+  /* --- Phase 3: metrics --- */
+
+  /**
+   * Current values per host.
+   *
+   * Empty by default, which is the honest resting state: a host that has
+   * collected nothing has no current values, and the interface must render
+   * that as "no data" rather than as zeroes.
+   */
+  latestMetrics: Record<string, LatestValue[]>;
+  /** Every series a host has produced, including ones that stopped. */
+  metricSeries: Record<string, MetricSeries[]>;
+  /** Range points per series id. */
+  metricPoints: Record<number, MetricRangePoint[]>;
+  /** What a range query reports as the tier that answered. */
+  metricResolution: string;
+  /** Total raw samples stored per host, for the status endpoint. */
+  metricSampleCount: Record<string, number>;
 };
 
 export type FakeBackend = {
@@ -305,6 +479,15 @@ export function installFakeBackend(initial: Partial<FakeBackendState> = {}): Fak
     routeFailures: {},
     currentPassword: 'correct horse battery staple',
     hosts: [],
+    globalDefaults: {},
+    hostOverrides: {},
+    hostSync: {},
+    hostConfigProblems: {},
+    latestMetrics: {},
+    metricSeries: {},
+    metricPoints: {},
+    metricResolution: 'raw',
+    metricSampleCount: {},
     enrollmentCredential: 'TEST-ENROLMENT-CREDENTIAL-0000000000000000',
     ...initial,
   };
@@ -370,6 +553,124 @@ export function installFakeBackend(initial: Partial<FakeBackendState> = {}): Fak
         'installation with no active administrator cannot be recovered through ' +
         'the interface. Grant the Administrator role to another active account first.',
     );
+
+  /** Every global default, including modules nothing has been said about. */
+  const globalDefaultList = (): GlobalDefault[] =>
+    FAKE_MODULES.map((descriptor) => ({
+      module_id: descriptor.id,
+      setting: state.globalDefaults[descriptor.id] ?? unsetSetting(),
+    }));
+
+  /**
+   * Apply one three-valued setting change, or refuse it.
+   *
+   * The whole point is the distinction between an absent key and a null one:
+   * `{enabled: false}` must not clear a stored schedule, and `{schedule: null}`
+   * must not change whether the module is enabled. A fake that merged the
+   * whole body would hide a client that sent too much.
+   *
+   * The interval floor is enforced here because the server enforces it, and a
+   * permissive fake would let an interface ship that offered a value the API
+   * refuses.
+   */
+  const applySetting = (
+    current: StoredSetting,
+    requestBody: unknown,
+    descriptor: ModuleDescriptor,
+    store: (next: StoredSetting) => void,
+  ): Response | null => {
+    const fields = (requestBody ?? {}) as Record<string, unknown>;
+    const next: StoredSetting = { enabled: current.enabled, schedule: current.schedule };
+
+    if ('enabled' in fields) {
+      const value = fields.enabled;
+      if (value !== null && typeof value !== 'boolean') {
+        return envelope(422, 'validation_failed', '`enabled` must be true, false or null.');
+      }
+      next.enabled = value;
+    }
+
+    if ('schedule' in fields) {
+      const value = fields.schedule;
+      if (value === null) {
+        next.schedule = null;
+      } else if (typeof value !== 'object') {
+        return envelope(422, 'validation_failed', '`schedule` must be an object or null.');
+      } else {
+        const schedule = value as Record<string, unknown>;
+        const kind = schedule.kind;
+        if (typeof kind !== 'string' || !descriptor.schedule_kinds.includes(kind)) {
+          return envelope(
+            422,
+            'validation_failed',
+            `${descriptor.name} does not support that schedule kind.`,
+            { details: { schedule_kinds: descriptor.schedule_kinds } },
+          );
+        }
+        const seconds = schedule.interval_seconds;
+        if (kind === 'interval') {
+          if (typeof seconds !== 'number' || !Number.isInteger(seconds)) {
+            return envelope(
+              422,
+              'validation_failed',
+              '`interval_seconds` must be a whole number of seconds.',
+            );
+          }
+          // Refused, never clamped: silently saving a different value than the
+          // one somebody typed is the failure §7 forbids.
+          if (seconds < descriptor.min_interval_seconds) {
+            return envelope(
+              422,
+              'validation_failed',
+              `${descriptor.name} cannot run more often than every ` +
+                `${String(descriptor.min_interval_seconds)} s.`,
+              { details: { min_interval_seconds: descriptor.min_interval_seconds } },
+            );
+          }
+        }
+        next.schedule = schedule as StoredSetting['schedule'];
+      }
+    }
+
+    store(next);
+    return null;
+  };
+
+  /** One module's resolved configuration on one host, with its provenance. */
+  const effectiveModule = (hostId: string, descriptor: ModuleDescriptor) => {
+    const global = state.globalDefaults[descriptor.id] ?? unsetSetting();
+    const override = state.hostOverrides[hostId]?.[descriptor.id] ?? null;
+
+    // Host beats global beats nothing, and "nothing" resolves to off — which
+    // is default-deny expressed as resolution rather than as a special case.
+    const enabledSource =
+      override?.enabled != null ? 'host' : global.enabled != null ? 'global' : 'default';
+    const enabledValue =
+      enabledSource === 'host'
+        ? override?.enabled === true
+        : enabledSource === 'global'
+          ? global.enabled === true
+          : false;
+
+    const scheduleSource =
+      override?.schedule != null ? 'host' : global.schedule != null ? 'global' : 'default';
+    const schedule =
+      override?.schedule ??
+      global.schedule ?? {
+        kind: 'interval',
+        interval_seconds: descriptor.default_interval_seconds,
+        jitter_seconds: 0,
+      };
+
+    return {
+      module_id: descriptor.id,
+      name: descriptor.name,
+      enabled: { value: enabledValue, source: enabledSource },
+      schedule: { value: schedule, source: scheduleSource, next_runs: null },
+      global_default: global,
+      host_override: override,
+    };
+  };
 
   const handler = async (
     input: RequestInfo | URL,
@@ -893,6 +1194,202 @@ export function installFakeBackend(initial: Partial<FakeBackendState> = {}): Fak
       host.lifecycle = 'revoked';
       host.connectivity = 'offline';
       return json(host);
+    }
+
+
+    /* --- Phase 2: monitoring configuration ------------------------------ */
+
+    if (path.endsWith('/monitoring/modules') && method === 'GET') {
+      return json({
+        modules: FAKE_MODULES,
+        registry_version: 1,
+        document_version: 1,
+        min_interval_seconds: 1,
+        max_interval_seconds: 86_400,
+      });
+    }
+
+    if (path.endsWith('/monitoring/defaults') && method === 'GET') {
+      return json({ defaults: globalDefaultList() });
+    }
+
+    const globalDefault = /\/monitoring\/defaults\/([^/]+)$/.exec(path);
+    if (globalDefault !== null && method === 'PUT') {
+      // Administrator-only, like every monitoring mutation. The gate is the
+      // server's; restated here so a test cannot pass against a fake that is
+      // more permissive than the thing it imitates.
+      // The same chain every other mutation uses: the administrator gate, the
+      // CSRF header the real server requires, then any failure a test armed.
+      const refused = requireAdmin() ?? requireCsrf(headers) ?? forcedFailure();
+      if (refused) return refused;
+      const moduleId = captured(globalDefault);
+      const descriptor = FAKE_MODULES.find((entry) => entry.id === moduleId);
+      if (descriptor === undefined) {
+        return envelope(404, 'not_found', `No such module: ${moduleId}.`);
+      }
+      const refusal = applySetting(
+        (state.globalDefaults[moduleId] ??= unsetSetting()),
+        body,
+        descriptor,
+        (next) => {
+          state.globalDefaults[moduleId] = next;
+        },
+      );
+      if (refusal !== null) return refusal;
+      return json({ defaults: globalDefaultList() });
+    }
+
+    const hostMonitoring = /\/hosts\/([^/]+)\/monitoring$/.exec(path);
+    if (hostMonitoring !== null && method === 'GET') {
+      const hostId = captured(hostMonitoring);
+      const host = state.hosts.find((candidate) => candidate.host_id === hostId);
+      if (host === undefined) return envelope(404, 'not_found', 'No such host.');
+      return json({
+        host_id: hostId,
+        modules: FAKE_MODULES.map((descriptor) => effectiveModule(hostId, descriptor)),
+        problems: state.hostConfigProblems[hostId] ?? [],
+        sync: state.hostSync[hostId] ?? noSync(),
+      });
+    }
+
+    const hostModule = /\/hosts\/([^/]+)\/monitoring\/modules\/([^/]+)$/.exec(path);
+    if (hostModule !== null && (method === 'PUT' || method === 'DELETE')) {
+      // The same chain every other mutation uses: the administrator gate, the
+      // CSRF header the real server requires, then any failure a test armed.
+      const refused = requireAdmin() ?? requireCsrf(headers) ?? forcedFailure();
+      if (refused) return refused;
+      const hostId = captured(hostModule);
+      const moduleId = hostModule[2] ?? '';
+      const host = state.hosts.find((candidate) => candidate.host_id === hostId);
+      if (host === undefined) return envelope(404, 'not_found', 'No such host.');
+      const descriptor = FAKE_MODULES.find((entry) => entry.id === moduleId);
+      if (descriptor === undefined) {
+        return envelope(404, 'not_found', `No such module: ${moduleId}.`);
+      }
+
+      const overrides = (state.hostOverrides[hostId] ??= {});
+      if (method === 'DELETE') {
+        // Drops the whole override row, schedule included — which is what
+        // "inherit" means, and is why the client has a distinct call for it.
+        // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+        delete overrides[moduleId];
+      } else {
+        const refusal = applySetting(
+          (overrides[moduleId] ??= unsetSetting()),
+          body,
+          descriptor,
+          (next) => {
+            overrides[moduleId] = next;
+          },
+        );
+        if (refusal !== null) return refusal;
+      }
+
+      const version = (state.hostSync[hostId]?.desired_version ?? 0) + 1;
+      state.hostSync[hostId] = {
+        ...(state.hostSync[hostId] ?? noSync()),
+        status: 'pending',
+        desired_version: version,
+        generated_at: new Date().toISOString(),
+      };
+      return json({
+        module_id: moduleId,
+        setting: overrides[moduleId] ?? unsetSetting(),
+        revision_created: true,
+        revision_version: version,
+        sync: state.hostSync[hostId],
+      });
+    }
+
+    /* --- Phase 3: metrics ------------------------------------------------ */
+
+    const metricsRoute = /\/hosts\/([^/]+)\/metrics\/(latest|series|range|status)$/.exec(path);
+    if (metricsRoute !== null && method === 'GET') {
+      const hostId = captured(metricsRoute);
+      const leaf = metricsRoute[2];
+      const host = state.hosts.find((candidate) => candidate.host_id === hostId);
+      // 404 rather than an empty series: an empty series would look like a
+      // host that exists and has collected nothing.
+      if (host === undefined) return envelope(404, 'not_found', 'No such host.');
+
+      const params = new URLSearchParams(query);
+      const freshness = Number(params.get('freshness_seconds') ?? '300');
+      const series = state.metricSeries[hostId] ?? [];
+
+      if (leaf === 'latest') {
+        const cutoff = Date.now() - freshness * 1000;
+        // The freshness window is applied, not assumed: a stale value must be
+        // absent, and a fake that returned everything would let a test pass
+        // against an interface that showed three-day-old readings as current.
+        const values = (state.latestMetrics[hostId] ?? []).filter(
+          (entry) => new Date(entry.recorded_at).getTime() >= cutoff,
+        );
+        return json({ host_id: hostId, freshness_seconds: freshness, values });
+      }
+
+      if (leaf === 'series') {
+        return json({ host_id: hostId, series });
+      }
+
+      if (leaf === 'status') {
+        const newest = series
+          .map((entry) => entry.last_sample_at)
+          .filter((value): value is string => value !== null)
+          .sort()
+          .at(-1);
+        return json({
+          host_id: hostId,
+          sample_count: state.metricSampleCount[hostId] ?? 0,
+          series_count: series.length,
+          last_sample_at: newest ?? null,
+          modules: FAKE_MODULES.map((descriptor) => {
+            const owned = series.filter((entry) => entry.module === descriptor.id);
+            const last = owned
+              .map((entry) => entry.last_sample_at)
+              .filter((value): value is string => value !== null)
+              .sort()
+              .at(-1);
+            return {
+              module: descriptor.id,
+              module_name: descriptor.name,
+              series_count: owned.length,
+              last_sample_at: last ?? null,
+            };
+          }),
+        });
+      }
+
+      // range
+      const seriesId = Number(params.get('series_id') ?? '0');
+      const start = params.get('start') ?? '';
+      const end = params.get('end') ?? '';
+      // A naive timestamp is refused rather than assumed to be UTC, matching
+      // the server — so a client that stopped sending zoned instants fails a
+      // test instead of silently asking for the wrong window.
+      for (const [field, value] of [['start', start], ['end', end]] as const) {
+        if (!/(?:Z|[+-]\d{2}:?\d{2})$/.test(value)) {
+          return envelope(
+            422,
+            'validation_failed',
+            `\`${field}\` must carry a time zone, e.g. 2026-10-13T12:00:00Z.`,
+            { details: { parameter: field } },
+          );
+        }
+      }
+      const found = series.find((entry) => entry.series_id === seriesId);
+      // A series id alone is not authorization: one belonging to another host
+      // answers 404, the same as one that does not exist.
+      if (found === undefined) {
+        return envelope(404, 'not_found', 'No such series on this host.');
+      }
+      return json({
+        series: found,
+        resolution: state.metricResolution,
+        start,
+        end,
+        points: state.metricPoints[seriesId] ?? [],
+        truncated: false,
+      });
     }
 
     return envelope(404, 'not_found', 'The requested resource does not exist.');

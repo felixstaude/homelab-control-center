@@ -94,6 +94,50 @@ export const queryKeys = {
     hosts: () => ['session', 'hosts'] as const,
     hostList: (params: HostListKeyParams) => ['session', 'hosts', 'list', params] as const,
     host: (hostId: string) => ['session', 'hosts', 'detail', hostId] as const,
+
+    /* --- Monitoring configuration (phase 2) --- */
+
+    /**
+     * The root for every monitoring-configuration query.
+     *
+     * Changing a *global* default changes the effective configuration of every
+     * host that has no override, so a mutation cannot know which host views to
+     * refresh — it invalidates this root and lets the cache sort it out. The
+     * alternative, invalidating only the host that was on screen, would leave
+     * every other open view asserting a setting that is no longer true.
+     */
+    monitoring: () => ['session', 'monitoring'] as const,
+    /** The module catalogue: what exists, and the interval floors. */
+    moduleCatalogue: () => ['session', 'monitoring', 'modules'] as const,
+    globalDefaults: () => ['session', 'monitoring', 'defaults'] as const,
+    hostMonitoring: (hostId: string) =>
+      ['session', 'monitoring', 'host', hostId] as const,
+
+    /* --- Metrics (phase 3) --- */
+
+    /**
+     * The root for every metric query.
+     *
+     * Separate from `monitoring` because the two change for different reasons
+     * and on different clocks: configuration changes when somebody saves,
+     * metrics change continuously on their own. Enabling a module does
+     * invalidate both — there is new data to look for — but a chart refetching
+     * must not drag the configuration with it.
+     */
+    metrics: () => ['session', 'metrics'] as const,
+    latestMetrics: (hostId: string) => ['session', 'metrics', 'latest', hostId] as const,
+    metricSeries: (hostId: string) => ['session', 'metrics', 'series', hostId] as const,
+    metricsStatus: (hostId: string) => ['session', 'metrics', 'status', hostId] as const,
+    /**
+     * One range query.
+     *
+     * The window is in the key as a *label* ("last hour") rather than as the
+     * resolved instants. Putting the instants in would make the key change on
+     * every tick of the clock, so every refetch would be a cache miss and the
+     * chart would flash empty between them.
+     */
+    metricRange: (params: MetricRangeKeyParams) =>
+      ['session', 'metrics', 'range', params] as const,
   },
 } as const;
 
@@ -138,4 +182,18 @@ export type HostListKeyParams = {
   connectivity: string;
   limit: number;
   offset: number;
+};
+
+/**
+ * The parts of a metric range query that identify a cache entry.
+ *
+ * `window` is the named range the operator chose, not the instants it resolves
+ * to. Resolved instants would change on every render, making each refetch a
+ * fresh entry and leaving the previous one to be garbage collected — the chart
+ * would unmount and flash empty on every poll instead of updating in place.
+ */
+export type MetricRangeKeyParams = {
+  hostId: string;
+  seriesId: number;
+  window: string;
 };

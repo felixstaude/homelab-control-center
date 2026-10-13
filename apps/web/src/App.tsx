@@ -21,6 +21,7 @@ import { SettingsAccount } from '@/routes/settings/account';
 import { SettingsAudit } from '@/routes/settings/audit';
 import { SettingsGeneral } from '@/routes/settings/general';
 import { SettingsLayout } from '@/routes/settings/layout';
+import { SettingsMonitoring } from '@/routes/settings/monitoring';
 import { SettingsSessions } from '@/routes/settings/sessions';
 import { SettingsUsers } from '@/routes/settings/users';
 import { SetupPage } from '@/routes/setup';
@@ -119,6 +120,7 @@ export function App() {
                 <Route path="settings" element={<SettingsLayout />}>
                   <Route index element={<SettingsGeneral />} />
                   <Route path="users" element={<SettingsUsers />} />
+                  <Route path="monitoring" element={<SettingsMonitoring />} />
                   <Route path="account" element={<SettingsAccount />} />
                   <Route path="sessions" element={<SettingsSessions />} />
                   <Route path="audit" element={<SettingsAudit />} />

@@ -37,6 +37,8 @@ import { Spinner } from '@/components/ui/spinner';
 import { formatDateTime, machineDateTime, relativeTime } from '@/lib/datetime';
 import { queryKeys } from '@/lib/query-keys';
 import { EnrollmentDialog } from '@/routes/hosts/enrollment-dialog';
+import { HostMetricsCard } from '@/routes/hosts/host-metrics';
+import { HostMonitoringCard } from '@/routes/hosts/host-monitoring';
 import {
   ConnectivityBadge,
   DisabledBadge,
@@ -53,16 +55,18 @@ import {
  *
  * ## What it reports, and what it refuses to invent
  *
- * No CPU, no memory, no disk, no uptime, no temperature — not as zeroes, not
- * as empty charts, not as "0%". Collection is Phase 2, and this page says so
- * in a sentence rather than rendering a dashboard of nothing. A panel of
- * zeroed gauges would be indistinguishable from a host whose every metric is
- * genuinely zero, which is the exact failure product principle 2 forbids.
+ * Phase 3 gave this page real measurements, and the discipline it had while it
+ * had none is the part that must survive: a value appears when it has been
+ * measured recently and is absent otherwise. Nothing is zero-filled, nothing
+ * is carried forward, and a gap in a chart is drawn as a gap. See
+ * `host-metrics.tsx`, which is built around those refusals, and
+ * `host-monitoring.tsx`, which separates what the controller wants from what
+ * the agent has confirmed it is doing.
  *
- * What it does report is what actually exists: the three state axes, the
- * connection timestamps, and whatever the agent has said about itself. The
- * self-reported fields are labelled as such, because they come from a machine
- * whose security the controller does not own.
+ * The rest is what has always been here: the three state axes, the connection
+ * timestamps, and whatever the agent has said about itself. The self-reported
+ * fields are labelled as such, because they come from a machine whose security
+ * the controller does not own.
  *
  * ## Every destructive action is confirmed with its consequence
  *
@@ -270,20 +274,11 @@ export function HostDetailPage() {
           </CardContent>
         </Card>
 
-        {/* --- The honest absence --- */}
-        <Card>
-          <CardHeader>
-            <div className="min-w-0">
-              <CardTitle>Resources</CardTitle>
-              <CardDescription>
-                No metrics are collected yet. CPU, memory, disk, network and uptime arrive in
-                Phase 2, when the agent has collectors; until then this section shows nothing
-                rather than zeroes, because a zeroed gauge is indistinguishable from a
-                measurement.
-              </CardDescription>
-            </div>
-          </CardHeader>
-        </Card>
+        {/* --- Real measurements, and the absences that are real too --- */}
+        <HostMetricsCard host={data} />
+
+        {/* --- What this host is asked to collect, and what it confirmed --- */}
+        <HostMonitoringCard host={data} />
 
         {/* --- Administrative actions --- */}
         {permissions.administer ? (

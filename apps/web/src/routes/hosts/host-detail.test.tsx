@@ -87,16 +87,32 @@ describe('what the page reports', () => {
     expect(screen.getByText(/never makes a decision from these values/i)).toBeInTheDocument();
   });
 
-  it('renders no resource metrics at all', async () => {
+  it('renders no resource values for a host that has measured nothing', async () => {
     // Not as zeroes, not as empty charts, not as "0%". A zeroed gauge is
     // indistinguishable from a measurement, which is the exact failure
-    // product principle 2 forbids.
+    // product principle 2 forbids. Phase 3 gave this page real data; the
+    // absence has to stay honest now that showing a number is possible.
     await renderDetail();
 
-    expect(screen.getByText(/No metrics are collected yet/i)).toBeInTheDocument();
     expect(screen.queryByText('0%')).toBeNull();
+    expect(screen.queryByText('0.0')).toBeNull();
     expect(screen.queryByText(/\d+ GiB/)).toBeNull();
     expect(screen.queryByRole('progressbar')).toBeNull();
+  });
+
+  it('says why there is nothing to show, rather than only that there is nothing', async () => {
+    // An empty response has several causes with different remedies, and the
+    // one for an enrolled, enabled host that has collected nothing is "every
+    // module starts off" — which is a thing to act on, not a fault.
+    await renderDetail();
+
+    expect(
+      await screen.findByText(/No measurements have arrived yet/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Nothing is enabled for this host/i)).toBeInTheDocument();
+    // And the monitoring card says the policy that caused it, so the two
+    // together answer "why is this empty" and "what do I do".
+    expect(screen.getByText(/Every module starts switched off/i)).toBeInTheDocument();
   });
 
   it('reports an absent timestamp as a sentence, never as a date', async () => {

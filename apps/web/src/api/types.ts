@@ -468,3 +468,301 @@ export type HostRevocationResult = {
   /** Zero means there was nothing to revoke — the request changed nothing. */
   revoked: number;
 };
+
+/* ===========================================================================
+ * Monitoring configuration (Phase 2)
+ * ======================================================================== */
+
+/** Every module the controller knows how to run. A closed set. */
+export type ModuleId = 'cpu' | 'memory' | 'swap' | 'load' | 'uptime';
+
+/** Which layer decided a resolved value. */
+export type SettingSource = 'default' | 'global' | 'host';
+
+/**
+ * How a host's desired configuration relates to what its agent is running.
+ *
+ * §23's distinction, carried into the client because the interface must not
+ * claim a setting is active merely because it saved: `up_to_date` is the only
+ * value that means the agent is actually collecting what was asked for.
+ *
+ * - `none` — nothing has ever been configured for this host.
+ * - `up_to_date` — the agent has acknowledged the newest revision.
+ * - `pending` — saved, not yet acknowledged. Not a problem on its own.
+ * - `rejected` — the agent refused it, and said why.
+ * - `stale` — the agent is running an older revision than the newest.
+ */
+export type ConfigSyncStatus = 'none' | 'up_to_date' | 'pending' | 'rejected' | 'stale';
+
+/** A schedule document, exactly as stored and as the agent receives it. */
+export type ScheduleDocument = {
+  kind: string;
+  interval_seconds?: number;
+  jitter_seconds?: number;
+  [key: string]: unknown;
+};
+
+/**
+ * One layer's stored opinion.
+ *
+ * `null` in either field means **this layer does not say** — it inherits. That
+ * is a third state distinct from `false`, and conflating the two is the bug
+ * this shape exists to prevent: "off here" and "whatever the global says" are
+ * different instructions that happen to look the same when the global is off.
+ */
+export type StoredSetting = {
+  enabled: boolean | null;
+  schedule: ScheduleDocument | null;
+};
+
+export type ResolvedEnabled = {
+  value: boolean;
+  source: SettingSource;
+};
+
+export type ResolvedSchedule = {
+  value: ScheduleDocument;
+  source: SettingSource;
+  /**
+   * The next few executions, for a calendar schedule only.
+   *
+   * Null for an interval schedule, where the next run is arithmetic rather
+   * than a calculation worth previewing.
+   */
+  next_runs: string[] | null;
+};
+
+/**
+ * One module's effective configuration on one host, with its provenance.
+ *
+ * Both stored layers appear next to the resolved value because "inherited from
+ * the global default of 10 s" and "overridden on this host to 10 s" are
+ * identical in the value and are different facts — and only the second is
+ * undone by clearing the override.
+ */
+export type EffectiveModule = {
+  module_id: string;
+  name: string;
+  enabled: ResolvedEnabled;
+  schedule: ResolvedSchedule;
+  global_default: StoredSetting;
+  /** The host's own override, or null when this host has none at all. */
+  host_override: StoredSetting | null;
+};
+
+/** Desired versus applied. */
+export type ConfigSync = {
+  status: ConfigSyncStatus;
+  desired_version: number | null;
+  desired_checksum: string | null;
+  generated_at: string | null;
+  /** What the agent says it is running. Null means it has not said. */
+  reported_version: number | null;
+  reported_checksum: string | null;
+  acknowledged_at: string | null;
+  rejected_at: string | null;
+  /** Every problem the agent reported. Empty unless rejected. */
+  rejection_problems: string[];
+};
+
+/** `GET /api/v1/hosts/{id}/monitoring`. */
+export type HostMonitoring = {
+  host_id: string;
+  modules: EffectiveModule[];
+  /**
+   * Configuration the controller itself considers wrong, e.g. a stored
+   * schedule below a module's floor after a release lowered it. Reported
+   * rather than silently corrected.
+   */
+  problems: string[];
+  sync: ConfigSync;
+};
+
+/**
+ * `PUT /api/v1/hosts/{id}/monitoring/modules/{module}` and the global form.
+ *
+ * Three-valued on purpose. `true`/`false` set the layer; `null` makes it
+ * inherit; **omitting the key** leaves it unchanged. That is why the fields are
+ * optional *and* nullable, and why the client must never fill them in
+ * defensively — an omitted `schedule` and a `schedule: null` ask for different
+ * things.
+ */
+export type ModuleSettingRequest = {
+  enabled?: boolean | null;
+  schedule?: ScheduleDocument | null;
+};
+
+/** The response to saving one module's setting. */
+export type HostSettingSaved = {
+  module_id: string;
+  setting: StoredSetting;
+  /**
+   * Whether this save produced a new revision for the agent.
+   *
+   * False when the change did not alter the resolved document — saving an
+   * override identical to the inherited value, for instance. Reported so the
+   * interface does not claim it pushed something it did not.
+   */
+  revision_created: boolean;
+  revision_version: number;
+  sync: ConfigSync;
+};
+
+/** One global default. */
+export type GlobalDefault = {
+  module_id: string;
+  setting: StoredSetting;
+};
+
+/** `GET /api/v1/monitoring/defaults`. */
+export type GlobalDefaults = {
+  defaults: GlobalDefault[];
+};
+
+/** One metric a module produces. */
+export type MetricDescriptor = {
+  id: string;
+  name: string;
+  unit: string;
+  kind: string;
+  /** The dimensions this metric is broken down by, e.g. `['core']`. */
+  label_keys: string[];
+};
+
+/** One module in the catalogue. */
+export type ModuleDescriptor = {
+  id: string;
+  name: string;
+  description: string;
+  platform: string;
+  default_interval_seconds: number;
+  /** The floor. A schedule below this is refused, not clamped. */
+  min_interval_seconds: number;
+  schedule_kinds: string[];
+  requires_privileges: boolean;
+  allows_duplicate_runs: boolean;
+  data_schema_version: number;
+  metrics: MetricDescriptor[];
+};
+
+/** `GET /api/v1/monitoring/modules`. */
+export type ModuleCatalogue = {
+  modules: ModuleDescriptor[];
+  registry_version: number;
+  document_version: number;
+  min_interval_seconds: number;
+  max_interval_seconds: number;
+};
+
+/* ===========================================================================
+ * Metrics (Phase 3)
+ * ======================================================================== */
+
+/** One measurable stream a host has produced. */
+export type MetricSeries = {
+  series_id: number;
+  module: string;
+  metric: string;
+  labels: Record<string, string>;
+  unit: string;
+  kind: string;
+  module_name: string;
+  metric_name: string;
+  /** Null if this series has never received a sample. Never render as a date. */
+  last_sample_at: string | null;
+};
+
+/** `GET /api/v1/hosts/{id}/metrics/series`. */
+export type MetricSeriesList = {
+  host_id: string;
+  series: MetricSeries[];
+};
+
+export type LatestValue = {
+  series: MetricSeries;
+  value: number;
+  recorded_at: string;
+};
+
+/**
+ * `GET /api/v1/hosts/{id}/metrics/latest`.
+ *
+ * `values` is **empty when nothing recent exists** — not a list of zeroes. A
+ * series whose newest sample is older than `freshness_seconds` is absent, so
+ * the interface can say "no data in the last five minutes" rather than
+ * presenting a three-day-old reading as current.
+ */
+export type LatestMetrics = {
+  host_id: string;
+  freshness_seconds: number;
+  values: LatestValue[];
+};
+
+/**
+ * One point of a historical series.
+ *
+ * `minimum` and `maximum` are present only for a rolled-up tier, and are not
+ * decoration: a downsampled series drawn as a line of averages loses the
+ * spikes fast sampling was turned on to catch.
+ */
+export type MetricRangePoint = {
+  at: string;
+  value: number;
+  minimum: number | null;
+  maximum: number | null;
+  /** How many raw samples this bucket aggregates. Null for the raw tier. */
+  sample_count: number | null;
+};
+
+/** Which storage tier answered a range query. */
+export type MetricResolution = 'raw' | '5m' | '1h';
+
+/** `GET /api/v1/hosts/{id}/metrics/range`. */
+export type MetricRange = {
+  series: MetricSeries;
+  /** Reported because "this is hourly data" is needed to read a flat graph. */
+  resolution: string;
+  start: string;
+  end: string;
+  /**
+   * Ordered by time, with **no points for empty buckets**. A gap is a gap:
+   * nothing is interpolated, so a chart must draw a break rather than a line.
+   */
+  points: MetricRangePoint[];
+  truncated: boolean;
+};
+
+/** What one module is doing on one host. */
+export type ModuleMetricStatus = {
+  module: string;
+  module_name: string;
+  series_count: number;
+  last_sample_at: string | null;
+};
+
+/**
+ * `GET /api/v1/hosts/{id}/metrics/status`.
+ *
+ * The question a chart cannot answer: an empty chart could mean "nothing
+ * collected", "collection is off" or "the agent is offline", and only the
+ * first is visible from the data.
+ */
+export type MetricsStatus = {
+  host_id: string;
+  sample_count: number;
+  series_count: number;
+  last_sample_at: string | null;
+  /** Every module in the registry, including those that produced nothing. */
+  modules: ModuleMetricStatus[];
+};
+
+/** Query parameters for a range request. */
+export type MetricRangeParams = {
+  seriesId: number;
+  /** ISO-8601 **with a zone**. A naive timestamp is refused by the server. */
+  start: string;
+  end: string;
+  maxPoints?: number | undefined;
+  /** Omit to let the range and point budget choose, which is usually right. */
+  resolution?: MetricResolution | undefined;
+};

@@ -50,6 +50,12 @@ const SECTIONS: readonly Section[] = [
     adminOnly: true,
   },
   {
+    to: 'monitoring',
+    label: 'Monitoring',
+    description: 'What every host collects by default',
+    adminOnly: true,
+  },
+  {
     to: 'account',
     label: 'My account',
     description: 'Your own details and password',
