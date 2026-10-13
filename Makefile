@@ -318,3 +318,10 @@ measure-metrics: ## Measure metric ingestion, storage and query cost (requires m
 # Creates its own disposable database, so it never touches the development
 # installation — see scripts/measure-metrics.py.
 	@apps/server/.venv/bin/python scripts/measure-metrics.py
+
+.PHONY: reliability-e2e
+reliability-e2e: ## Kill the controller, the agent and the database connections; check what survived (requires make db-up)
+# Its own disposable database and port. The "database outage" terminates only
+# this database's own sessions — the server is never stopped and the
+# developer's database is never touched. See scripts/reliability-e2e.sh.
+	@./scripts/reliability-e2e.sh
