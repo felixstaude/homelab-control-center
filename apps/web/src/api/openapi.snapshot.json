@@ -61,6 +61,86 @@
         "title": "AccountResponse",
         "type": "object"
       },
+      "AgentReleasesResponse": {
+        "description": "What this controller knows about installable agents.",
+        "properties": {
+          "available": {
+            "description": "Whether a verified download is on offer. False means no release manifest is configured, which is the state of any build made before the first release was published \u2014 the interface then shows the build-from-source path rather than a download command whose URL would not resolve.",
+            "title": "Available",
+            "type": "boolean"
+          },
+          "minimum_supported_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The oldest agent version this controller is known to work with. Advisory: the protocol version is what a connection negotiates, and nothing is refused on the strength of this field.",
+            "title": "Minimum Supported Version"
+          },
+          "platforms": {
+            "description": "The architectures on offer, in the order to present them.",
+            "items": {
+              "$ref": "#/components/schemas/PlatformArtifactResponse"
+            },
+            "title": "Platforms",
+            "type": "array"
+          },
+          "protocol_version": {
+            "description": "The agent protocol version this controller speaks.",
+            "title": "Protocol Version",
+            "type": "integer"
+          },
+          "recommended_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The agent version to install. Null when unavailable.",
+            "title": "Recommended Version"
+          },
+          "server_version": {
+            "description": "This controller's own version.",
+            "title": "Server Version",
+            "type": "string"
+          },
+          "supported_protocol_versions": {
+            "description": "Every protocol version this controller will accept on a connection.",
+            "items": {
+              "type": "integer"
+            },
+            "title": "Supported Protocol Versions",
+            "type": "array"
+          },
+          "unavailable_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why there is nothing to download. Null when `available`.",
+            "title": "Unavailable Reason"
+          }
+        },
+        "required": [
+          "available",
+          "protocol_version",
+          "supported_protocol_versions",
+          "server_version"
+        ],
+        "title": "AgentReleasesResponse",
+        "type": "object"
+      },
       "ApiInfo": {
         "description": "Metadata describing this API version.",
         "properties": {
@@ -1523,6 +1603,51 @@
         "title": "PasswordChangeResponse",
         "type": "object"
       },
+      "PlatformArtifactResponse": {
+        "description": "One architecture's download, with the digest that pins it.",
+        "properties": {
+          "archive": {
+            "description": "The archive's filename.",
+            "title": "Archive",
+            "type": "string"
+          },
+          "platform": {
+            "description": "`linux/amd64`, `linux/arm64` or `linux/arm`.",
+            "title": "Platform",
+            "type": "string"
+          },
+          "sha256": {
+            "description": "The archive's SHA-256. Rendered into the install command so that `sha256sum -c -` fails before the `tar` if the bytes are not the bytes this controller expects.",
+            "title": "Sha256",
+            "type": "string"
+          },
+          "size_bytes": {
+            "description": "The archive's size.",
+            "title": "Size Bytes",
+            "type": "integer"
+          },
+          "tier": {
+            "description": "`supported` \u2014 built, executed and covered by the installation matrix. `best-effort` \u2014 built and executed under emulation only, with no hardware behind the claim.",
+            "title": "Tier",
+            "type": "string"
+          },
+          "url": {
+            "description": "Where to download it from.",
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "platform",
+          "archive",
+          "url",
+          "sha256",
+          "size_bytes",
+          "tier"
+        ],
+        "title": "PlatformArtifactResponse",
+        "type": "object"
+      },
       "RangePointResponse": {
         "description": "One point of a historical series.\n\n``minimum`` and ``maximum`` are present only for a rolled-up tier. They\nare not decoration: a downsampled series drawn as a single line of\naverages loses the spikes the operator enabled fast sampling to catch, so\nthe interface draws a min-max band and needs the bounds to do it.",
         "properties": {
@@ -2559,6 +2684,48 @@
         "summary": "Revoke one of the caller's sessions",
         "tags": [
           "account"
+        ]
+      }
+    },
+    "/api/v1/agent-releases": {
+      "get": {
+        "description": "Return the install manifest, or say why there is none.\n\n**200 in both cases.** \"No release has been published\" is a fact about\nthis deployment, not an error in the request \u2014 a 404 would make the\ninterface treat a perfectly healthy controller as broken, and a 503 would\nsay the controller is unavailable when it is the download that is.",
+        "operationId": "agent_releases_api_v1_agent_releases_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentReleasesResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "The agent releases this controller can vouch for",
+        "tags": [
+          "agents"
         ]
       }
     },

@@ -27,6 +27,7 @@ import schema from '@/api/openapi.snapshot.json';
 import { API_BASE_PATH } from '@/api/client';
 import type {
   AccountDetails,
+  AgentReleases,
   ApiInfo,
   AuditEvent,
   AuditEventList,
@@ -38,6 +39,7 @@ import type {
   HostRevocationResult,
   IssuedEnrollment,
   LogoutResult,
+  PlatformArtifact,
   ManagedUser,
   OwnSession,
   OwnSessionList,
@@ -663,6 +665,11 @@ describe('public surface', () => {
       '/api/v1/account/sessions',
       '/api/v1/account/sessions/revoke-others',
       '/api/v1/account/sessions/{session_id}/revoke',
+      // Administrator-only, and deliberately *not* under /api/v1/agents:
+      // everything in that prefix authenticates a per-host agent credential
+      // and refuses a browser session, so one session-gated exception there
+      // would make that module's own invariant false for one path.
+      '/api/v1/agent-releases',
       // Agent-facing, authenticated by a per-host credential rather than a
       // session (milestone 1.8). In the schema and deliberately *not* in the
       // browser client: a browser must never hold an agent credential, and an
@@ -705,5 +712,54 @@ describe('public surface', () => {
       '/healthz',
       '/readyz',
     ]);
+  });
+});
+
+describe('GET /agent-releases contract', () => {
+  it('matches AgentReleases', () => {
+    const contract: Record<keyof AgentReleases, SchemaKind> = {
+      available: 'boolean',
+      unavailable_reason: 'string',
+      recommended_version: 'string',
+      minimum_supported_version: 'string',
+      platforms: 'array',
+      protocol_version: 'integer',
+      supported_protocol_versions: 'array',
+      server_version: 'string',
+    };
+
+    expectContract(responseSchema('/api/v1/agent-releases', 'get'), contract);
+  });
+
+  it('declares every field the install command is rendered from', () => {
+    // Each of these ends up in text somebody pastes into a root shell, so a
+    // field that quietly changed type would change that text. `sha256` in
+    // particular: a schema that made it nullable would mean a command with
+    // `null` where the digest belongs.
+    const contract: Record<keyof PlatformArtifact, SchemaKind> = {
+      platform: 'string',
+      archive: 'string',
+      url: 'string',
+      sha256: 'string',
+      size_bytes: 'integer',
+      tier: 'string',
+    };
+
+    expectContract(resolve('#/components/schemas/PlatformArtifactResponse'), contract);
+  });
+
+  it('never carries a credential, a token or a signing key', () => {
+    // This endpoint is about *public* artefacts and their digests. A field
+    // here that held a secret would be a secret handed to every
+    // administrator's browser for no reason, and the schema is where that
+    // would first be visible.
+    const schema = resolve('#/components/schemas/AgentReleasesResponse');
+    const platform = resolve('#/components/schemas/PlatformArtifactResponse');
+
+    for (const properties of [schema.properties ?? {}, platform.properties ?? {}]) {
+      for (const field of Object.keys(properties)) {
+        expect(field).not.toMatch(/credential|token|secret|private|password/i);
+      }
+    }
   });
 });

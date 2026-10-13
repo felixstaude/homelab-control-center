@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import sys
 from functools import lru_cache
+from pathlib import Path  # noqa: TC003  (see the note below)
 from typing import TYPE_CHECKING, Final, Literal
 
 from pydantic import Field, PostgresDsn, ValidationError, field_validator, model_validator
@@ -19,6 +20,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from hcc.security.forwarded import TrustedNetworks, parse_trusted_networks
 from hcc.security.origins import normalize_configured_origin
 
+# `Path` above is a runtime import, not a TYPE_CHECKING one, because it
+# annotates a pydantic field on `Settings` — and pydantic resolves field
+# annotations at runtime to build its validators. The same constraint FastAPI
+# imposes in hcc/api/deps.py, and the same trap: a type that exists only for
+# the type checker makes the model unconstructable, and the failure is a
+# confusing `NameError` at import rather than a type error.
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
@@ -239,6 +246,23 @@ class Settings(BaseSettings):
         le=86400,
         description="Lifetime of a one-time agent enrollment credential.",
     )
+    # Where the agent release manifest lives, if this build has one.
+    #
+    # The interface renders an install command carrying the expected SHA-256 of
+    # the archive it tells somebody to download, and that digest has to come
+    # from here rather than from the download origin — the administrator is
+    # already authenticated to this controller over TLS, so it is the thing
+    # that can vouch for the bytes (see hcc/agents/releases.py).
+    #
+    # None means "no release has been published for this build", which is the
+    # honest default for a source checkout and for every image built so far.
+    # The endpoint then says so and the interface shows the build-from-source
+    # path, rather than a command pointing at a URL that would not resolve.
+    #
+    # A path that is set and unusable is a deployment fault and is reported as
+    # one, which is why absence and breakage are different states here.
+    agent_release_manifest: Path | None = None
+
     # How long a recorded connection may go without a heartbeat before the
     # interface reports it as stale rather than connected. Three heartbeat
     # intervals, so one dropped heartbeat does not flap the status while a

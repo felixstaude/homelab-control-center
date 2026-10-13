@@ -354,10 +354,32 @@ test.describe('the agent refuses to weaken its own transport', () => {
 
     // A command line is readable by every local user through
     // /proc/<pid>/cmdline, so a flag is the one place a secret must never go.
+    //
+    // The patterns are precise rather than broad, and the reason is worth
+    // stating: `--token-file` is permitted and documented, because it takes a
+    // *path* and a path is not a secret. A bare `-token` pattern matched it,
+    // so the first commit that added the automation flag turned this test red
+    // — and the tempting fix is to delete the test. These patterns require a
+    // value to follow, which is what actually distinguishes "takes a secret"
+    // from "takes a path to one".
     const help = runAgent(['-h']);
-    for (const flag of ['-token', '-credential', '-secret', '-enrollment-token']) {
+    for (const flag of [
+      '-token ',
+      '-token=',
+      '-credential ',
+      '-credential=',
+      '-secret',
+      '-enrollment-token',
+      '-enrolment-token',
+      '-password',
+    ]) {
       expect(help.output).not.toContain(flag);
     }
+
+    // And the path-taking form stays documented, because without it the next
+    // thing somebody reaches for is an environment variable — readable
+    // through /proc/<pid>/environ and inherited by every child process.
+    expect(help.output).toContain('--token-file');
   });
 });
 
