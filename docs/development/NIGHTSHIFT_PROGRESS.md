@@ -84,19 +84,19 @@ Reasons are in the ADRs; the summary is:
 | 3. Configuration APIs | ✅ |
 | 4. Configuration synchronisation | ✅ |
 | 5. Scheduling engine | ✅ |
-| 6. Core collectors | ✅ wired: the agent collects |
+| 6. Core collectors | ✅ |
 | 7. Telemetry transport | ✅ |
-| 8. Historical storage | ✅ storage and ingestion; query API next |
-| 9. Retention foundation | ⬜ |
-| 10. Host monitoring frontend | ⬜ |
-| 11. Global settings | ⬜ |
-| 12. Overview integration | ⬜ |
-| 13. End-to-end integration | ⬜ |
-| 14. Security review | ⬜ |
-| 15. Performance engineering | ⬜ |
-| 16. Reliability testing | ⬜ |
-| 17. Documentation | ⬜ |
-| 18. Final verification | ⬜ |
+| 8. Historical storage | ✅ |
+| 9. Retention foundation | ✅ |
+| 10. Host monitoring frontend | ✅ |
+| 11. Global settings | ✅ |
+| 12. Overview integration | ✅ real hosts and utilisation; container and log cards remain labelled fixtures |
+| 13. End-to-end integration | ✅ |
+| 14. Security review | ✅ |
+| 15. Performance engineering | ✅ |
+| 16. Reliability testing | ✅ |
+| 17. Documentation | ✅ |
+| 18. Final verification | ✅ |
 
 ---
 
@@ -111,28 +111,54 @@ Reasons are in the ADRs; the summary is:
 | `8add7c6` | NIGHTSHIFT (4/?): the agent applies, acknowledges and refuses configuration |
 | `475674d` | NIGHTSHIFT (5/?): the scheduler, the calendar engine and five real collectors |
 | `35a3b61` | NIGHTSHIFT (6/?): telemetry ingestion and time-partitioned storage |
+| `8ca8413` | NIGHTSHIFT (7/?): the agent collects, queues and sends — end to end in tests |
+| `e27773e` | Milestone 1.9 (10/?): the retention job, and the bug that meant it never ran |
+| `d582139` | Milestone 1.9 (11/?): the first real metrics on screen, and three states not two |
+| `f481085` | Milestone 1.9 (12/?): the overview stops being entirely fiction |
+| `ce2527b` | Milestone 1.9 (13/?): the pipeline proven end to end, with nothing faked |
+| `f3c68f4` | Milestone 1.9 (14/?): the security review, as attacks on what this phase added |
+| `6251bf5` | Milestone 1.9 (15/?): the performance measurement, and the two defects it found |
+| `6f37532` | Milestone 1.9 (16/?): reliability, with real processes actually dying |
+| `1250a5e` | Milestone 1.9 (17/?): the documentation, with the parts that are not done marked |
+| `8c7a119` | Milestone 1.9 (18/?): the browser suite, and CI for the two new scenarios |
 
 ---
 
-## Verified so far
+## Verified at the end of the run
 
-Re-run these; do not trust the numbers.
+Every gate, run on an idle machine in one pass. **Re-run these; do not trust
+the numbers.**
 
 | Gate | Command | Result |
 | --- | --- | --- |
-| Backend unit | `make test-server` | 798 passed |
-| Backend integration | `make test-integration` | 1,608 passed |
-| Frontend unit | `make test-web` | 407 passed |
-| OpenAPI drift | `./scripts/openapi-snapshot.sh --check` | up to date |
-| Docs | `./scripts/check-docs.sh` | 10/10 |
+| Everything CI runs | `make check` | ✓ all gates |
+| Backend unit | included above | 802 passed, 1,005 skipped |
+| Frontend unit | included above | 542 passed |
+| Go, with the race detector | included above | 12 packages ok |
+| Documentation | included above | 10/10 checks |
+| OpenAPI drift | included above | up to date |
+| Cross-language contracts | included above | up to date |
+| Backend integration | `make test-integration` | 1,807 passed |
+| Real server over HTTP | `make smoke` | 48 checks |
+| Browser, with a real agent | `make e2e` | 151 passed |
+| Real agent, real /proc | `make monitoring-e2e` | 60 checks |
+| Failure recovery | `make reliability-e2e` | 24 checks |
+| Measurement | `make measure-metrics` | numbers in `PERFORMANCE.md` §4 |
 
-## Next exact action
+The skipped backend unit tests are the integration-marked ones, which the
+unit tier cannot run: they need a database, and `make test-integration`
+supplies a disposable one.
 
-The metrics query API (`/api/v1/hosts/{id}/metrics/...`), then Stage 9's
-retention and rollup job. After that the frontend stages 10–12.
+---
 
-**End to end now works** in tests: an administrator enables a module, the agent
-is sent the configuration, applies it, collects real values from /proc, queues
-them, sends them, and the controller stores them in the partition covering
-their timestamp. Not yet verified against a live controller and a real agent
-process — that is Stage 13.
+## What is not done
+
+Carried into the roadmap as 🟡 rather than left implicit. Phase 2: capability
+reporting, fleet-scale jitter verification, projected storage cost in the
+configuration UI, and `event`/`manual` schedule kinds. Phase 3: the disk,
+disk-I/O, network and hardware-inventory modules, the storage budget, and the
+deletion of `src/mocks/` — the container and log cards remain fixtures
+because Docker discovery is Phase 4 and log collection Phase 6.
+
+Three of `DATA_RETENTION.md` §8's six required benchmarks are complete, two
+partial and one not applicable; the table there says which.
