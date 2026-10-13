@@ -55,10 +55,10 @@ jobs:
           --health-retries 10
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
@@ -135,10 +135,10 @@ jobs:
         working-directory: apps/web
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Set up Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -162,7 +162,7 @@ jobs:
         run: npm run build
 
       - name: Upload build output
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: web-dist
           path: apps/web/dist
@@ -180,10 +180,10 @@ jobs:
         working-directory: agents/linux
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: agents/linux/go.sum
@@ -267,10 +267,10 @@ jobs:
           --health-retries 10
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           # Deliberately **not** PYTHON_VERSION. The other jobs pin the oldest
           # supported interpreter (3.12), which is the right floor to test
@@ -299,7 +299,7 @@ jobs:
 
       - name: Upload the server log
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: smoke-failure
           path: /tmp/hcc-smoke-*.log
@@ -330,10 +330,10 @@ jobs:
           --health-retries 10
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
@@ -343,7 +343,7 @@ jobs:
         # Both scripts build the agent from source and run it. There is no
         # skip path: an agent that cannot be built is a failure here, because
         # a real agent reading real /proc is the whole point of the job.
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: agents/linux/go.sum
@@ -371,7 +371,7 @@ jobs:
 
       - name: Upload failure artefacts
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: monitoring-failure
           path: |
@@ -406,17 +406,17 @@ jobs:
           --health-retries 10
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
           cache-dependency-path: apps/server/pyproject.toml
 
       - name: Set up Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -427,7 +427,7 @@ jobs:
         # scripts/e2e.sh. Without a toolchain the live-host tests would skip,
         # which is why E2E_REQUIRE_AGENT below turns a missing agent into a
         # failure here rather than a silent gap.
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: agents/linux/go.sum
@@ -463,7 +463,7 @@ jobs:
 
       - name: Upload failure artefacts
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-failure
           path: |
@@ -481,7 +481,7 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Check for committed secrets
         # A deliberately narrow check for the specific mistake that matters:
