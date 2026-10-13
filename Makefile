@@ -166,7 +166,7 @@ agent-run: ## Run the agent against the local control plane
 # ============================================================================
 
 .PHONY: check
-check: check-docs check-contract check-server check-web check-agent ## Run the local quality gates
+check: check-docs check-versions check-contract check-server check-web check-agent ## Run the local quality gates
 # Not everything CI runs: CI additionally executes the PostgreSQL integration
 # tests, the migration apply/reverse/check cycle, the frontend production
 # build, Go cross-compilation and the browser end-to-end suite. Use
@@ -289,6 +289,31 @@ agent-build: ## Build the agent binary with version stamping
 	@cd $(AGENT_DIR) && go build -ldflags "$(AGENT_LDFLAGS)" -o bin/hcc-agent ./cmd/hcc-agent
 	@echo "✓ Built $(AGENT_DIR)/bin/hcc-agent ($(AGENT_VERSION))"
 	@$(AGENT_DIR)/bin/hcc-agent version
+
+# ============================================================================
+# Release artifacts
+# ============================================================================
+
+.PHONY: artifacts
+artifacts: ## Build the agent release artifacts into dist/agent
+	@./scripts/build-agent-artifacts.sh --clean
+
+.PHONY: verify-artifacts
+verify-artifacts: ## Verify dist/agent against its own manifest
+	@./scripts/verify-artifacts.sh --execute
+
+.PHONY: check-artifacts
+check-artifacts: artifacts ## Build, verify, and prove the verifier's refusals fire
+	@./scripts/verify-artifacts.sh --execute
+	@./scripts/verify-artifacts.sh --self-test
+
+.PHONY: check-reproducible
+check-reproducible: ## Build twice and compare every digest
+	@./scripts/check-reproducible.sh
+
+.PHONY: check-versions
+check-versions: ## Fail if VERSION and the three package versions disagree
+	@./scripts/check-versions.sh
 
 # ============================================================================
 # Housekeeping

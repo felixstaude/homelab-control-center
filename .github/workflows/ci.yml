@@ -244,6 +244,50 @@ jobs:
           done
 
   # ==========================================================================
+  # Release artifacts: built and verified on every change, published by none
+  # ==========================================================================
+  artifacts:
+    name: Artifacts (build and verify)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: agents/linux/go.sum
+
+      - name: Versions agree
+        run: ./scripts/check-versions.sh
+
+      - name: Build the artifact set
+        # The same script the release workflow runs. A release process whose
+        # first execution is the release is not a process.
+        run: ./scripts/build-agent-artifacts.sh --clean
+
+      - name: Verify it
+        run: ./scripts/verify-artifacts.sh
+
+      - name: Prove the verifier rejects what it claims to
+        # Nineteen deliberate corruptions, each of which must be caught by
+        # the specific check it is aimed at. Without this the release gate
+        # could silently degrade into a gate that passes everything.
+        run: ./scripts/verify-artifacts.sh --self-test
+
+      - name: Prove the build is reproducible
+        # Two builds, byte-identical. This is what makes the digest the
+        # controller pins a statement about the source rather than about one
+        # machine.
+        run: ./scripts/check-reproducible.sh
+
+      # Deliberately no upload-artifact step. These are built to be checked,
+      # not distributed; the release-prepare workflow is where a candidate
+      # becomes downloadable.
+
+  # ==========================================================================
   # Smoke test: a real process, on the newest supported Python
   # ==========================================================================
   smoke:
@@ -526,6 +570,12 @@ jobs:
         # heavily; a broken link silently turns a documented decision into an
         # undocumented one.
         run: ./scripts/check-docs.sh
+
+      - name: Check version consistency
+        # Four files carry the version and release artifacts are named from
+        # one of them. A mismatch makes the download URL in the install
+        # command point at a release that was never published.
+        run: ./scripts/check-versions.sh
 
       - name: Verify every .env.example documents no real secret
         run: |
