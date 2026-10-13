@@ -52,7 +52,7 @@ const ATTENTION_CONTAINERS = MOCK_CONTAINERS.filter(
  *
  * Nothing here was promoted by relabelling. The container count and the log
  * entries are still fixtures and still say so, because Docker discovery is
- * Phase 4 and log collection is Phase 6.
+ * Phase 6 and log collection is Phase 5.
  */
 export function OverviewPage() {
   return (
@@ -126,7 +126,7 @@ export function OverviewPage() {
             <div>
               <CardTitle>Recent events</CardTitle>
               <CardDescription>
-                Sample entries. Log collection arrives in Phase 3.
+                Sample entries. Log collection arrives in Phase 5.
               </CardDescription>
             </div>
             <Badge variant="warn">Sample</Badge>
@@ -175,7 +175,7 @@ export function OverviewPage() {
           <div>
             <CardTitle>Containers needing attention</CardTitle>
             <CardDescription>
-              Sample container states. Docker discovery arrives in Phase 4.
+              Sample container states. Docker discovery arrives in Phase 6.
             </CardDescription>
           </div>
           <Badge variant="warn">Sample</Badge>

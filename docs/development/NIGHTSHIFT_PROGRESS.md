@@ -158,7 +158,7 @@ reporting, fleet-scale jitter verification, projected storage cost in the
 configuration UI, and `event`/`manual` schedule kinds. Phase 3: the disk,
 disk-I/O, network and hardware-inventory modules, the storage budget, and the
 deletion of `src/mocks/` — the container and log cards remain fixtures
-because Docker discovery is Phase 4 and log collection Phase 6.
+because Docker discovery is Phase 6 and log collection Phase 5.
 
 Three of `DATA_RETENTION.md` §8's six required benchmarks are complete, two
 partial and one not applicable; the table there says which.

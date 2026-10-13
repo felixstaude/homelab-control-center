@@ -2289,7 +2289,7 @@
     }
   },
   "info": {
-    "description": "Control plane API for Homelab Control Center \u2014 a self-hosted platform for\nmonitoring and managing Linux hosts, Docker containers and network devices.\n\nThis is a Phase 0 foundation release: the API surface is intentionally limited\nto operational endpoints and version metadata.",
+    "description": "Control plane API for Homelab Control Center \u2014 a self-hosted platform for\nmonitoring and managing Linux hosts, Docker containers and network devices.\n\nThis is pre-release software. The surface implemented today is identity and\naccess (authentication, sessions, users, audit), the host registry and its\nenrolment flow, monitoring configuration, and metric ingestion and query.\n\nDocker, logs, alerting, network checks and remote management are documented\nin the repository but **not implemented**, and have no endpoints here.",
     "title": "Homelab Control Center",
     "version": "0.1.0"
   },

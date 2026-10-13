@@ -105,7 +105,7 @@ make dev-server
 # Terminal 2 — web client on :5173
 make dev-web
 
-# Terminal 3 — agent (optional; Phase 0 only runs its lifecycle)
+# Terminal 3 — agent (optional; needs an enrolled host, see below)
 make agent-run
 ```
 
@@ -154,8 +154,11 @@ username and role and holds **Sign out**. Deep links work: visiting
 `/containers` while signed out takes you to the login page and returns you to
 `/containers` afterwards.
 
-The dashboard pages themselves are still static fixtures behind a banner —
-authentication and user management are real; monitoring data is not.
+Most of the interface is real: authentication, user management, the host
+registry, monitoring configuration and metrics all read the API. What remains
+fixtures, behind a banner and a `Sample` badge, are the Overview's container
+and log cards — Docker discovery is Phase 6 and log collection is Phase 5, so
+there is nothing real to put there yet.
 
 ## Managing accounts (milestone 1.7)
 
@@ -544,7 +547,7 @@ apps/
         ├── api/         the HTTP boundary: client, errors, contract types
         ├── auth/        authentication state, route guards, permissions
         ├── routes/      one module per page, plus login and setup
-        ├── mocks/       Phase 0 sample data (deleted in Phase 3)
+        ├── mocks/       container and log sample data (deleted in 3.17)
         ├── test/        fake backend + renderApp helpers
         └── lib/
 agents/linux/            Go agent

@@ -3,13 +3,17 @@
 The agent runs on each monitored host, dials out to the control plane, and
 reports what you configure it to report.
 
-**Current scope: connectivity.** As of milestone 1.8 the agent enrols against
-a real controller, holds an outbound authenticated WebSocket, heartbeats,
+**Current scope: connectivity and core metrics.** The agent enrols against a
+real controller, holds an outbound authenticated WebSocket, heartbeats,
 reconnects with exponential backoff, and is cut off within milliseconds when
-its credential is revoked. It still collects no metrics, runs no monitoring
-modules, executes no commands and does not touch Docker — collection is
-Phase 2, and the agent says so in its own startup log rather than implying
-otherwise.
+its credential is revoked. Since milestone 1.9 it also receives a
+configuration document over that socket, applies or refuses it, and collects
+and reports five modules — `cpu`, `memory`, `swap`, `load` and `uptime` —
+from `/proc`, buffering across a controller outage.
+
+Every module is **off until the controller enables it**, so a freshly
+enrolled agent collects nothing. It executes no commands and does not touch
+Docker; the disk, network and sensor modules do not exist yet.
 
 ```bash
 hcc-agent enroll     # spend a one-time credential for a durable one
@@ -83,26 +87,33 @@ deploy/              systemd unit, environment example, install guide
 vendor/              the one third-party dependency, in-tree (ADR-047)
 internal/
 ├── agent/           the supervision loop: connect, heartbeat, reconnect
+├── buildinfo/       version metadata, injected at link time
+├── collect/         the five collectors, and the /proc parsing under them
 ├── config/          environment loading and validation (and no secrets)
 ├── controller/      the HTTP and WebSocket client, and the TLS policy
 ├── credentials/     the credential file, and what it refuses
-├── protocol/        the wire format, mirroring the controller's
 ├── logging/         log/slog setup
-├── buildinfo/       version metadata, injected at link time
-└── controller/      control plane interface (contract only; no implementation)
+├── monitoring/      the applied configuration: validate, store, apply
+├── protocol/        the wire format, mirroring the controller's
+├── scheduler/       per-module timing, anchored so drift does not accumulate
+└── telemetry/       the bounded outbound queue, oldest dropped first
 ```
 
-No third-party dependencies, deliberately — the standard library covers
-everything the agent needs. See ADR-011.
+**One third-party dependency, vendored.** `github.com/coder/websocket`, which
+has no transitive dependencies of its own, lives in `vendor/`. ADR-011
+originally required none at all;
+[ADR-047](../../docs/ARCHITECTURE.md#adr-047-the-agent-takes-one-vendored-websocket-dependency-amending-adr-011)
+amends it and gives the reasoning. Everything else is the standard library,
+and `go mod vendor` must leave no diff — CI checks.
 
 ## Build and run
 
 From the repository root:
 
 ```bash
-make agent-build     # -> agents/linux/bin/hcc-agent
-make agent-test
-make agent-check     # gofmt + go vet + go test
+make agent-build     # -> agents/linux/bin/hcc-agent, with version stamping
+make test-agent      # go test -race
+make check-agent     # gofmt + go vet + go test -race
 ```
 
 Directly:
@@ -110,8 +121,27 @@ Directly:
 ```bash
 cd agents/linux
 go build -o bin/hcc-agent ./cmd/hcc-agent
-./bin/hcc-agent -version
+./bin/hcc-agent version
 ```
+
+A binary built that way reports `hcc-agent dev (commit unknown, built
+unknown, …)`, because the version metadata is injected at link time. That is
+fine for development and not what you want in `/usr/local/bin` on a real
+host — `make agent-build` stamps it.
+
+### Cross-compiling
+
+No cgo, so this needs nothing installed beyond Go:
+
+```bash
+GOOS=linux GOARCH=arm64 go build -o bin/hcc-agent-arm64 ./cmd/hcc-agent
+```
+
+`linux/amd64`, `linux/arm64` and `linux/arm` are built on every CI run. There
+are **no published binaries yet**: building from source and copying the
+result to the host is currently the only way to install an agent. The design
+for prebuilt, checksummed releases is
+[`docs/plans/simple-installation-and-agent-distribution.md`](../../docs/plans/simple-installation-and-agent-distribution.md).
 
 ## Configuration
 
@@ -121,29 +151,49 @@ once, so a broken unit file can be fixed in one pass.
 
 | Variable | Required | Default | Description |
 | --- | --- | --- | --- |
-| `HCC_AGENT_CONTROLLER_URL` | yes | — | Control plane base URL. Must be `http` or `https`. |
-| `HCC_AGENT_TOKEN_FILE` | yes¹ | — | Path to a file containing the enrolment token. **Preferred.** Must not be group- or world-readable. |
-| `HCC_AGENT_TOKEN` | yes¹ | — | Enrolment token inline. Readable via `/proc/<pid>/environ`; prefer the file form. |
-| `HCC_AGENT_HOSTNAME` | no | OS hostname | Identity reported to the controller. |
-| `HCC_AGENT_REPORT_INTERVAL` | no | `30s` | Reporting cadence. Must be between `5s` and `15m`. |
-| `HCC_AGENT_SHUTDOWN_TIMEOUT` | no | `10s` | Upper bound on graceful shutdown. |
+| `HCC_AGENT_CONTROLLER_URL` | yes | — | Control plane base URL. Must be `https`, except for a loopback host. |
+| `HCC_AGENT_CREDENTIAL_FILE` | no | `/etc/hcc-agent/credential` | The durable credential written by `enroll`. Refused if group- or world-readable, a symlink, owned by another user, or in a directory others can write to. |
+| `HCC_AGENT_CONFIG_FILE` | no | `/etc/hcc-agent/config.json` | Where the configuration the controller sends is persisted. Controller-owned: edits are overwritten on the next connection. |
+| `HCC_AGENT_CA_FILE` | no | — | An extra CA bundle to trust in addition to the system roots, for an internal CA. |
 | `HCC_AGENT_LOG_LEVEL` | no | `info` | `debug`, `info`, `warn` or `error`. |
 | `HCC_AGENT_LOG_FORMAT` | no | `text` | `text` or `json`. |
-| `HCC_AGENT_TLS_SKIP_VERIFY` | no | `false` | Disables certificate verification. Logs a warning on every start. Use only while installing an internal CA. |
+| `HCC_AGENT_SHUTDOWN_TIMEOUT` | no | `10s` | Upper bound on graceful shutdown. |
+| `HCC_AGENT_RECONNECT_MIN_WAIT` | no | `2s` | Backoff floor. Cannot be zero: a fleet reconnecting instantly is a denial of service against its own controller. |
+| `HCC_AGENT_RECONNECT_MAX_WAIT` | no | `60s` | Backoff ceiling, so a host does not stay invisible long after an outage ends. |
 
-¹ Exactly one of `HCC_AGENT_TOKEN_FILE` or `HCC_AGENT_TOKEN` is required. The
-file wins if both are set.
+Read by `hcc-agent enroll` and by nothing else:
+
+| Variable | Description |
+| --- | --- |
+| `HCC_AGENT_ENROLLMENT_TOKEN_FILE` | File holding the one-time enrolment credential. **Preferred.** |
+| `HCC_AGENT_ENROLLMENT_TOKEN` | The credential itself. Readable through `/proc/<pid>/environ` and inherited by child processes — use the file form. |
+
+Exactly one of the two is required to enrol. Neither belongs in a unit file
+or an `EnvironmentFile`: they are live secrets for fifteen minutes, and that
+file is readable by every local user.
+
+**There is no `HCC_AGENT_TLS_SKIP_VERIFY`, and no other way to skip
+certificate verification.** It was removed in milestone 1.8 rather than
+carried forward. If the agent cannot verify your controller, the fix is a
+certificate it can verify — a public CA, or your own trusted through
+`HCC_AGENT_CA_FILE`.
+
+There is also no `HCC_AGENT_HOSTNAME`. The host's identity comes from its
+credential, and the protocol has no field in which an agent could claim to be
+a different machine. Collection intervals come from the controller, not from
+the environment, so there is no reporting-interval variable either.
 
 ### Flags
 
+No secret is accepted as a flag, and `TestNoSecretIsSettableViaAFlag` fails
+if one becomes so. The only flag is:
+
 ```
--version               print version information and exit
--log-level <level>     override HCC_AGENT_LOG_LEVEL
--log-format <format>   override HCC_AGENT_LOG_FORMAT
+-version, --version    print version information and exit
 ```
 
-Flags override the environment, so verbosity can be raised for one invocation
-without editing a unit file.
+equivalent to the `version` subcommand. Logging is configured through the
+environment, which is what a unit file sets.
 
 ### Exit codes
 
@@ -162,8 +212,15 @@ a real `SIGTERM`.
 
 ## Example: systemd unit
 
-Not yet installed by the project — provided as a reference. Packaging is
-Phase 10.
+Not installed by the project — packaging is Phase 10. This is the short
+reference; the **authoritative** unit, with the full hardening block and an
+explicit account of which directives have and have not been exercised on a
+live system, is in [`deploy/README.md`](deploy/README.md). Use that one.
+
+Note that no enrolment token appears here. Enrolment happens once, by hand,
+before the service is started; the unit only needs to know where the
+controller is, because the durable credential is read from its file at the
+point of use.
 
 ```ini
 [Unit]
@@ -178,10 +235,9 @@ Type=simple
 User=hcc-agent
 Group=hcc-agent
 Environment=HCC_AGENT_CONTROLLER_URL=https://hcc.internal:8000
-Environment=HCC_AGENT_TOKEN_FILE=/etc/hcc-agent/token
 Environment=HCC_AGENT_LOG_FORMAT=json
-ExecStart=/usr/local/bin/hcc-agent
-Restart=on-failure
+ExecStart=/usr/local/bin/hcc-agent run
+Restart=always
 RestartSec=5s
 
 # Hardening: the agent reads system state and makes outbound connections.

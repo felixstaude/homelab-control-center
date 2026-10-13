@@ -202,8 +202,9 @@ Not optional; `jsx-a11y` runs in CI.
 
 ## Mock data
 
-Phase 0 only. `src/mocks/overview.ts` holds static fixtures for the Overview
-page. The rules (engineering rules 8 and 9, ADR-012):
+`src/mocks/overview.ts` holds static fixtures for the **two** cards on the
+Overview page that have no subsystem behind them yet: containers and recent
+log entries. The rules (engineering rules 8 and 9, ADR-012):
 
 1. Anything rendering from `src/mocks` sits beneath a `<MockDataBanner />`.
    A test enforces this.
@@ -212,17 +213,24 @@ page. The rules (engineering rules 8 and 9, ADR-012):
 3. There is **no fake API client**. Nothing pretends to fetch.
 4. Every mock-backed card carries a `Sample` badge.
 
-The whole directory is deleted in Phase 3 (milestone 3.17), when the Overview
-page reads the real API. Authentication, user management and the **host
-registry** are wired up, not monitoring data: the Overview page is still
-fixtures behind a banner.
+**Most of the interface is no longer fixtures.** Authentication, user
+management, the host registry, monitoring configuration and metrics are all
+wired to the real API. The Overview's host table and utilisation figures are
+real; its container and log cards are not, and sit in a separately banded
+region rather than interleaved with real totals — because a real host count
+under a "sample data" banner teaches an operator to disbelieve the one number
+on the page that is true.
 
-**The Hosts page is the exception, and deliberately carries no banner.** Every
-value on it came from an agent or from an administrator, and the columns with
-no value show nothing rather than a zero — so a banner there would be as
-misleading as its absence on the Overview page. The host detail page states
-that no metrics are collected yet rather than rendering a dashboard of zeroes,
-because a zeroed gauge is indistinguishable from a measurement.
+The directory is deleted in milestone 3.17, which is still open for exactly
+one reason: Docker discovery is Phase 6 and log collection is Phase 5, so
+there is nothing real to replace those two cards with yet.
+
+**The Hosts page deliberately carries no banner.** Every value on it came
+from an agent or from an administrator, and the columns with no value show
+nothing rather than a zero — so a banner there would be as misleading as its
+absence on the Overview page. Where a host genuinely has no measurements, the
+host detail page says so instead of rendering a dashboard of zeroes, because
+a zeroed gauge is indistinguishable from a measurement.
 
 ## Structure
 
@@ -264,7 +272,7 @@ src/
 ├── routes/                one module per page, plus login and setup
 │   ├── hosts/             the host registry's detail page and dialogs
 │   └── settings/          nested: general, users, account, sessions, audit
-├── mocks/                 Phase 0 fixtures (deleted in Phase 3)
+├── mocks/                 container and log fixtures (deleted in 3.17)
 ├── test/                  the fake backend and renderApp helpers
 └── lib/                   cn(), query client, query keys, datetime,
                            redirect validation

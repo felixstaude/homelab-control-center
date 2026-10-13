@@ -486,9 +486,9 @@ Worth stating, so the absences are not mistaken for failures:
 
 * **No disk, network or temperature collection.** Those modules do not exist
   yet. The **Collection** section lists only the five that do.
-* **No container discovery.** Docker is Phase 4. The Overview page's container
+* **No container discovery.** Docker is Phase 6. The Overview page's container
   card is sample data and says so.
-* **No log collection.** Phase 6.
+* **No log collection.** Phase 5.
 * **No remote command execution of any kind.** The agent runs no command on
   the host, and the protocol has no message type that could ask it to. It
   reads `/proc` and writes two files in its own directory.

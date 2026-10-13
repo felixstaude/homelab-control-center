@@ -1,3 +1,5 @@
+import type { ReactNode } from 'react';
+
 import { useQuery } from '@tanstack/react-query';
 import { Settings2 } from 'lucide-react';
 
@@ -27,7 +29,19 @@ import { queryKeys } from '@/lib/query-keys';
  * So this section shows what the installation *is* — read from the
  * authenticated `/info` endpoint, which is real — and states plainly which
  * configuration arrives with which milestone.
+ *
+ * It also carries the licence and a link to the source. That is not
+ * decoration: this is AGPL-3.0 software, and §13 requires anyone running a
+ * *modified* version as a network service to offer its users the
+ * corresponding source. Putting the link where the installation describes
+ * itself means a fork that changes the code inherits somewhere obvious to
+ * change the URL, rather than having to be told the obligation exists.
  */
+
+/** Where this build's source lives. Change this if you publish a fork. */
+const SOURCE_URL = 'https://github.com/felixstaude/homelab-control-center';
+const SOURCE_LABEL = 'felixstaude/homelab-control-center';
+
 export function SettingsGeneral() {
   const info = useQuery({
     queryKey: queryKeys.session.apiInfo(),
@@ -63,6 +77,20 @@ export function SettingsGeneral() {
               <Fact label="Control plane version" value={info.data.server_version} />
               <Fact label="API version" value={info.data.api_version} />
               <Fact label="Environment" value={info.data.environment} />
+              <Fact label="Licence" value="AGPL-3.0-or-later" />
+              <Fact
+                label="Source code"
+                value={
+                  <a
+                    href={SOURCE_URL}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-text-primary hover:text-accent"
+                  >
+                    {SOURCE_LABEL}
+                  </a>
+                }
+              />
             </dl>
           )}
         </CardContent>
@@ -71,14 +99,13 @@ export function SettingsGeneral() {
       <NotImplemented
         icon={Settings2}
         title="Installation configuration"
-        summary="Agent enrolment, notification destinations, monitoring modules and retention policy are configured here once the subsystems that own them exist. Nothing on this screen is editable until then, rather than being editable and ignored."
-        milestone="Phase 2 onwards"
+        summary="Monitoring modules and their intervals are configured under Monitoring, and hosts under Hosts. What is listed below has no screen anywhere yet, and arrives with the subsystem that owns it rather than as a form that saves nothing."
+        milestone="Phase 7 onwards"
         planned={[
-          'Agent enrolment tokens with rotation and revocation',
-          'Per-host monitoring modules and schedules',
           'Per-host management capabilities, all default-off',
           'Notification destinations and their credentials',
-          'Metrics and log retention policy',
+          'Retention policy, editable rather than fixed at startup',
+          'Agent credential rotation with an overlap window',
         ]}
       />
     </div>
@@ -86,7 +113,7 @@ export function SettingsGeneral() {
 }
 
 /** One label/value pair in the installation list. */
-function Fact({ label, value }: { label: string; value: string }) {
+function Fact({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className="flex flex-wrap items-baseline justify-between gap-2 py-2.5 first:pt-0 last:pb-0">
       <dt className="text-text-muted">{label}</dt>

@@ -201,7 +201,7 @@ Specifications: [`MONITORING_MODULES.md`](MONITORING_MODULES.md),
 | 3.14 | Metrics query API | Resolution selection; response states which tier answered; empty buckets null, never interpolated | ✅ |
 | 3.15 | Hosts page | Real host list with live metrics, replacing the placeholder | 🟡 The Overview's host table is real, with live CPU, memory and uptime. The dedicated **Hosts** page still lists registry state without metrics. |
 | 3.16 | Host detail page | Per-host charts; downsampled series render as a min–max band, not a single line | ✅ Downsampled series render a min–max band; gaps render as breaks. |
-| 3.17 | **Overview page rewrite** | `src/mocks/` **deleted**; Overview reads the real API (ADR-012) | 🟡 Overview reads the real API for hosts and utilisation. **`src/mocks/` is not deleted**: container and log cards are still fixtures, because Docker discovery is Phase 4 and log collection Phase 6. They sit in a separately banded region rather than mixed with real totals. |
+| 3.17 | **Overview page rewrite** | `src/mocks/` **deleted**; Overview reads the real API (ADR-012) | 🟡 Overview reads the real API for hosts and utilisation. **`src/mocks/` is not deleted**: container and log cards are still fixtures, because Docker discovery is Phase 6 and log collection Phase 5. They sit in a separately banded region rather than mixed with real totals. |
 
 **Phase 3 delivers:** a configurable multi-host resource monitor with history,
 for **CPU, memory, swap, load and uptime**. Proven end to end against a real
@@ -211,7 +211,7 @@ process failures (`make reliability-e2e`, 24 checks).
 **What is not delivered:** the disk, disk-I/O, network and hardware-inventory
 modules (3.7–3.10), the storage budget (3.13), and the deletion of
 `src/mocks/` (3.17) — the container and log cards are still fixtures because
-the features behind them are Phase 4 and Phase 6. The phase heading is 🟡 for
+the features behind them are Phase 6 and Phase 5. The phase heading is 🟡 for
 those reasons and not because the delivered half is provisional: it is in use,
 measured and tested.
 

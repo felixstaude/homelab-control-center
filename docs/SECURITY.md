@@ -2,19 +2,27 @@
 
 The security model for Homelab Control Center.
 
-> **Current status (Phase 1, milestone 1.7).** An operator can now
-> **initialize a fresh installation, log in, and run a multi-user
-> installation**. The initial administrator is created by a local command,
-> `hcc bootstrap-admin`
+> **Current status (Phase 3, milestone 1.9).** An operator can
+> **initialize a fresh installation, run it multi-user, enrol real hosts and
+> collect real metrics from them**. The initial administrator is created by a
+> local command, `hcc bootstrap-admin`
 > ([first-run bootstrap](#first-run-bootstrap-implemented)); login, logout,
 > server-side sessions, CSRF protection, login throttling, default-deny
 > authentication and role authorization are implemented and tested. Milestone
-> 1.7 adds [user administration](#user-administration-implemented), [session
+> 1.7 added [user administration](#user-administration-implemented), [session
 > administration](#session-administration-implemented), [self-service password
 > change](#password-change-implemented) and an
 > [audit foundation](#audit-trail-implemented) — the first production call
-> sites for the role axis. Agent communication, monitoring and remote
-> management remain design only.
+> sites for the role axis.
+>
+> **Agent communication and monitoring are now implemented, not design.** A
+> host is registered by an administrator, enrolled with a single-use
+> credential, and connects outbound over an authenticated WebSocket; the
+> controller sends it a configuration document and it returns telemetry for
+> the five modules that exist. Collection is default-deny per module.
+> **Remote management, capabilities and the terminal remain design only** —
+> no part of them is implemented, and the agent has no message type that
+> could execute anything.
 >
 > Sections marked **(design)** describe what later milestones will build; they
 > are documented now because they constrain the architecture that *is* built.
@@ -1505,9 +1513,15 @@ authentication endpoints face an untrusted network.
     no requests at all: it keeps its rendered page until it does. Nothing
     authoritative is exposed — the data is already in that tab's memory — and
     no request it makes will succeed.
-16. **Nothing in the agent, monitoring, capability or terminal sections
-    exists.** They are specified because they constrain what is being built,
-    not because any of it is live.
+16. **The capability and terminal sections describe nothing that exists.**
+    They are specified because they constrain what is being built, not
+    because any of it is live. The **agent and monitoring** sections no
+    longer belong on this list: enrolment, the authenticated outbound socket,
+    configuration delivery and telemetry for five modules are implemented and
+    tested, and were reviewed as attacks in milestone 1.9. What is still
+    absent there is **capability reporting** (gap 3) — the agent does not
+    tell the controller which modules it could run — and any form of remote
+    execution, which has no message type in the protocol at all.
 17. **Usernames cannot be corrected.** They are immutable (ADR-041), so fixing
     a typo in a login name means creating a replacement account and
     deactivating the old one — which loses that account's creation date and
@@ -1526,10 +1540,16 @@ authentication endpoints face an untrusted network.
 
 Do **not** open a public issue.
 
-Use GitHub's private vulnerability reporting ("Report a vulnerability" under
-the Security tab), or email the maintainer. Please include affected version,
-reproduction steps, and impact.
+Use GitHub's private vulnerability reporting — "Report a vulnerability" under
+the repository's **Security** tab. Please include the commit you tested, which
+component, reproduction steps, and what an attacker gains.
 
-This is a volunteer-maintained project; expect an acknowledgement within a week.
-Fixes are released as soon as practical, and credit is given unless you prefer
-otherwise.
+This is a volunteer-maintained project; expect an acknowledgement within a
+week. Fixes land on `main` as soon as practical, and credit is given unless
+you prefer otherwise.
+
+The full policy, including what is in and out of scope, is
+[`SECURITY.md`](../SECURITY.md) in the repository root. Note in particular
+that the gaps listed above are **already known**: a report that one of them
+exists is not a vulnerability report, though a report that one is worse than
+documented is.

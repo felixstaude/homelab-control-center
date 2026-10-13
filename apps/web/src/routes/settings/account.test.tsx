@@ -387,7 +387,7 @@ describe('settings navigation', () => {
     renderApp('/settings');
     await waitForAuthToResolve();
 
-    expect(await screen.findByText(/Planned for Phase 2 onwards/)).toBeInTheDocument();
+    expect(await screen.findByText(/Planned for Phase 7 onwards/)).toBeInTheDocument();
   });
 
   it('shows the real control plane version', async () => {
