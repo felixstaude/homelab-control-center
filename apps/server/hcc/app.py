@@ -7,6 +7,7 @@ effects.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from typing import TYPE_CHECKING, Final
 
@@ -36,6 +37,7 @@ from hcc.services.enrollment import AgentEnrollmentService
 from hcc.services.hosts import HostService
 from hcc.services.metrics import MetricsService
 from hcc.services.monitoring import MonitoringConfigService
+from hcc.services.retention import RetentionService, policy_from_settings
 from hcc.services.users import UserService
 
 if TYPE_CHECKING:
@@ -104,6 +106,88 @@ PUBLIC_PATHS: Final[dict[str, str]] = {
 }
 
 
+# How long shutdown waits for an in-flight maintenance pass to unwind after
+# cancellation. Long enough that the common case — cancelled mid-statement —
+# completes normally; short enough that it cannot stall a restart.
+MAINTENANCE_SHUTDOWN_TIMEOUT_SECONDS = 10.0
+
+
+async def _run_maintenance(
+    database: Database, retention: RetentionService, interval_seconds: int
+) -> None:
+    """Run metric maintenance on an interval, for the process's lifetime.
+
+    ## Every failure is caught and the loop continues
+
+    A maintenance pass that raises must not end the task, because the task not
+    running is the failure that is invisible: partitions stop being created,
+    inserts start landing in the DEFAULT partition, rollups stop, and the
+    first symptom is a disk filling weeks later. So the exception is logged
+    with its traceback and the next pass is attempted.
+
+    ## It runs once at startup, then on the interval
+
+    Deliberately: a controller that has been down for a day comes back needing
+    partitions *now*, and waiting five minutes for the first pass would mean
+    five minutes of inserts in the DEFAULT partition.
+
+    ## The lock is released explicitly
+
+    It is session-scoped, so PostgreSQL releases it when the connection
+    closes — which for a pooled connection is not when the pass ends. A pass
+    that returned without releasing would hold it until the pool recycled the
+    connection, and every later pass would skip.
+
+    ## The cleanup is not in a `finally`
+
+    It was, and that was wrong in both directions.
+
+    After a *failed* pass the transaction is unusable, so the release raised
+    too — and the lock then survived exactly as long as the pooled connection,
+    which is the failure the explicit release exists to prevent. The rollback
+    has to come first.
+
+    After a *cancelled* pass, emitting SQL at all is the bug: a `finally` that
+    awaits runs while the cancellation is unwinding, on a session SQLAlchemy
+    has already moved out of a usable state, and shutdown then waits on work
+    that cannot complete. There is also nothing to do — the connection is
+    closing, and a session-scoped lock dies with it.
+    """
+    while True:
+        try:
+            async with database.session_factory() as db:
+                try:
+                    await retention.run(db)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception("metric_maintenance_failed")
+                    # Suppressed: this is already the error path, and a
+                    # failure to clean up after a failure must not replace the
+                    # original exception in the log with a confusing second
+                    # one. The connection closing is the backstop.
+                    with contextlib.suppress(Exception):
+                        await db.rollback()
+                        await retention.release_lock(db)
+                        await db.commit()
+                else:
+                    await retention.release_lock(db)
+                    await db.commit()
+        except asyncio.CancelledError:
+            # Shutdown. Re-raised rather than swallowed, so the awaiting
+            # lifespan sees the cancellation it asked for.
+            raise
+        except Exception:
+            # Reached only if opening the session or the cleanup itself failed
+            # — a pass that raised is handled above and has already been
+            # logged with its traceback.
+            logger.exception("metric_maintenance_failed")
+
+        # Not wrapped: a cancellation here is the shutdown signal and should
+        # propagate, which is what `sleep` already does.
+        await asyncio.sleep(interval_seconds)
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     """Build and configure the FastAPI application."""
     settings = settings or get_settings()
@@ -146,11 +230,53 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "to the proxy's address or network."
                 ),
             )
+        # Partition maintenance, rollups and retention. Started here rather
+        # than as a separate process: the work is a handful of queries every
+        # five minutes, and a second deployable unit for it would be a second
+        # thing to run, monitor and get wrong.
+        #
+        # The task owns its own sessions. It must not share the request-scoped
+        # one — it has no request — and it holds a *session-scoped* advisory
+        # lock across its commits, so it needs one connection for the whole
+        # run rather than one per statement.
+        maintenance: asyncio.Task[None] | None = None
+        if settings.metrics_maintenance_interval_seconds > 0:
+            maintenance = asyncio.create_task(
+                _run_maintenance(
+                    database,
+                    app.state.retention_service,
+                    settings.metrics_maintenance_interval_seconds,
+                )
+            )
+        else:
+            # Said at startup rather than left to be discovered as a database
+            # that never stops growing. A deployment with the job off keeps
+            # every sample for ever and never produces a rollup, so the
+            # historical charts stay on the raw tier until the disk fills.
+            logger.warning(
+                "metric_maintenance_disabled",
+                detail=(
+                    "HCC_METRICS_MAINTENANCE_INTERVAL_SECONDS is 0, so "
+                    "partitions are not created, rollups are not produced and "
+                    "old data is not expired."
+                ),
+            )
+
         try:
             yield
         finally:
             # Runs even if startup of a later resource fails, so connections
             # are never leaked.
+            if maintenance is not None:
+                maintenance.cancel()
+                # Bounded, not a bare `await`. The task is usually sleeping and
+                # stops instantly, but a pass cancelled inside a long query
+                # finishes at the driver's pace, and shutdown must not become
+                # an unbounded wait on it. On timeout the task is abandoned;
+                # the connection it holds is closed by `disconnect` below, and
+                # its advisory lock dies with the connection.
+                with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+                    await asyncio.wait_for(maintenance, MAINTENANCE_SHUTDOWN_TIMEOUT_SECONDS)
             await database.disconnect()
             logger.info("shutdown_complete")
 
@@ -247,6 +373,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # than per request — a fresh instance would turn every sample into an
     # upsert, which is the cost the cache exists to remove.
     app.state.metrics_service = MetricsService()
+    app.state.retention_service = RetentionService(policy_from_settings(settings))
     # Per *process*, not per application and not shared across workers. This
     # is the honest statement of a real limitation rather than a cache: the
     # connections a worker holds are its own, and connectivity is derived from

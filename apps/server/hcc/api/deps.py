@@ -59,6 +59,7 @@ from hcc.security.tokens import tokens_equal
 from hcc.services.account import AccountService
 from hcc.services.audit import AuditQueryService
 from hcc.services.hosts import HostService
+from hcc.services.metrics import MetricsService
 from hcc.services.monitoring import MonitoringConfigService
 from hcc.services.users import UserService
 
@@ -139,6 +140,17 @@ def get_host_service(connection: HTTPConnection) -> HostService:
 def get_monitoring_config_service(connection: HTTPConnection) -> MonitoringConfigService:
     """Return the process-wide monitoring configuration service."""
     service: MonitoringConfigService = connection.app.state.monitoring_config_service
+    return service
+
+
+def get_metrics_service(connection: HTTPConnection) -> MetricsService:
+    """Return the process-wide metrics service.
+
+    Process-wide rather than per request, because it holds the
+    series-identity cache — a fresh instance would turn every sample into an
+    upsert, which is the cost the cache exists to remove.
+    """
+    service: MetricsService = connection.app.state.metrics_service
     return service
 
 
@@ -467,6 +479,7 @@ HostServiceDep = Annotated[HostService, Depends(get_host_service)]
 MonitoringConfigServiceDep = Annotated[
     MonitoringConfigService, Depends(get_monitoring_config_service)
 ]
+MetricsServiceDep = Annotated[MetricsService, Depends(get_metrics_service)]
 
 #: Any authenticated user. Authentication only — no role requirement beyond
 #: being logged in. Named for the lowest role so that call sites read as a

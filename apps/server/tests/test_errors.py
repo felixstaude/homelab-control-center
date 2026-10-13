@@ -171,6 +171,11 @@ async def real_app_client() -> AsyncIterator[AsyncClient]:
             database_url="postgresql://u:p@127.0.0.1:5432/hcc",
             log_level="WARNING",
             public_origin="https://hcc.example.test",
+            # This URL is a real listening PostgreSQL with deliberately wrong
+            # credentials, so that no query can succeed. Metric maintenance is
+            # off because a unit test has no business opening a background
+            # connection to the developer's own database every few minutes.
+            metrics_maintenance_interval_seconds=0,
         )
     )
 

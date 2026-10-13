@@ -255,6 +255,65 @@ class Settings(BaseSettings):
         description="Heartbeat silence tolerated before a host reads as stale.",
     )
 
+    # --- Metric storage and retention -------------------------------------
+    #
+    # Defaults from docs/DATA_RETENTION.md §2's "CPU, memory, load" row, which
+    # is every category this phase collects. Per-*category* retention is
+    # deferred: it needs a configuration surface of its own and the categories
+    # here all want the same numbers.
+    #
+    # Each has a floor and a ceiling, for the reasons §6.4 gives. The floor of
+    # one hour on raw data is what stops retention being configured to
+    # "effectively off", which would make the product's history claims false;
+    # the ceiling of a year on raw is a hard limit regardless of disk, because
+    # beyond it the rollup tiers are what an operator should be using.
+    metrics_raw_retention_days: int = Field(
+        default=7,
+        ge=1,
+        le=365,
+        description="How long full-resolution samples are kept.",
+    )
+    metrics_5m_retention_days: int = Field(
+        default=90,
+        ge=1,
+        le=3650,
+        description="How long five-minute aggregates are kept.",
+    )
+    metrics_1h_retention_days: int = Field(
+        default=730,
+        ge=1,
+        le=3650,
+        description="How long hourly aggregates are kept.",
+    )
+
+    # How long a bucket must be closed before it is rolled up. An agent
+    # reconnecting after an outage backfills with its original timestamps, so
+    # the newest buckets are still changing (DATA_RETENTION.md §3.2).
+    metrics_rollup_lateness_minutes: int = Field(
+        default=10,
+        ge=1,
+        le=1440,
+        description="Grace period before a bucket is considered sealed.",
+    )
+
+    # How often the maintenance job runs: create partitions, roll up, expire.
+    #
+    # Five minutes. The job is cheap when there is nothing to do — a handful of
+    # catalogue reads — and the interval has to be well under the narrowest
+    # partition width (one day) so a missed run is never the reason inserts
+    # start landing in the DEFAULT partition.
+    #
+    # Zero disables it, which is what the test suite and a one-shot
+    # maintenance command use. Not offered as an operational setting: a
+    # deployment with the job disabled silently stops expiring data, so the
+    # startup log says so when it is off.
+    metrics_maintenance_interval_seconds: int = Field(
+        default=300,
+        ge=0,
+        le=86400,
+        description="How often partition maintenance, rollups and retention run. 0 disables.",
+    )
+
     # --- Security headers -------------------------------------------------
     # A strict Content-Security-Policy breaks the Vite dev server, which needs
     # inline scripts and a websocket for hot reload. Enabled in production,

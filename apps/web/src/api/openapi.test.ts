@@ -680,6 +680,13 @@ describe('public surface', () => {
       '/api/v1/hosts/{host_id}/enable',
       '/api/v1/hosts/{host_id}/enrollment',
       '/api/v1/hosts/{host_id}/enrollment/revoke',
+      // Phase 3. Read-only by construction: metrics arrive over the agent
+      // connection, so there is no write path a browser session could use to
+      // fabricate history. Asserted in the backend suite.
+      '/api/v1/hosts/{host_id}/metrics/latest',
+      '/api/v1/hosts/{host_id}/metrics/range',
+      '/api/v1/hosts/{host_id}/metrics/series',
+      '/api/v1/hosts/{host_id}/metrics/status',
       // Phase 2. Reads are open to every role, writes administrator-only —
       // asserted behaviourally in the backend suite, not inferable from here.
       '/api/v1/hosts/{host_id}/monitoring',

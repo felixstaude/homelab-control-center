@@ -43,7 +43,17 @@ from pydantic import BaseModel, Field
 
 from hcc import __version__
 from hcc.api.deps import SettingsDep, get_current_session, require_min_role
-from hcc.api.v1 import account, agents, audit, auth, hosts, monitoring, setup, users
+from hcc.api.v1 import (
+    account,
+    agents,
+    audit,
+    auth,
+    hosts,
+    metrics,
+    monitoring,
+    setup,
+    users,
+)
 from hcc.models.user import UserRole
 
 #: Paths under ``/api/v1`` reachable without a session, with the reason.
@@ -135,6 +145,10 @@ _protected.include_router(hosts.read_router)
 # operator who could enable collection could start gathering data about
 # somebody's machine without an administrator. See hcc/api/v1/monitoring.py.
 _protected.include_router(monitoring.read_router)
+# Phase 3. Reads only: metrics arrive through the agent connection, and an
+# endpoint that accepted a measurement from a browser session would be a way to
+# fabricate history. See hcc/api/v1/metrics.py.
+_protected.include_router(metrics.read_router)
 
 _admin.include_router(users.router)
 _admin.include_router(audit.router)

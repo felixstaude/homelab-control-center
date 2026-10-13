@@ -115,6 +115,12 @@ def settings() -> Settings:
         log_level="WARNING",
         log_format="console",
         cors_origins=("http://localhost:5173",),
+        # No background metric maintenance in unit tests. It would open
+        # connections no unit test asked for, and its task would outlive the
+        # event loop pytest-asyncio tears down — see the NullPool note in
+        # `api_settings_factory` for the same class of problem. The job is
+        # tested directly in tests/test_metrics_maintenance.py.
+        metrics_maintenance_interval_seconds=0,
     )
 
 
@@ -362,6 +368,12 @@ def api_settings_factory(
             # unraisable warning that `filterwarnings = ["error"]` turned into
             # a failure in an unrelated test.
             "database_pool_class": "null",
+            # Off by default for the same reason as the unit-test `settings`
+            # fixture: a periodic task on every integration app is a second
+            # user of the connection pool that no test accounted for, and its
+            # cancellation races the loop teardown. Tests that want the job
+            # pass the interval explicitly.
+            "metrics_maintenance_interval_seconds": 0,
             **_FAST_HASH_SETTINGS,
         }
         values.update(overrides)

@@ -1098,6 +1098,57 @@
         "title": "HostUpdateRequest",
         "type": "object"
       },
+      "LatestResponse": {
+        "description": "A host's current values.\n\nEmpty when the host has produced nothing recent \u2014 not a list of zeroes.\nThe interface renders \"no data\", which is the honest answer and is\ndistinguishable from a measurement of zero.",
+        "properties": {
+          "freshness_seconds": {
+            "description": "How recent a sample had to be to appear here. Reported so the interface can say 'no data in the last 5 minutes' rather than 'no data', which are different claims.",
+            "title": "Freshness Seconds",
+            "type": "integer"
+          },
+          "host_id": {
+            "title": "Host Id",
+            "type": "string"
+          },
+          "values": {
+            "items": {
+              "$ref": "#/components/schemas/LatestValueResponse"
+            },
+            "title": "Values",
+            "type": "array"
+          }
+        },
+        "required": [
+          "host_id",
+          "freshness_seconds",
+          "values"
+        ],
+        "title": "LatestResponse",
+        "type": "object"
+      },
+      "LatestValueResponse": {
+        "description": "The most recent value of one series.",
+        "properties": {
+          "recorded_at": {
+            "title": "Recorded At",
+            "type": "string"
+          },
+          "series": {
+            "$ref": "#/components/schemas/SeriesResponse"
+          },
+          "value": {
+            "title": "Value",
+            "type": "number"
+          }
+        },
+        "required": [
+          "series",
+          "value",
+          "recorded_at"
+        ],
+        "title": "LatestValueResponse",
+        "type": "object"
+      },
       "LivenessResponse": {
         "description": "Deliberately minimal: this endpoint is public.",
         "properties": {
@@ -1185,6 +1236,53 @@
           "label_keys"
         ],
         "title": "MetricResponse",
+        "type": "object"
+      },
+      "MetricsStatusResponse": {
+        "description": "Whether anything is actually arriving.\n\nThe answer to the question an operator asks before looking at a chart, and\nthe one a chart cannot answer: an empty chart could mean \"nothing\ncollected\", \"collection is off\" or \"the agent is offline\", and only the\nfirst is visible from the data.",
+        "properties": {
+          "host_id": {
+            "title": "Host Id",
+            "type": "string"
+          },
+          "last_sample_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The newest sample across every series, or null if there are none.",
+            "title": "Last Sample At"
+          },
+          "modules": {
+            "description": "Every module in the registry, including those that have produced nothing \u2014 so the interface can distinguish 'this module has no data' from 'this module does not exist'.",
+            "items": {
+              "$ref": "#/components/schemas/ModuleStatusResponse"
+            },
+            "title": "Modules",
+            "type": "array"
+          },
+          "sample_count": {
+            "description": "Raw samples stored for this host, across every series and partition.",
+            "title": "Sample Count",
+            "type": "integer"
+          },
+          "series_count": {
+            "title": "Series Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "host_id",
+          "sample_count",
+          "series_count",
+          "last_sample_at",
+          "modules"
+        ],
+        "title": "MetricsStatusResponse",
         "type": "object"
       },
       "ModuleCatalogueResponse": {
@@ -1334,6 +1432,44 @@
         "title": "ModuleSettingRequest",
         "type": "object"
       },
+      "ModuleStatusResponse": {
+        "description": "What one module is doing on one host.",
+        "properties": {
+          "last_sample_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When this module last produced a sample, or null if it never has.",
+            "title": "Last Sample At"
+          },
+          "module": {
+            "title": "Module",
+            "type": "string"
+          },
+          "module_name": {
+            "title": "Module Name",
+            "type": "string"
+          },
+          "series_count": {
+            "description": "How many series this module has produced.",
+            "title": "Series Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "module",
+          "module_name",
+          "series_count",
+          "last_sample_at"
+        ],
+        "title": "ModuleStatusResponse",
+        "type": "object"
+      },
       "PasswordChangeRequest": {
         "additionalProperties": false,
         "description": "Change the caller's own password.\n\nConfirmation of the new password is deliberately **not** a field. It is a\nclient-side guard against a typo in a masked input, and the server has\nnothing to compare it against that the client does not already have \u2014 so\nsending it would mean transmitting the new password twice for no gain. The\ninterface enforces the match before submitting.",
@@ -1385,6 +1521,103 @@
           "session_expires_at"
         ],
         "title": "PasswordChangeResponse",
+        "type": "object"
+      },
+      "RangePointResponse": {
+        "description": "One point of a historical series.\n\n``minimum`` and ``maximum`` are present only for a rolled-up tier. They\nare not decoration: a downsampled series drawn as a single line of\naverages loses the spikes the operator enabled fast sampling to catch, so\nthe interface draws a min-max band and needs the bounds to do it.",
+        "properties": {
+          "at": {
+            "title": "At",
+            "type": "string"
+          },
+          "maximum": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Maximum"
+          },
+          "minimum": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Minimum"
+          },
+          "sample_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How many raw samples this bucket aggregates. Present only for a rolled-up tier, and what makes a partially-filled bucket visible rather than indistinguishable from a full one.",
+            "title": "Sample Count"
+          },
+          "value": {
+            "title": "Value",
+            "type": "number"
+          }
+        },
+        "required": [
+          "at",
+          "value"
+        ],
+        "title": "RangePointResponse",
+        "type": "object"
+      },
+      "RangeResponse": {
+        "description": "A historical series over a time range.",
+        "properties": {
+          "end": {
+            "title": "End",
+            "type": "string"
+          },
+          "points": {
+            "description": "Ordered by time, with **no points for empty buckets**. A gap is a gap: nothing here is interpolated, so the interface draws a break rather than a line through a period when nothing was collected.",
+            "items": {
+              "$ref": "#/components/schemas/RangePointResponse"
+            },
+            "title": "Points",
+            "type": "array"
+          },
+          "resolution": {
+            "description": "raw | 5m | 1h \u2014 which tier answered. Reported because 'this is hourly data' is information needed to interpret a flat-looking graph.",
+            "title": "Resolution",
+            "type": "string"
+          },
+          "series": {
+            "$ref": "#/components/schemas/SeriesResponse"
+          },
+          "start": {
+            "title": "Start",
+            "type": "string"
+          },
+          "truncated": {
+            "description": "Whether the point budget cut the series short. Only reachable when the caller named a resolution the range does not suit; the automatic choice always fits.",
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "series",
+          "resolution",
+          "start",
+          "end",
+          "points",
+          "truncated"
+        ],
+        "title": "RangeResponse",
         "type": "object"
       },
       "ReadinessResponse": {
@@ -1587,6 +1820,99 @@
           "revoked"
         ],
         "title": "RevocationResponse",
+        "type": "object"
+      },
+      "SeriesListResponse": {
+        "description": "Every series a host has ever produced.\n\nIncludes series that have stopped reporting, so that \"this host has no CPU\ndata\" and \"this host had CPU data until Tuesday\" are different answers.",
+        "properties": {
+          "host_id": {
+            "title": "Host Id",
+            "type": "string"
+          },
+          "series": {
+            "items": {
+              "$ref": "#/components/schemas/SeriesResponse"
+            },
+            "title": "Series",
+            "type": "array"
+          }
+        },
+        "required": [
+          "host_id",
+          "series"
+        ],
+        "title": "SeriesListResponse",
+        "type": "object"
+      },
+      "SeriesResponse": {
+        "description": "One measurable stream this host has produced.",
+        "properties": {
+          "kind": {
+            "description": "gauge | counter.",
+            "title": "Kind",
+            "type": "string"
+          },
+          "labels": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "The declared dimensions, e.g. {'core': '3'}. Empty for most series.",
+            "title": "Labels",
+            "type": "object"
+          },
+          "last_sample_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When this series last received a sample, or null if it never has. Null must not be rendered as a date.",
+            "title": "Last Sample At"
+          },
+          "metric": {
+            "title": "Metric",
+            "type": "string"
+          },
+          "metric_name": {
+            "description": "Human-readable metric name.",
+            "title": "Metric Name",
+            "type": "string"
+          },
+          "module": {
+            "title": "Module",
+            "type": "string"
+          },
+          "module_name": {
+            "description": "Human-readable module name, for the interface.",
+            "title": "Module Name",
+            "type": "string"
+          },
+          "series_id": {
+            "description": "Stable identifier for this series, used by the range endpoint. Sequential, which is why that endpoint also takes the host.",
+            "title": "Series Id",
+            "type": "integer"
+          },
+          "unit": {
+            "description": "percent | bytes | seconds | count | load.",
+            "title": "Unit",
+            "type": "string"
+          }
+        },
+        "required": [
+          "series_id",
+          "module",
+          "metric",
+          "labels",
+          "unit",
+          "kind",
+          "module_name",
+          "metric_name",
+          "last_sample_at"
+        ],
+        "title": "SeriesResponse",
         "type": "object"
       },
       "SessionListResponse": {
@@ -3334,6 +3660,319 @@
         "summary": "Revoke a host's pending enrollment credentials",
         "tags": [
           "hosts"
+        ]
+      }
+    },
+    "/api/v1/hosts/{host_id}/metrics/latest": {
+      "get": {
+        "description": "The newest value of each series, if it is recent enough to be current.\n\nThe freshness window is the whole design of this endpoint. Returning a\nhost's newest sample regardless of age would let the interface present a\nthree-day-old CPU reading as the current one, and nothing in the response\nwould say otherwise. An absent series renders as \"no data\", which is\nhonest and distinguishable from a measurement of zero.",
+        "operationId": "latest_metrics_api_v1_hosts__host_id__metrics_latest_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "host_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Host Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "How recent a sample must be to count as current. A series whose newest sample is older is absent rather than returned stale.",
+            "in": "query",
+            "name": "freshness_seconds",
+            "required": false,
+            "schema": {
+              "default": 300,
+              "description": "How recent a sample must be to count as current. A series whose newest sample is older is absent rather than returned stale.",
+              "maximum": 86400,
+              "minimum": 10,
+              "title": "Freshness Seconds",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LatestResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "No such host."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "A host's current metric values",
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
+    "/api/v1/hosts/{host_id}/metrics/range": {
+      "get": {
+        "description": "A series' history, at a resolution the range allows.\n\n**A series id alone is not authorization.** The ids are sequential, so the\nhost is checked too: a series belonging to another host answers 404, the\nsame as one that does not exist. Told apart by nothing, deliberately \u2014 a\ndistinct error would confirm that the id is real.",
+        "operationId": "metric_range_api_v1_hosts__host_id__metrics_range_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "host_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Host Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "From the series endpoint.",
+            "in": "query",
+            "name": "series_id",
+            "required": true,
+            "schema": {
+              "description": "From the series endpoint.",
+              "minimum": 1,
+              "title": "Series Id",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Inclusive start, ISO-8601 with a zone.",
+            "in": "query",
+            "name": "start",
+            "required": true,
+            "schema": {
+              "description": "Inclusive start, ISO-8601 with a zone.",
+              "format": "date-time",
+              "title": "Start",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Exclusive end, ISO-8601 with a zone.",
+            "in": "query",
+            "name": "end",
+            "required": true,
+            "schema": {
+              "description": "Exclusive end, ISO-8601 with a zone.",
+              "format": "date-time",
+              "title": "End",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Target point count. Decides which tier answers, unless `resolution` names one.",
+            "in": "query",
+            "name": "max_points",
+            "required": false,
+            "schema": {
+              "default": 1000,
+              "description": "Target point count. Decides which tier answers, unless `resolution` names one.",
+              "maximum": 50000,
+              "minimum": 1,
+              "title": "Max Points",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "raw | 5m | 1h. Omit to let the range and the point budget choose, which is what a caller should normally do \u2014 naming one can return a truncated series.",
+            "in": "query",
+            "name": "resolution",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "raw | 5m | 1h. Omit to let the range and the point budget choose, which is what a caller should normally do \u2014 naming one can return a truncated series.",
+              "title": "Resolution"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RangeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "No such host, or no such series on this host."
+          },
+          "422": {
+            "description": "The range or the point budget was refused."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "One series over a time range",
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
+    "/api/v1/hosts/{host_id}/metrics/series": {
+      "get": {
+        "description": "What this host has data for, which is what a chart picker needs.",
+        "operationId": "list_series_api_v1_hosts__host_id__metrics_series_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "host_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Host Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SeriesListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "No such host."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "Every series a host has produced",
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
+    "/api/v1/hosts/{host_id}/metrics/status": {
+      "get": {
+        "description": "The question a chart cannot answer.\n\nAn empty chart could mean \"nothing collected\", \"collection is off\" or \"the\nagent is offline\", and only the first is visible from the data. This\nendpoint answers the first; the monitoring endpoint answers the second and\nthe host endpoint the third.\n\nEvery module in the registry appears, including those that have produced\nnothing, so the interface can tell \"this module has no data\" from \"this\nmodule does not exist on this controller\".",
+        "operationId": "metrics_status_api_v1_hosts__host_id__metrics_status_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "host_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Host Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricsStatusResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "No such host."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "Whether metrics are actually arriving for a host",
+        "tags": [
+          "metrics"
         ]
       }
     },
