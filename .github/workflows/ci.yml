@@ -307,6 +307,80 @@ jobs:
           if-no-files-found: ignore
 
   # ==========================================================================
+  # The monitoring pipeline, and what survives failure
+  # ==========================================================================
+  monitoring:
+    name: Monitoring (real agent, real /proc)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: hcc
+          POSTGRES_PASSWORD: hcc_local_dev
+          POSTGRES_DB: hcc
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U hcc -d hcc"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: apps/server/pyproject.toml
+
+      - name: Set up Go
+        # Both scripts build the agent from source and run it. There is no
+        # skip path: an agent that cannot be built is a failure here, because
+        # a real agent reading real /proc is the whole point of the job.
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: agents/linux/go.sum
+
+      - name: Install the backend
+        run: |
+          python -m venv apps/server/.venv
+          apps/server/.venv/bin/pip install --quiet --upgrade pip
+          apps/server/.venv/bin/pip install --quiet -e 'apps/server[dev]'
+
+      - name: The monitoring pipeline, end to end
+        # A real controller, a real agent reading the runner's own /proc, a
+        # real WebSocket, real rows in real partitions. The suites prove each
+        # piece behaves; this proves they agree — including that the
+        # configuration checksum the controller computes matches the one the
+        # agent computes over the bytes it received, across two languages.
+        run: ./scripts/monitoring-e2e.sh
+
+      - name: What survives a failure
+        # Kills the controller mid-collection, SIGKILLs the agent, and
+        # terminates every database connection. Separate from the above
+        # because a green pipeline that loses data on restart is not a green
+        # pipeline.
+        run: ./scripts/reliability-e2e.sh
+
+      - name: Upload failure artefacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: monitoring-failure
+          path: |
+            /tmp/hcc-mon-*.log
+            /tmp/hcc-rel-*.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # ==========================================================================
   # Browser end-to-end
   # ==========================================================================
   e2e:

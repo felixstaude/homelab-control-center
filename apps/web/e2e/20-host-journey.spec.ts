@@ -228,10 +228,30 @@ test.describe('host registration and the live agent', () => {
     await signInAndWait(page);
     await page.goto(`/hosts/${hostId}`);
 
-    await expect(page.getByText(/No metrics are collected yet/i)).toBeVisible();
+    // Phase 3 gave this page real measurements, so the placeholder this test
+    // used to assert on is gone. What must survive is the discipline it stood
+    // for: this host is connected and has nothing enabled, so there is
+    // nothing measured — and the page has to say that rather than show zeroes.
+    await expect(page.getByText(/No measurements have arrived yet/i)).toBeVisible({
+      timeout: 20_000,
+    });
+    await expect(page.getByText(/Nothing is enabled for this host/i)).toBeVisible();
+
+    // The assertions that were always the point of this test.
     const content = await page.content();
     expect(content).not.toContain('0%');
     expect(content).not.toMatch(/\d+(\.\d+)?\s?(GiB|MiB|GB|MB)\b/);
+
+    // And default-deny is visible, not just implemented: every module off,
+    // on a host that is connected and could be collecting right now.
+    const monitoring = page.getByRole('heading', { name: /^monitoring$/i });
+    await expect(monitoring).toBeVisible();
+    // `exact` matters: the card's own description says "does not begin
+    // collecting anything", and getByText is a case-insensitive substring
+    // match by default — so the loose form passes on the prose instead of
+    // failing on the badge.
+    await expect(page.getByText('Collecting', { exact: true })).toBeHidden();
+    await expect(page.getByText('Off', { exact: true }).first()).toBeVisible();
   });
 
   test('heartbeats keep arriving, and the controller records each one', () => {
