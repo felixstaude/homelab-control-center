@@ -1,4 +1,4 @@
-import { Boxes, Cpu, HardDrive, MemoryStick, Server } from 'lucide-react';
+import { Boxes, HardDrive } from 'lucide-react';
 import { lazy, Suspense } from 'react';
 
 import { MockDataBanner } from '@/components/mock-data-banner';
@@ -13,8 +13,9 @@ import {
   CardTitle,
 } from '@/components/ui/card';
 import { MetricTile } from '@/components/ui/metric-tile';
-import { StatusBadge, StatusDot } from '@/components/ui/status-indicator';
-import { MOCK_CONTAINERS, MOCK_HOSTS, MOCK_LOG_ENTRIES } from '@/mocks/overview';
+import { StatusDot } from '@/components/ui/status-indicator';
+import { MOCK_CONTAINERS, MOCK_LOG_ENTRIES } from '@/mocks/overview';
+import { FleetSection } from '@/routes/overview/fleet-section';
 
 // Recharts is roughly half the bundle and is used by one card, so it is kept
 // off the critical path. See resource-chart.tsx.
@@ -35,10 +36,23 @@ const ATTENTION_CONTAINERS = MOCK_CONTAINERS.filter(
 /**
  * Overview page.
  *
- * Every value on this page comes from `src/mocks/overview.ts` and is static
- * sample data, declared as such by the banner at the top. The page exists to
- * demonstrate the intended information density and visual hierarchy of the
- * finished product; it performs no data fetching.
+ * ## Two regions, and the boundary between them is the point
+ *
+ * The top is **measured**: host counts, connectivity, and the current CPU and
+ * memory of every registered host, read from the agents. The bottom is
+ * **sample data** for the features that do not exist yet — container
+ * discovery, log collection — and keeps the banner this whole page used to sit
+ * under.
+ *
+ * They are deliberately not interleaved. §25 forbids mixing sample values with
+ * real totals, and the direction people think of is fiction presented as fact;
+ * the other direction is just as bad. A real host count under a "sample data"
+ * banner teaches an operator to disbelieve the one number on the page that is
+ * true, and after that the banner means nothing anywhere.
+ *
+ * Nothing here was promoted by relabelling. The container count and the log
+ * entries are still fixtures and still say so, because Docker discovery is
+ * Phase 4 and log collection is Phase 6.
  */
 export function OverviewPage() {
   return (
@@ -51,45 +65,32 @@ export function OverviewPage() {
       <PageHeader
         title="Overview"
         titleHidden
-        description="Fleet-wide health across hosts, containers and network devices. This page is a design reference built from static fixtures — the real data pipeline is not implemented."
+        description="Fleet-wide health. Host inventory and resource utilisation are measured; containers and logs are still sample data and are marked."
       />
 
-      <MockDataBanner className="mb-6" />
+      <FleetSection />
 
-      {/* --- Headline metrics --- */}
-      <section aria-labelledby="fleet-metrics" className="mb-6">
-        <h3 id="fleet-metrics" className="sr-only">
-          Fleet metrics
+      {/* --- Everything below is sample data, and says so --- */}
+      <section aria-labelledby="sample-heading">
+        <h3 id="sample-heading" className="sr-only">
+          Sample data for features not yet implemented
         </h3>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <MetricTile
-            label="Hosts"
-            value="4"
-            caption="3 reporting · 1 not reporting"
-            icon={<Server className="size-4" />}
-          />
+        <MockDataBanner className="mb-6" />
+
+        <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
           <MetricTile
             label="Containers"
             value="27"
-            caption="25 running · 2 not running"
+            caption="25 running · 2 not running — sample"
             icon={<Boxes className="size-4" />}
           />
           <MetricTile
-            label="Peak CPU"
-            value="72"
-            unit="%"
-            caption="sample-compute, 14:00"
-            icon={<Cpu className="size-4" />}
-          />
-          <MetricTile
-            label="Peak memory"
-            value="86"
-            unit="%"
-            caption="sample-compute, now"
-            icon={<MemoryStick className="size-4" />}
+            label="Network devices"
+            value="6"
+            caption="sample — discovery arrives in Phase 7"
+            icon={<HardDrive className="size-4" />}
           />
         </div>
-      </section>
 
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
         {/* --- Resource chart --- */}
@@ -168,114 +169,6 @@ export function OverviewPage() {
         </Card>
       </div>
 
-      {/* --- Hosts table --- */}
-      <Card className="mt-6">
-        <CardHeader>
-          <div>
-            <CardTitle>Hosts</CardTitle>
-            <CardDescription>
-              Sample inventory. Host registration arrives in Phase 1.
-            </CardDescription>
-          </div>
-          <Badge variant="warn">Sample</Badge>
-        </CardHeader>
-        <CardContent className="px-0 pb-0">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <caption className="sr-only">
-                Sample host inventory with status and resource utilisation. Not
-                real data.
-              </caption>
-              <thead>
-                <tr className="border-border-subtle border-y">
-                  <th
-                    scope="col"
-                    className="text-text-faint px-5 py-2.5 text-left text-xs font-medium tracking-wide uppercase"
-                  >
-                    Host
-                  </th>
-                  <th
-                    scope="col"
-                    className="text-text-faint px-3 py-2.5 text-left text-xs font-medium tracking-wide uppercase"
-                  >
-                    Status
-                  </th>
-                  <th
-                    scope="col"
-                    className="text-text-faint hidden px-3 py-2.5 text-left text-xs font-medium tracking-wide uppercase md:table-cell"
-                  >
-                    OS
-                  </th>
-                  <th
-                    scope="col"
-                    className="text-text-faint px-3 py-2.5 text-right text-xs font-medium tracking-wide uppercase"
-                  >
-                    CPU
-                  </th>
-                  <th
-                    scope="col"
-                    className="text-text-faint px-3 py-2.5 text-right text-xs font-medium tracking-wide uppercase"
-                  >
-                    Memory
-                  </th>
-                  <th
-                    scope="col"
-                    className="text-text-faint hidden px-3 py-2.5 text-right text-xs font-medium tracking-wide uppercase sm:table-cell"
-                  >
-                    Disk
-                  </th>
-                  <th
-                    scope="col"
-                    className="text-text-faint hidden px-5 py-2.5 text-right text-xs font-medium tracking-wide uppercase lg:table-cell"
-                  >
-                    Uptime
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="divide-border-subtle divide-y">
-                {MOCK_HOSTS.map((host) => (
-                  <tr key={host.id} className="hover:bg-surface-hover/40 transition-colors">
-                    <th scope="row" className="px-5 py-3 text-left font-normal">
-                      <div className="flex items-center gap-2.5">
-                        <StatusDot status={host.status} />
-                        <span className="text-text-primary font-medium">{host.hostname}</span>
-                      </div>
-                      <span className="text-text-faint mt-0.5 block text-xs">
-                        {host.containerCount} containers
-                      </span>
-                    </th>
-                    <td className="px-3 py-3">
-                      <StatusBadge
-                        status={host.status}
-                        label={host.status === 'unknown' ? 'No data' : undefined}
-                      />
-                    </td>
-                    <td className="text-text-muted hidden px-3 py-3 md:table-cell">
-                      {host.os}
-                    </td>
-                    <td className="px-3 py-3 text-right">
-                      <UtilisationCell percent={host.cpuPercent} unknown={host.status === 'unknown'} />
-                    </td>
-                    <td className="px-3 py-3 text-right">
-                      <UtilisationCell
-                        percent={host.memoryPercent}
-                        unknown={host.status === 'unknown'}
-                      />
-                    </td>
-                    <td className="hidden px-3 py-3 text-right sm:table-cell">
-                      <UtilisationCell percent={host.diskPercent} unknown={false} />
-                    </td>
-                    <td className="tabular text-text-muted hidden px-5 py-3 text-right lg:table-cell">
-                      {host.uptime}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </CardContent>
-      </Card>
-
       {/* --- Containers --- */}
       <Card className="mt-6">
         <CardHeader>
@@ -339,35 +232,9 @@ export function OverviewPage() {
               </li>
             ))}
           </ul>
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+      </section>
     </>
-  );
-}
-
-/**
- * A utilisation percentage with a thin bar.
- *
- * Renders an explicit em dash when the value is unknown. A monitoring tool
- * must never display absent data as 0%, which reads as "idle and healthy".
- */
-function UtilisationCell({ percent, unknown }: { percent: number; unknown: boolean }) {
-  if (unknown) {
-    return <span className="text-text-faint text-xs">—</span>;
-  }
-
-  return (
-    <div className="inline-flex w-20 flex-col items-end gap-1">
-      <span className="tabular text-text-secondary text-xs">{percent}%</span>
-      <span
-        className="bg-surface-overlay h-1 w-full overflow-hidden rounded-full"
-        aria-hidden="true"
-      >
-        <span
-          className="bg-text-faint block h-full rounded-full"
-          style={{ width: `${percent}%` }}
-        />
-      </span>
-    </div>
   );
 }
