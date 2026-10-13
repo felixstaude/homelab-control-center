@@ -410,8 +410,27 @@ func (i *Installer) ensureAccount(ctx context.Context) error {
 
 func (i *Installer) ensureConfigDirectory(ctx context.Context) error {
 	path := i.Paths.ConfigDir()
-	_, err := os.Stat(path)
+
+	// Lstat, not Stat. A symlink at this path would be followed by the
+	// MkdirAll, the Chmod and the Chown below — so a link planted at
+	// /etc/hcc-agent pointing at /etc/ssh would have the installer chmod 0750
+	// and chown hcc-agent on somebody else's directory.
+	//
+	// Planting it needs root, so an attacker who can do it has already won;
+	// the refusal costs one syscall and removes the installer from the list
+	// of things that could be used to do it.
+	info, err := os.Lstat(path)
 	existed := err == nil
+	if existed && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf(
+			"%s is a symbolic link. The installer will not change the mode and "+
+				"ownership of whatever it points at; remove the link and re-run",
+			path,
+		)
+	}
+	if existed && !info.IsDir() {
+		return fmt.Errorf("%s exists and is not a directory", path)
+	}
 
 	if err := os.MkdirAll(path, ConfigDirMode); err != nil {
 		return fmt.Errorf("cannot create %s: %w", path, err)

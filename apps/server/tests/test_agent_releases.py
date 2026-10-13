@@ -160,6 +160,57 @@ class TestRefusals:
         assert release is not None
         assert release["linux/amd64"].url == url
 
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("url", "https://example.test/agent.tar.gz;id"),
+            ("url", "https://example.test/`id`.tar.gz"),
+            ("url", "https://example.test/$(id).tar.gz"),
+            ("url", "https://example.test/a.tar.gz&&id"),
+            ("url", "https://example.test/a.tar.gz|id"),
+            ("url", "https://example.test/a\n.tar.gz"),
+            ("url", "https://example.test/a .tar.gz"),
+            ("archive", "agent'.tar.gz"),
+            ("archive", 'agent".tar.gz'),
+            ("archive", "agent b.tar.gz"),
+            ("archive", "agent$(id).tar.gz"),
+        ],
+    )
+    def test_a_value_that_would_be_unsafe_in_a_shell_is_refused(
+        self, field: str, value: str
+    ) -> None:
+        # Both fields are interpolated into the install command the interface
+        # renders, which somebody pastes into a root shell:
+        #
+        #     curl -fsSLO <url>
+        #     echo '<digest>  <archive>' | sha256sum -c -
+        #     tar xzf <archive>
+        #
+        # A ';' or a backtick is command injection into that shell, and a
+        # single quote closes the quoting around the digest. Refused rather
+        # than escaped: the interface would have to know which shell, and a
+        # release artifact whose name needs quoting should be renamed.
+        document = manifest_document()
+        document["releases"]["0.2.0"]["linux/amd64"][field] = value
+
+        with pytest.raises(ManifestError, match="not usable"):
+            parse_release_manifest(json.dumps(document).encode("utf-8"))
+
+    def test_an_ordinary_release_url_is_still_accepted(self) -> None:
+        # The guard above must not refuse the real thing. A GitHub release
+        # URL has a version with dots, a path with slashes, and nothing else.
+        document = manifest_document()
+        document["releases"]["0.2.0"]["linux/amd64"]["url"] = (
+            "https://github.com/felixstaude/homelab-control-center/releases/"
+            "download/v0.2.0/hcc-agent_0.2.0_linux_amd64.tar.gz"
+        )
+
+        manifest = parse_release_manifest(json.dumps(document).encode("utf-8"))
+
+        release = manifest.recommended_release()
+        assert release is not None
+        assert release["linux/amd64"].url.endswith("hcc-agent_0.2.0_linux_amd64.tar.gz")
+
     def test_an_unknown_platform_is_refused(self) -> None:
         # Refused rather than ignored: a manifest naming darwin/arm64 was
         # built by something that believes this product ships a macOS agent,

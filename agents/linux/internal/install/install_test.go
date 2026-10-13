@@ -975,3 +975,55 @@ func TestIsSystemAccount(t *testing.T) {
 		})
 	}
 }
+
+func TestInstallRefusesASymlinkedConfigurationDirectory(t *testing.T) {
+	f := newFixture(t)
+	// The attack this closes: a link planted at /etc/hcc-agent pointing
+	// somewhere else would be followed by MkdirAll, Chmod and Chown — so the
+	// installer would set mode 0750 and ownership hcc-agent on whatever it
+	// pointed at. Planting it needs root, so an attacker who can has already
+	// won; the refusal costs one syscall and takes the installer off the list
+	// of things that could be used to do it.
+	elsewhere := filepath.Join(f.root, "etc", "somebody-elses-directory")
+	if err := os.MkdirAll(elsewhere, 0o700); err != nil {
+		t.Fatalf("cannot prepare the fixture: %v", err)
+	}
+	if err := os.Symlink(elsewhere, f.paths.ConfigDir()); err != nil {
+		t.Fatalf("cannot prepare the fixture: %v", err)
+	}
+
+	err := f.run()
+	if err == nil {
+		t.Fatal("install followed a symlinked configuration directory")
+	}
+	if !strings.Contains(err.Error(), "symbolic link") {
+		t.Errorf("the refusal does not say why: %v", err)
+	}
+
+	// And the target's mode is untouched.
+	info, statErr := os.Stat(elsewhere)
+	if statErr != nil {
+		t.Fatalf("cannot inspect the link's target: %v", statErr)
+	}
+	if info.Mode().Perm() != 0o700 {
+		t.Errorf("the link's target is now mode %#o, was 0700", info.Mode().Perm())
+	}
+}
+
+func TestInstallRefusesAConfigurationPathThatIsAFile(t *testing.T) {
+	f := newFixture(t)
+	if err := os.MkdirAll(filepath.Dir(f.paths.ConfigDir()), 0o755); err != nil {
+		t.Fatalf("cannot prepare the fixture: %v", err)
+	}
+	if err := os.WriteFile(f.paths.ConfigDir(), []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("cannot prepare the fixture: %v", err)
+	}
+
+	err := f.run()
+	if err == nil {
+		t.Fatal("install proceeded with a file where the configuration directory goes")
+	}
+	if !strings.Contains(err.Error(), "not a directory") {
+		t.Errorf("the refusal does not say why: %v", err)
+	}
+}

@@ -76,6 +76,27 @@ MANIFEST_SCHEMA_VERSION: Final = 1
 #: is what stops a misconfigured path from being the process's memory.
 MAX_MANIFEST_BYTES: Final = 256 * 1024
 
+#: Characters that must not appear in a manifest's URL or archive name.
+#:
+#: Both values are interpolated into the install command the interface renders
+#: — a command a person pastes into a root shell:
+#:
+#:     curl -fsSLO <url>
+#:     echo '<digest>  <archive>' | sha256sum -c -
+#:     tar xzf <archive>
+#:
+#: So a `;`, a backtick, a `$(`, or a `'` that closes the quoting around the
+#: digest line is command injection into that shell. The manifest is shipped
+#: inside the controller's own image, so an attacker needs to have influenced
+#: the build — but "the value is trusted" is exactly the assumption that makes
+#: a supply-chain compromise worth more than it should be, and no legitimate
+#: release URL or filename contains any of these.
+#:
+#: Refused rather than escaped: the interface would have to know which shell,
+#: and a release artifact whose name needs quoting is a release artifact that
+#: should be renamed.
+SHELL_UNSAFE_CHARACTERS: Final = frozenset("'\"`$;&|<>()\\\n\r\t \x00")
+
 #: Platforms the interface may offer, in the order it offers them.
 #:
 #: Ordered deliberately rather than alphabetically: ``amd64`` is the default
@@ -120,6 +141,23 @@ class PlatformRelease(BaseModel):
         if any(character not in "0123456789abcdef" for character in lowered):
             raise ValueError("sha256 must be lowercase hexadecimal")
         return lowered
+
+    @field_validator("archive", "url")
+    @classmethod
+    def _validate_shell_safe(cls, value: str) -> str:
+        """Refuse a value that would be unsafe in the rendered command.
+
+        See :data:`SHELL_UNSAFE_CHARACTERS`. This runs for both fields,
+        because both are interpolated into that command.
+        """
+        offending = sorted(SHELL_UNSAFE_CHARACTERS & set(value))
+        if offending:
+            raise ValueError(
+                "contains characters that are not safe in the install command the "
+                f"interface renders: {offending!r}. No legitimate release URL or "
+                "filename needs them."
+            )
+        return value
 
     @field_validator("url")
     @classmethod

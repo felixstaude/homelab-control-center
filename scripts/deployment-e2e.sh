@@ -146,8 +146,19 @@ cleanup() {
   fi
   [ -n "$COOKIE_JAR" ] && rm -f "$COOKIE_JAR"
   # The generated secret is this run's and belongs to nothing else.
-  if [ "$KEEP" = 0 ] && [ -f deploy/production/secrets/db_password ]; then
-    rm -f deploy/production/secrets/db_password
+  #
+  # Removed best-effort, and the `|| true` is load-bearing. Under rootful
+  # Docker the generator container runs as root, so the file it writes into
+  # the bind-mounted directory is **root-owned on the host** — and an
+  # unprivileged runner cannot delete it. That is not a fault: it is stricter
+  # than the 0644-owned-by-the-operator case, since only root and the
+  # containers can read it. But a cleanup that exits non-zero over it turns a
+  # passing scenario into a failed job, which is exactly what it did.
+  if [ "$KEEP" = 0 ] && [ -e deploy/production/secrets/db_password ]; then
+    if ! rm -f deploy/production/secrets/db_password 2>/dev/null; then
+      dim "could not remove deploy/production/secrets/db_password (root-owned by"
+      dim "the generator container). Remove it with:  sudo rm -rf deploy/production/secrets"
+    fi
     rmdir deploy/production/secrets 2>/dev/null || true
   fi
   [ -n "$WORK" ] && rm -rf "$WORK"
@@ -189,8 +200,14 @@ ok "using $COMPOSE, project $PROJECT"
 
 WORK="$(mktemp -d /tmp/hcc-deploy-XXXXXX)"
 # A pre-existing secret from a previous run would make the "generated once"
-# assertion meaningless.
-rm -f deploy/production/secrets/db_password
+# assertion meaningless. Best-effort for the same reason as the cleanup: a
+# previous run under rootful Docker leaves it root-owned.
+if [ -e deploy/production/secrets/db_password ] \
+  && ! rm -f deploy/production/secrets/db_password 2>/dev/null; then
+  die "deploy/production/secrets/db_password exists and cannot be removed.
+A previous run left it root-owned. Remove it first:
+  sudo rm -rf deploy/production/secrets"
+fi
 
 # ===========================================================================
 info "== 2. Build and start =="

@@ -147,6 +147,11 @@ Three details worth knowing:
   two. The protection is the deployment directory on your host and the mount
   being read-only in both consumers. This is the same guarantee Docker's own
   `/run/secrets` gives, where files are `0444`.
+* **Who owns it on the host depends on your runtime.** Under rootful Docker
+  the generator container runs as root, so the file is root-owned — which is
+  stricter than the alternative, because only root and the containers can read
+  it, and it means `sudo` to remove it. Under rootless Podman it is yours.
+  Either way the containers read it, because it is `0644`.
 * The mount carries `:ro,z`. The `z` is an SELinux relabel, and without it the
   deployment fails on **Fedora, RHEL, CentOS Stream, Rocky and Alma** with
   "Permission denied" on a file that is plainly `0644`. Found by running it on
