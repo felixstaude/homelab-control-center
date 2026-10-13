@@ -294,7 +294,7 @@ info "== 4. First run: the administrator is created by a local command =="
 # ownership of the deployment to whoever reaches the port first. Inside a
 # container, `exec` *is* the local command.
 setup="$(curl -sS "$API/setup/status")"
-if printf '%s' "$setup" | grep -q '"is_initialized":false'; then
+if printf '%s' "$setup" | grep -q '"initialized":false'; then
   ok "the installation reports itself uninitialised before bootstrap"
 else
   bad "setup status is wrong before bootstrap: $setup"
@@ -310,7 +310,7 @@ else
 fi
 
 setup="$(curl -sS "$API/setup/status")"
-if printf '%s' "$setup" | grep -q '"is_initialized":true'; then
+if printf '%s' "$setup" | grep -q '"initialized":true'; then
   ok "the installation reports itself initialised afterwards"
 else
   bad "setup status is wrong after bootstrap: $setup"

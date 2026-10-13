@@ -134,7 +134,15 @@ services:
       - postgres-data:/var/lib/postgresql/data
       # Read-only: PostgreSQL reads the password and has no business changing
       # it.
-      - ./secrets:/run/secrets:ro
+      #
+      # `z` relabels the mount for SELinux with a *shared* label, because two
+      # containers read this one directory. Without it the deployment is
+      # broken on every SELinux-enforcing host — Fedora, RHEL, CentOS Stream,
+      # Rocky, Alma — with "Permission denied" on a file that is plainly
+      # mode 0644, which is a confusing enough failure to be worth the flag.
+      # Docker and Podman both accept it and both ignore it where SELinux is
+      # not enforcing, so it costs nothing elsewhere.
+      - ./secrets:/run/secrets:ro,z
     # No `ports:`. Nothing outside this stack needs to reach the database, and
     # a published PostgreSQL is the single most common way a self-hosted
     # deployment ends up on Shodan.
@@ -157,13 +165,17 @@ services:
       hcc-init:
         condition: service_completed_successfully
     environment:
-      # The database URL is assembled by the entrypoint from these four parts
-      # and the password *file*. The password is therefore never in the
+      # The database URL is assembled by the *application* from these parts
+      # and the password file. The password is therefore never in the
       # container's configured environment, where `docker inspect` would show
       # it — and `docker inspect` is what people paste into issue reports.
       #
-      # Set HCC_DATABASE_URL instead to point at an existing PostgreSQL; the
-      # entrypoint then leaves all of this alone.
+      # By the application rather than by the entrypoint, because
+      # `docker compose exec hcc hcc bootstrap-admin` — the documented
+      # first-run step — does not run an entrypoint. See hcc/config.py.
+      #
+      # Set HCC_DATABASE_URL instead to point at an existing PostgreSQL; an
+      # explicit URL always wins and none of this runs.
       HCC_DATABASE_PASSWORD_FILE: /run/secrets/db_password
       HCC_DATABASE_HOST: postgres
       HCC_DATABASE_PORT: "5432"
@@ -183,9 +195,11 @@ services:
       HCC_METRICS_1H_RETENTION_DAYS: ${HCC_METRICS_1H_RETENTION_DAYS:-730}
       HCC_AUTO_MIGRATE: ${HCC_AUTO_MIGRATE:-true}
     volumes:
-      # Read-only. The entrypoint reads the password and assembles a URL from
-      # it; nothing in the application writes here.
-      - ./secrets:/run/secrets:ro
+      # Read-only. The application reads the password and assembles a URL
+      # from it; nothing writes here.
+      #
+      # `z` for SELinux — see the note on the postgres service.
+      - ./secrets:/run/secrets:ro,z
     ports:
       # Loopback only. An existing reverse proxy on the host reaches this; the
       # LAN does not. With compose.tls.yaml this is removed and Caddy

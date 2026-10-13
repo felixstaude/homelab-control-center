@@ -24,10 +24,11 @@ network devices.**
 > management, and the disk, network and temperature modules. The Overview's
 > container and log cards are **labelled sample data** and say so on screen.
 >
-> There is **no packaged installation** — no published image, no Compose
-> deployment, no prebuilt agent binaries. Running this today means the
-> development setup below and building the agent yourself. See
-> [current limitations](#current-limitations).
+> **Nothing has been released yet.** There is no published container image, no
+> GitHub Release and no prebuilt agent binary. The *installation path* exists
+> and is exercised in CI — a Compose deployment, a self-installing agent, and
+> a reproducible artifact build — but installing today means building both
+> from this repository. See [current limitations](#current-limitations).
 >
 > Exactly what is built, partially built and not started, milestone by
 > milestone: [`docs/ROADMAP.md`](docs/ROADMAP.md).
@@ -153,9 +154,29 @@ connections per controller process at 224 KiB each. 500 is the supported fleet
 size today — a thousand extrapolates comfortably and has **not** been
 measured.
 
-## Quick start
+## Installing it
 
-This is the **development** setup, and currently the only one. Requires Python
+```bash
+git clone https://github.com/felixstaude/homelab-control-center
+cd homelab-control-center/deploy/production
+
+cp .env.example .env
+$EDITOR .env          # one required field: the URL browsers will use
+
+docker compose -f compose.yaml -f compose.build.yaml up -d --build
+docker compose exec hcc hcc bootstrap-admin
+```
+
+One container for the control plane with the web client built into it, one for
+PostgreSQL, one origin, and one setting you have to decide. Needs Docker
+Compose; the `--build` is there because no image has been published yet.
+
+Full procedure, HTTPS, upgrades, backup and restore, and what has and has not
+been verified about each: [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
+
+## Development setup
+
+For working on it, rather than running it. Requires Python
 3.12+, Node 20.19+/22.12+, Go 1.24+, GNU Make, and Docker or Podman. On
 Fedora: `sudo dnf install python3 nodejs npm golang podman podman-compose make`
 
@@ -210,15 +231,16 @@ Run `make help` for every available target.
 
 Stated here rather than discovered after an hour of trying:
 
-* **No packaged installation.** There is no published container image, no
-  Compose deployment for the application itself, and no installation script.
-  `deploy/compose.yaml` starts **PostgreSQL only**, for development. The
-  design for a real one is
-  [`docs/plans/simple-installation-and-agent-distribution.md`](docs/plans/simple-installation-and-agent-distribution.md);
-  none of it is implemented.
-* **No prebuilt agent binaries.** There are no GitHub Releases and no
-  checksums. Running an agent means building it from this repository with
-  `make agent-build` and copying it to the host yourself.
+* **Nothing is published.** There is no container image in any registry and
+  no GitHub Release, so `deploy/production/compose.yaml` names a tag that does
+  not resolve and the interface's install command has no URL to offer. Both
+  degrade honestly: the Compose file has a build overlay, and the enrolment
+  dialog shows how to build the agent instead of a download that would 404.
+  The install path is built and tested — it has simply not been released.
+* **The deployment needs Docker Compose.** podman-compose 1.6.0 hangs on the
+  production stack's `depends_on` conditions. `deploy/compose.yaml`, the
+  development database, still works with both
+  ([ADR-010](docs/ARCHITECTURE.md#adr-010-compose-file-targets-both-docker-and-podman)).
 * **One controller process.** Login throttling counters live in process
   memory, so several uvicorn workers each get their own and multiply the
   effective limit. Deploy with **one worker** until that is addressed
@@ -231,37 +253,46 @@ Stated here rather than discovered after an hour of trying:
 * **No password reset.** A user can change their own password; there is no
   recovery for a forgotten one, deliberately — see
   [known gaps](docs/SECURITY.md#known-gaps).
-* **No backup or restore tooling.** PostgreSQL's own `pg_dump` is the answer
-  today.
+* **`compose.tls.yaml` is unverified.** Caddy's certificate issuance needs a
+  publicly resolvable name, which CI does not have, so what is tested is that
+  the Caddyfile carries the directives the agent connection needs — not that a
+  certificate was ever obtained.
 * **No screenshots in this README.** The interface changes faster than
   screenshots can be kept honest, and a stale screenshot is a claim about
   behaviour. Run the development setup to see it.
 
 ## Connecting a host
 
+In the interface: **Hosts → Register host**, then *Issue enrolment
+credential*. The credential is shown once, expires in fifteen minutes, and is
+single-use. The dialog shows the command to run beside it.
+
+Then, on the machine to be monitored:
+
 ```bash
-# In the interface: Hosts → Register host, then "Issue enrolment credential".
-# The credential is shown once, expires in fifteen minutes, and is single-use.
-
-# On the machine you want to monitor:
-make agent-build                                    # or cross-compile
-sudo install -m 0755 agents/linux/bin/hcc-agent /usr/local/bin/
-
-sudo install -m 0600 /dev/null /root/hcc-token
-sudo editor /root/hcc-token                         # paste the credential
-
-sudo HCC_AGENT_CONTROLLER_URL=https://your-controller \
-     HCC_AGENT_ENROLLMENT_TOKEN_FILE=/root/hcc-token \
-     hcc-agent enroll
+# Build the agent (no release is published yet), copy it across, and:
+sudo ./hcc-agent install --controller https://your-controller
 ```
 
-The host appears as **Connected** within a second or two. Enrolling does not
-start collecting anything: every module is off until an administrator turns it
-on.
+It asks for the credential with the input hidden, creates a dedicated
+unprivileged account, places the binary, writes a hardened systemd unit,
+starts the service, and waits for the host to appear as **Connected** before
+reporting success. `--dry-run` prints every path, mode and the complete unit
+and changes nothing.
 
-* Full installation procedure, including the hardened systemd unit and what
-  has and has not been verified about it:
-  [`agents/linux/deploy/README.md`](agents/linux/deploy/README.md).
+The binary **is** the installer — there is no shell script to pipe into a root
+shell, so the artifact you verify is the artifact that performs the
+installation. Enrolling does not start collecting anything: every module is
+off until an administrator turns it on.
+
+```bash
+hcc-agent doctor      # diagnose; changes nothing; prints no credential
+hcc-agent upgrade     # verified, with rollback if it does not reconnect
+hcc-agent uninstall   # --purge also removes the credential and the account
+```
+
+* The whole lifecycle, what the unit protects against, and what has and has
+  not been verified: [`agents/linux/deploy/README.md`](agents/linux/deploy/README.md).
 * A complete worked example from bare host to a chart with real measurements:
   [`docs/development/ENABLING_MONITORING_DEBIAN.md`](docs/development/ENABLING_MONITORING_DEBIAN.md).
 
@@ -305,18 +336,30 @@ metrics, and fabricated metrics fire and suppress notification rules.
 ## Development
 
 ```bash
-make check            # every local quality gate
-make check-server     # ruff format + ruff check + mypy + pytest
-make check-web        # tsc + eslint + vitest
-make check-agent      # gofmt + go vet + go test -race
-make test-integration # backend integration tests against real PostgreSQL
-make e2e              # Playwright, real browser against a real backend
-make monitoring-e2e   # a real agent reading real /proc, end to end
+make check             # every local quality gate
+make check-server      # ruff format + ruff check + mypy + pytest
+make check-web         # tsc + eslint + vitest
+make check-agent       # gofmt + go vet + go test -race
+make test-integration  # backend integration tests against real PostgreSQL
+make e2e               # Playwright, real browser against a real backend
+make monitoring-e2e    # a real agent reading real /proc, end to end
+make check-artifacts   # build the release artifacts and verify them
+make check-reproducible# build them twice and compare every digest
+make install-matrix    # install the agent into a real-systemd container
+make deployment-e2e    # build the image, run the stack, bootstrap, restart
 ```
 
-CI additionally runs the integration suite, the migration apply/reverse/check
-cycle, the production build, Go cross-compilation and the browser suite — see
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+The last two are heavier than the rest and are the ones that prove the
+installation actually works: `install-matrix` starts the real systemd unit in
+a container and asserts a real sample arrives, and `deployment-e2e` brings the
+real Compose stack up and signs in to it.
+
+CI runs all of it, plus the integration suite, the migration
+apply/reverse/check cycle, the production build, Go cross-compilation, the
+browser suite, the installation matrix on three distributions and the Compose
+deployment — see [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+`release-prepare.yml` builds and validates release artifacts and publishes
+nothing ([`docs/RELEASING.md`](docs/RELEASING.md)).
 
 Conventions, troubleshooting and the full setup guide:
 [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
@@ -345,15 +388,18 @@ Conventions, troubleshooting and the full setup guide:
 
 ```
 apps/
-├── server/        FastAPI control plane (owns all state)
+├── server/        FastAPI control plane (owns all state, serves the client)
 └── web/           React client
 agents/
-└── linux/         Go agent, one binary per monitored host
+└── linux/         Go agent, one binary per monitored host — and its installer
 contracts/         Generated cross-language fixtures (Python → Go, TypeScript)
-deploy/            Compose file for local PostgreSQL
-docs/              Architecture, vision, roadmap, security, plans
+deploy/
+├── compose.yaml   PostgreSQL only, for development
+└── production/    The deployment: Compose, a TLS overlay, .env.example
+Dockerfile         The control plane image, client built in
+docs/              Architecture, vision, roadmap, security, deployment, plans
 scripts/           Quality gates that need more than one process
-.github/           CI and Dependabot
+.github/           CI, release preparation and Dependabot
 Makefile           Task runner — start here
 ```
 

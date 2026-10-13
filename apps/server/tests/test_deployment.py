@@ -153,12 +153,60 @@ class TestEverySettingIsAccountedFor:
         for name in sorted(read_by_entrypoint):
             assert name in accounted_for(), f"the entrypoint reads {name} and nothing declares it"
 
-        # And at least the ones that matter are genuinely in the exemption
-        # list rather than being settings by coincidence.
-        for name in ("HCC_AUTO_MIGRATE", "HCC_DATABASE_PASSWORD_FILE"):
-            assert name in KNOWN_NON_SETTING_VARIABLES, (
-                f"{name} is read by the entrypoint and is not in KNOWN_NON_SETTING_VARIABLES"
+        # HCC_AUTO_MIGRATE is the one that matters and the only one left. The
+        # database parts used to be exempted too, assembled into a URL by the
+        # entrypoint, until `docker compose exec hcc hcc bootstrap-admin`
+        # turned out not to run an entrypoint and so saw no URL at all. They
+        # are real settings now, and this asserts the exemption list has not
+        # regrown.
+        assert "HCC_AUTO_MIGRATE" in KNOWN_NON_SETTING_VARIABLES
+        assert "HCC_DATABASE_PASSWORD_FILE" in settings_variables(), (
+            "the database password file is read by the application, not the "
+            "entrypoint, and must be a real setting — otherwise `compose exec "
+            "hcc hcc bootstrap-admin` cannot reach the database"
+        )
+
+
+class TestTheEntrypointIsSelfConsistent:
+    """Every function the entrypoint calls is one it defines.
+
+    `sh -n` parses and does not resolve calls, so a helper removed by an edit
+    is a runtime failure on container start — which is exactly what happened:
+    moving the database-URL assembly out of this script took `log` and `fail`
+    with it, and the container's first line became
+    `/opt/hcc/entrypoint.sh: 59: log: not found`.
+    """
+
+    def test_every_called_helper_is_defined(self) -> None:
+        # Lines that are not comments, so the prose does not count as a call.
+        body = without_comments(ENTRYPOINT)
+
+        defined = set(re.findall(r"^(\w+)\(\) \{", body, re.MULTILINE))
+        # Called at the start of a line or after `! `, `then`, `else`, `||`,
+        # `&&` — which covers every call shape in this script without trying
+        # to be a shell parser.
+        called = set(re.findall(r"(?:^|\|\||&&|!|;|then|else)\s+(\w+)\b", body, re.MULTILINE))
+
+        # Only the ones this script is supposed to define.
+        helpers = {"log", "fail", "migrate"}
+        for name in sorted(helpers & called):
+            assert name in defined, (
+                f"the entrypoint calls {name} and does not define it; the "
+                "container would fail on start with "
+                f"'{name}: not found'"
             )
+        # And it defines all three, so a future edit that drops one is caught
+        # by the loop above rather than by a container that will not start.
+        assert helpers <= defined, f"the entrypoint no longer defines {sorted(helpers - defined)}"
+
+    def test_the_assembly_is_no_longer_here(self) -> None:
+        # It moved into hcc/config.py because `docker compose exec` does not
+        # run an entrypoint. Asserted so that a future edit does not put it
+        # back and silently reintroduce the broken first-run step.
+        body = without_comments(ENTRYPOINT)
+
+        assert "HCC_DATABASE_PASSWORD_FILE" not in body
+        assert "postgresql://" not in body
 
 
 class TestTheDeploymentIsSafeByDefault:
@@ -194,7 +242,13 @@ class TestTheDeploymentIsSafeByDefault:
         assert "HCC_DATABASE_PASSWORD_FILE: /run/secrets/db_password" in compose
         # And both consumers mount the directory read-only: neither PostgreSQL
         # nor the control plane has any business changing the password.
-        assert compose.count("./secrets:/run/secrets:ro") == 2
+        #
+        # `z` is not decoration. Without the SELinux relabel the deployment
+        # fails on Fedora, RHEL, CentOS Stream, Rocky and Alma with
+        # "Permission denied" on a file that is plainly mode 0644 — found by
+        # running it on an enforcing host. Docker and Podman both ignore the
+        # flag where SELinux is not enforcing.
+        assert compose.count("./secrets:/run/secrets:ro,z") == 2
         # And no password is written into the file an operator edits.
         assert "PASSWORD=" not in ENV_EXAMPLE.read_text(encoding="utf-8")
 
@@ -205,9 +259,16 @@ class TestTheDeploymentIsSafeByDefault:
         compose = COMPOSE.read_text(encoding="utf-8")
 
         assert "tr '+/' '-_'" in compose, "the generator does not produce a URL-safe password"
-        # And the entrypoint refuses one that is not, rather than trusting the
-        # generator stayed correct.
-        assert "database_url_unsafe" in ENTRYPOINT.read_text(encoding="utf-8")
+        # And the *application* refuses one that is not, rather than trusting
+        # the generator stayed correct. The check used to be in the
+        # entrypoint; it moved into hcc/config.py along with the assembly,
+        # because `docker compose exec` does not run an entrypoint.
+        #
+        # Asserted on the constant's name rather than on the message, which a
+        # formatter is free to rewrap across lines.
+        assert "_URL_SAFE_PASSWORD" in (
+            REPOSITORY / "apps" / "server" / "hcc" / "config.py"
+        ).read_text(encoding="utf-8")
 
     def test_the_container_runs_unprivileged_with_a_read_only_root(self) -> None:
         compose = COMPOSE.read_text(encoding="utf-8")

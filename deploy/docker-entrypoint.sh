@@ -30,6 +30,16 @@
 # require that, because a deployment whose first `up -d` leaves an empty
 # database and a confusing error is not an installation.
 #
+# ## The database URL is not this script's business
+#
+# It used to be: this script read HCC_DATABASE_PASSWORD_FILE, assembled a
+# postgresql:// URL and exported it. That worked for the server and broke the
+# documented first-run step — `docker compose exec hcc hcc bootstrap-admin`
+# does not run an entrypoint, so it saw no URL and failed with
+# "HCC_DATABASE_URL: Field required" on a perfectly good deployment. The
+# assembly is in hcc/config.py now, where the server, `hcc` anything and
+# alembic all get it.
+#
 # ## exec, not a subshell
 #
 # `exec` replaces this shell with the server, so uvicorn becomes pid 1 and
@@ -39,80 +49,6 @@
 # implements.
 
 set -eu
-
-# ---------------------------------------------------------------------------
-# The database URL, assembled from a password file
-# ---------------------------------------------------------------------------
-#
-# HCC_DATABASE_URL wins when it is set: an operator pointing at an existing
-# PostgreSQL gives the whole URL and none of this runs.
-#
-# Otherwise the URL is assembled here from HCC_DATABASE_PASSWORD_FILE and four
-# defaults. The point is that the password is never in the container's
-# *configured* environment — `docker inspect` shows that, and people paste
-# `docker inspect` into issue reports. A file does not appear there, and the
-# value this script exports lands only in the server process's own
-# environment.
-#
-# Every variable read here is listed in KNOWN_NON_SETTING_VARIABLES in
-# hcc/config.py. It has to be: the application refuses to start on an
-# unrecognised HCC_ variable, deliberately, because a typo'd setting that was
-# silently ignored would leave an operator believing they had configured
-# something. tests/test_deployment.py checks the two lists agree.
-# Returns non-zero rather than exiting, so the caller decides whether a
-# missing database URL is fatal. It is for `serve` and `migrate`; it is not for
-# `hcc --help`, and an entrypoint that refused to print a help message because
-# no database was configured would be an entrypoint people work around.
-try_assemble_database_url() {
-  if [ -n "${HCC_DATABASE_URL:-}" ]; then
-    log database_url_given "HCC_DATABASE_URL is set; not assembling one"
-    return 0
-  fi
-
-  password_file="${HCC_DATABASE_PASSWORD_FILE:-}"
-  if [ -z "$password_file" ]; then
-    reason="set HCC_DATABASE_URL, or HCC_DATABASE_PASSWORD_FILE and let this assemble one"
-    return 1
-  fi
-  if [ ! -r "$password_file" ]; then
-    reason="cannot read the password file $password_file"
-    return 1
-  fi
-
-  password="$(cat "$password_file")"
-  if [ -z "$password" ]; then
-    reason="the password file $password_file is empty"
-    return 1
-  fi
-
-  # The password is generated from a URL-safe alphabet by the hcc-init
-  # service, so it needs no escaping here. Checked rather than assumed,
-  # because a password containing '/' or '@' would silently produce a URL
-  # pointing at the wrong host — and the error that follows would be about
-  # DNS.
-  case "$password" in
-    *[!A-Za-z0-9_-]*)
-      fail database_url_unsafe \
-        "the password in $password_file contains characters that are not URL-safe; \
-regenerate it, or set HCC_DATABASE_URL yourself with the password percent-encoded"
-      ;;
-  esac
-
-  HCC_DATABASE_URL="postgresql://${HCC_DATABASE_USER:-hcc}:${password}@${HCC_DATABASE_HOST:-postgres}:${HCC_DATABASE_PORT:-5432}/${HCC_DATABASE_NAME:-hcc}"
-  export HCC_DATABASE_URL
-  # The *shape*, never the value. A log line carrying a database password is
-  # a log line in somebody's aggregator forever.
-  log database_url_assembled \
-    "postgresql://${HCC_DATABASE_USER:-hcc}:<from ${password_file}>@${HCC_DATABASE_HOST:-postgres}:${HCC_DATABASE_PORT:-5432}/${HCC_DATABASE_NAME:-hcc}"
-}
-
-# The same thing, where not having one is fatal.
-assemble_database_url() {
-  reason=""
-  if ! try_assemble_database_url; then
-    fail database_url_missing "$reason"
-  fi
-}
 
 log() {
   # Matched to the application's own JSON log format, so `docker logs` is one
@@ -144,7 +80,6 @@ migrate() {
 
 case "${1:-serve}" in
   serve)
-    assemble_database_url
     migrate
     log serving "binding ${HCC_HOST:-0.0.0.0}:${HCC_PORT:-8000}"
     # One worker, deliberately, and there is no knob for more.
@@ -157,7 +92,6 @@ case "${1:-serve}" in
     exec python -m hcc.main
     ;;
   migrate)
-    assemble_database_url
     migrate
     log migrations_complete "not serving; this invocation was 'migrate'"
     ;;
@@ -167,18 +101,12 @@ case "${1:-serve}" in
     # the first administrator. Inside a container, `exec` *is* the local
     # command — so anything else passed here is run as given.
     #
-    # The URL is assembled first, because `hcc bootstrap-admin` needs the
-    # database as much as the server does and an operator running it should
-    # not have to know how the password reaches the process.
-    #
-    # Best effort, though: `hcc --help` needs no database, and an entrypoint
-    # that refused to print a help message because none was configured is an
-    # entrypoint people work around. A command that does need one fails on its
-    # own terms, with its own message.
-    reason=""
-    if ! try_assemble_database_url; then
-      log database_url_unavailable "$reason"
-    fi
+    # Nothing is prepared for it. The database URL used to be assembled here
+    # and exported before exec-ing the server, and that broke precisely this
+    # path: `docker compose exec` does not run an entrypoint, so
+    # `hcc bootstrap-admin` saw no URL and failed with "HCC_DATABASE_URL:
+    # Field required" on a working deployment. The assembly now lives in
+    # hcc/config.py, where every process in the container gets it.
     exec "$@"
     ;;
 esac

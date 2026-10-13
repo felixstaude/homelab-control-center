@@ -147,6 +147,11 @@ Three details worth knowing:
   two. The protection is the deployment directory on your host and the mount
   being read-only in both consumers. This is the same guarantee Docker's own
   `/run/secrets` gives, where files are `0444`.
+* The mount carries `:ro,z`. The `z` is an SELinux relabel, and without it the
+  deployment fails on **Fedora, RHEL, CentOS Stream, Rocky and Alma** with
+  "Permission denied" on a file that is plainly `0644`. Found by running it on
+  an enforcing host. Docker and Podman both ignore the flag where SELinux is
+  not enforcing, so it costs nothing elsewhere.
 * **Back it up separately.** It is not in the database dump, and a restore
   into an existing volume needs it. See [§6](#6-backup-and-restore).
 
@@ -421,6 +426,7 @@ uninformative: they carry no version and no dependency detail
 | Symptom | Where to look |
 | --- | --- |
 | `up -d` exits with "Unrecognised HCC_ environment variables" | A typo in `.env`. The application refuses to start on a variable it does not recognise, deliberately: a setting that was silently ignored would leave you believing you had configured something. |
+| "Permission denied" reading `/run/secrets/db_password` | SELinux, on a host where it is enforcing. The shipped Compose file mounts with `:ro,z` for this reason; if you edited the mount, put the `z` back. |
 | Login works, logout does not, errors mention CSRF | `HCC_PUBLIC_ORIGIN` does not match the origin your browser is using. |
 | The interface works and every host is offline | Your reverse proxy is not passing WebSocket upgrades. See [§3](#3-an-existing-reverse-proxy). |
 | Every host goes offline and comes back on a cycle | Your proxy has a read timeout on the agent connection. |
