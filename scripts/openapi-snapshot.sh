@@ -32,8 +32,48 @@ VENV="$SERVER_DIR/.venv"
 green() { printf '\033[0;32m%s\033[0m\n' "$1"; }
 red() { printf '\033[0;31m%s\033[0m\n' "$1"; }
 
-if [[ ! -x "$VENV/bin/python" ]]; then
-  red "Python venv missing. Run: make install-server"
+# Which interpreter generates the schema.
+#
+# The project venv wins when there is one: that is what a developer has, and
+# naming it explicitly keeps the snapshot independent of whatever `python3`
+# happens to be first on PATH.
+#
+# Otherwise the ambient interpreter, because CI has no venv — the `server`
+# job installs the backend into the runner's own Python with `pip install -e`
+# and never creates one. Requiring a venv here meant this script could not
+# run in the one place it was most needed, and the failure looked like a
+# missing dependency rather than a wrong assumption.
+#
+# Absolute either way: the generator runs under `env -i` with a minimal PATH
+# that would not find an interpreter by name.
+if [[ -x "$VENV/bin/python" ]]; then
+  PYTHON="$REPO_ROOT/$VENV/bin/python"
+else
+  PYTHON=""
+  for candidate in python3 python; do
+    if resolved="$(command -v "$candidate" 2>/dev/null)"; then
+      PYTHON="$(cd "$(dirname "$resolved")" && pwd)/$(basename "$resolved")"
+      break
+    fi
+  done
+  if [[ -z "$PYTHON" ]]; then
+    red "No Python interpreter found, and no venv at $VENV."
+    red "  Run: make install-server"
+    exit 1
+  fi
+fi
+
+# Fail with the reason rather than a traceback from inside the heredoc. The
+# working directory matches generate()'s, so this tests what that will do.
+#
+# `hcc.app`, not `hcc`: from $SERVER_DIR the source tree is on sys.path, so a
+# bare `import hcc` succeeds against an interpreter with none of the
+# dependencies installed and the real failure surfaces later as a traceback
+# about structlog. Importing the module the generator imports is the check
+# that actually distinguishes the two.
+if ! ( cd "$SERVER_DIR" && "$PYTHON" -c 'import hcc.app' ) >/dev/null 2>&1; then
+  red "$PYTHON cannot import hcc.app — the backend is not installed for it."
+  red "  Run: make install-server   (or: pip install -e 'apps/server[dev]')"
   exit 1
 fi
 
@@ -43,13 +83,25 @@ generate() {
   # environment is otherwise cleared so a developer's .env cannot change the
   # generated schema — `docs_url`/`openapi_url` differ in production, and the
   # snapshot must be reproducible.
+  #
+  # The allowlist stays an allowlist. LD_LIBRARY_PATH is passed through only
+  # when the caller has one, because an interpreter built `--enable-shared`
+  # outside the system prefix — GitHub's hosted Python is exactly that —
+  # cannot find its own libpython without it. It tells the dynamic loader
+  # where to find a library; it cannot reach Settings, so it cannot change
+  # the generated schema.
+  local -a isolated=(
+    PATH="/usr/bin:/bin"
+    HCC_DATABASE_URL="postgresql://schema:schema@127.0.0.1:5432/schema"
+    HCC_ENVIRONMENT="test"
+  )
+  if [[ -n "${LD_LIBRARY_PATH:-}" ]]; then
+    isolated+=( LD_LIBRARY_PATH="$LD_LIBRARY_PATH" )
+  fi
+
   (
     cd "$SERVER_DIR"
-    env -i \
-      PATH="/usr/bin:/bin" \
-      HCC_DATABASE_URL="postgresql://schema:schema@127.0.0.1:5432/schema" \
-      HCC_ENVIRONMENT="test" \
-      "$REPO_ROOT/$VENV/bin/python" - <<'PY'
+    env -i "${isolated[@]}" "$PYTHON" - <<'PY'
 import json
 import sys
 

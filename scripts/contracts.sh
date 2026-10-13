@@ -35,10 +35,40 @@ CALENDAR_FILE="$OUTPUT_DIR/calendar-cases.json"
 green() { printf '\033[0;32m%s\033[0m\n' "$1"; }
 red() { printf '\033[0;31m%s\033[0m\n' "$1"; }
 
-test -x "$VENV/bin/python" || {
-  red "No virtualenv at $VENV. Run: make setup"
+# Which interpreter runs the generator. Same resolution as
+# scripts/openapi-snapshot.sh, and for the same reason: both scripts run in
+# CI's `server` job, which installs the backend into the runner's own Python
+# with `pip install -e` and creates no venv. Requiring one meant neither
+# script could run in the one place it was most needed.
+#
+# The venv wins when there is one, so a developer's run is pinned to the
+# project's interpreter rather than whatever `python3` is first on PATH.
+if [[ -x "$VENV/bin/python" ]]; then
+  PYTHON="$REPO_ROOT/$VENV/bin/python"
+else
+  PYTHON=""
+  for candidate in python3 python; do
+    if resolved="$(command -v "$candidate" 2>/dev/null)"; then
+      PYTHON="$(cd "$(dirname "$resolved")" && pwd)/$(basename "$resolved")"
+      break
+    fi
+  done
+  if [[ -z "$PYTHON" ]]; then
+    red "No Python interpreter found, and no venv at $VENV."
+    red "  Run: make setup"
+    exit 1
+  fi
+fi
+
+# `hcc.cli.contracts` is what this script actually runs, so import it rather
+# than the bare package: from apps/server the source tree is on sys.path and
+# a bare `import hcc` would succeed against an interpreter with none of the
+# dependencies installed.
+if ! ( cd apps/server && "$PYTHON" -c 'import hcc.cli.contracts' ) >/dev/null 2>&1; then
+  red "$PYTHON cannot import hcc.cli.contracts — the backend is not installed for it."
+  red "  Run: make setup   (or: pip install -e 'apps/server[dev]')"
   exit 1
-}
+fi
 
 CHECK=0
 if [[ "${1:-}" == "--check" ]]; then
@@ -52,9 +82,9 @@ trap 'rm -rf "$WORK"' EXIT
 # An absolute interpreter path: a relative one resolved from `apps/server`
 # makes Python's site module warn about an unexpected `sys.prefix`, which is
 # noise on every run of an otherwise silent script.
-(cd apps/server && "$REPO_ROOT/$VENV/bin/python" -m hcc.cli.contracts) >"$WORK/out.json"
+(cd apps/server && "$PYTHON" -m hcc.cli.contracts) >"$WORK/out.json"
 
-"$VENV/bin/python" - "$WORK" "$MODULES_FILE" "$CALENDAR_FILE" <<'PY'
+"$PYTHON" - "$WORK" "$MODULES_FILE" "$CALENDAR_FILE" <<'PY'
 import json
 import pathlib
 import sys
