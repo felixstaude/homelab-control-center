@@ -1,0 +1,17 @@
+# Blank issues are disabled: the templates exist so that a report arrives with
+# the things that make it actionable. The discussion link below is the escape
+# hatch for anything that fits neither template.
+blank_issues_enabled: false
+
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/felixstaude/homelab-control-center/security/advisories/new
+    about: Report privately. Never open a public issue for a security problem.
+
+  - name: Question or idea to discuss
+    url: https://github.com/felixstaude/homelab-control-center/discussions
+    about: For anything that is not yet a concrete bug or proposal.
+
+  - name: Is it already known?
+    url: https://github.com/felixstaude/homelab-control-center/blob/main/docs/ROADMAP.md
+    about: Docker, logs, alerting and remote management are not implemented yet. The roadmap says what is built and what is not.

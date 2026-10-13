@@ -1,0 +1,96 @@
+name: Bug report
+description: Something behaves differently from how it is documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting.
+
+        **Not a bug:** a feature that is documented as unbuilt. Docker, logs,
+        alerting, network checks and remote management are specified but
+        **not implemented** — see
+        [the roadmap](https://github.com/felixstaude/homelab-control-center/blob/main/docs/ROADMAP.md).
+        The [known security gaps](https://github.com/felixstaude/homelab-control-center/blob/main/docs/SECURITY.md#known-gaps)
+        are also already recorded.
+
+        **Security problems do not go here.** Use
+        [private reporting](https://github.com/felixstaude/homelab-control-center/security/advisories/new).
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead?
+      description: Paste the exact error, log line or screenshot. Redact any credential first.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The exact commands or clicks, starting from a known state.
+      placeholder: |
+        1. make db-up && make migrate
+        2. …
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Which component?
+      multiple: true
+      options:
+        - Control plane (apps/server)
+        - Web client (apps/web)
+        - Linux agent (agents/linux)
+        - Build, Makefile or CI
+        - Documentation
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: commit
+    attributes:
+      label: Commit
+      description: "`git rev-parse --short HEAD`. There are no releases yet."
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: |
+        For agent bugs, include `hcc-agent version` and the distribution of the
+        monitored host. For control plane bugs, the Python version and how you
+        are running PostgreSQL.
+      placeholder: |
+        Controller OS:  Fedora 44
+        Python:         3.12.8
+        PostgreSQL:     17 (podman)
+        Agent host:     Debian 13 (trixie), linux/amd64
+        hcc-agent:      hcc-agent 0.1.0 (commit …)
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I checked the roadmap, and this is not a feature that is documented as unbuilt.
+          required: true
+        - label: This is not a security vulnerability.
+          required: true
+        - label: I removed any credential, token or private hostname from the output I pasted.
+          required: true

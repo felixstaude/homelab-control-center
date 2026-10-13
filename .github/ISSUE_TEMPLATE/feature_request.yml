@@ -1,0 +1,62 @@
+name: Feature proposal
+description: Propose a capability, or a change to a planned one.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please check these two documents first — they will answer most
+        proposals faster than this form will:
+
+        * [`docs/ROADMAP.md`](https://github.com/felixstaude/homelab-control-center/blob/main/docs/ROADMAP.md)
+          — most things are already planned, in a phase, with an exit
+          criterion. Saying *"bring 6.4 forward"* is a perfectly good
+          proposal.
+        * [What this will never do](https://github.com/felixstaude/homelab-control-center/blob/main/docs/PRODUCT_VISION.md#what-this-is-not)
+          — AI-generated explanations, autonomous remediation and a
+          general-purpose command-execution API are **product boundaries**,
+          not backlog items. Proposals for those will be closed, politely.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: >-
+        Describe the situation you are actually in, not the feature. "I cannot
+        tell which host filled its disk at 3am" is more useful than "add disk
+        alerts", because it leaves room for a better answer.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like it to do?
+    validations:
+      required: true
+
+  - type: input
+    id: roadmap
+    attributes:
+      label: Related roadmap milestone, if any
+      placeholder: "e.g. 3.7 disk_usage module — or 'none that I can find'"
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What have you tried or considered instead?
+      description: Including other tools. If something else already does this well, say so.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I checked the roadmap and this is not already a planned milestone (or I am asking to reprioritise one, and said so).
+          required: true
+        - label: This does not fall under "what this will never do".
+          required: true
