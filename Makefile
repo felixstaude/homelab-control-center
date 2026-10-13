@@ -305,3 +305,10 @@ clean: ## Remove build artefacts and caches
 clean-all: clean ## Also remove installed dependencies
 	rm -rf $(VENV) $(WEB_DIR)/node_modules
 	@echo "✓ Dependencies removed"
+
+.PHONY: monitoring-e2e
+monitoring-e2e: ## Real agent, real /proc, real database: the monitoring pipeline end to end (requires make db-up)
+# Creates its own disposable database, port and agent state directory, so it
+# never touches the development installation or writes a credential to /etc —
+# see scripts/monitoring-e2e.sh.
+	@./scripts/monitoring-e2e.sh

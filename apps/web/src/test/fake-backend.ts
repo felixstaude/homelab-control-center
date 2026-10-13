@@ -156,20 +156,39 @@ export function makeHost(overrides: Partial<Host> = {}): Host {
  * floors are the real ones: a test that used 1 s everywhere would not notice
  * an interface that offered an interval the server refuses.
  */
+/**
+ * The module catalogue.
+ *
+ * Transcribed from `contracts/monitoring-modules.json`, which is generated
+ * from the server's registry and drift-checked by `make check-contract`. That
+ * file is the source of truth; this is a copy because Vite will not import
+ * from outside the project root and widening its allowed paths for a test
+ * fixture is not a trade worth making.
+ *
+ * Kept faithful on purpose. Five modules, because that is what the registry
+ * declares — not the two that are most interesting — and the real interval
+ * floors, which differ per module: a fixture using 1 s everywhere would not
+ * notice an interface offering an interval the server refuses. The metric ids
+ * are the registry's too (`used`, not `used_bytes`); the interface displays
+ * `metric_name` and never branches on the id, but a fixture that disagrees
+ * with reality misleads whoever reads it next.
+ */
 export const FAKE_MODULES: readonly ModuleDescriptor[] = [
   {
     id: 'cpu',
-    name: 'CPU',
+    name: 'CPU utilisation',
     description: 'Processor utilisation, derived from /proc/stat deltas.',
     platform: 'linux',
     default_interval_seconds: 10,
     min_interval_seconds: 1,
     schedule_kinds: ['interval'],
     requires_privileges: false,
-    allows_duplicate_runs: false,
+    allows_duplicate_runs: true,
     data_schema_version: 1,
     metrics: [
-      { id: 'utilisation', name: 'Utilisation', unit: 'percent', kind: 'gauge', label_keys: [] },
+      { id: 'utilisation', name: 'CPU utilisation', unit: 'percent', kind: 'gauge', label_keys: [] },
+      { id: 'core_utilisation', name: 'Per-core utilisation', unit: 'percent', kind: 'gauge', label_keys: ['core'] },
+      { id: 'logical_cpus', name: 'Logical CPUs', unit: 'count', kind: 'gauge', label_keys: [] },
     ],
   },
   {
@@ -181,11 +200,13 @@ export const FAKE_MODULES: readonly ModuleDescriptor[] = [
     min_interval_seconds: 1,
     schedule_kinds: ['interval'],
     requires_privileges: false,
-    allows_duplicate_runs: false,
+    allows_duplicate_runs: true,
     data_schema_version: 1,
     metrics: [
-      { id: 'used_bytes', name: 'Used', unit: 'bytes', kind: 'gauge', label_keys: [] },
-      { id: 'utilisation', name: 'Utilisation', unit: 'percent', kind: 'gauge', label_keys: [] },
+      { id: 'utilisation', name: 'Memory used', unit: 'percent', kind: 'gauge', label_keys: [] },
+      { id: 'total', name: 'Total memory', unit: 'bytes', kind: 'gauge', label_keys: [] },
+      { id: 'available', name: 'Available memory', unit: 'bytes', kind: 'gauge', label_keys: [] },
+      { id: 'used', name: 'Used memory', unit: 'bytes', kind: 'gauge', label_keys: [] },
     ],
   },
   {
@@ -193,14 +214,16 @@ export const FAKE_MODULES: readonly ModuleDescriptor[] = [
     name: 'Swap',
     description: 'Swap in use. Reports nothing on a host with no swap.',
     platform: 'linux',
-    default_interval_seconds: 30,
+    default_interval_seconds: 10,
     min_interval_seconds: 1,
     schedule_kinds: ['interval'],
     requires_privileges: false,
-    allows_duplicate_runs: false,
+    allows_duplicate_runs: true,
     data_schema_version: 1,
     metrics: [
-      { id: 'used_bytes', name: 'Used', unit: 'bytes', kind: 'gauge', label_keys: [] },
+      { id: 'utilisation', name: 'Swap used', unit: 'percent', kind: 'gauge', label_keys: [] },
+      { id: 'total', name: 'Total swap', unit: 'bytes', kind: 'gauge', label_keys: [] },
+      { id: 'used', name: 'Used swap', unit: 'bytes', kind: 'gauge', label_keys: [] },
     ],
   },
   {
@@ -212,25 +235,25 @@ export const FAKE_MODULES: readonly ModuleDescriptor[] = [
     min_interval_seconds: 5,
     schedule_kinds: ['interval'],
     requires_privileges: false,
-    allows_duplicate_runs: false,
+    allows_duplicate_runs: true,
     data_schema_version: 1,
     metrics: [
-      { id: 'load1', name: '1 minute', unit: 'load', kind: 'gauge', label_keys: [] },
+      { id: 'average', name: 'Load average', unit: 'load', kind: 'gauge', label_keys: ['window'] },
     ],
   },
   {
     id: 'uptime',
-    name: 'Uptime',
+    name: 'System uptime',
     description: 'How long the host has been running.',
     platform: 'linux',
     default_interval_seconds: 300,
     min_interval_seconds: 60,
-    schedule_kinds: ['interval', 'calendar'],
+    schedule_kinds: ['interval'],
     requires_privileges: false,
-    allows_duplicate_runs: false,
+    allows_duplicate_runs: true,
     data_schema_version: 1,
     metrics: [
-      { id: 'seconds', name: 'Uptime', unit: 'seconds', kind: 'gauge', label_keys: [] },
+      { id: 'seconds', name: 'System uptime', unit: 'seconds', kind: 'gauge', label_keys: [] },
     ],
   },
 ];

@@ -120,6 +120,9 @@ Configuration (environment):
   `+config.EnvControllerURL+`         base URL of the control plane (required, https)
   `+config.EnvCredentialFile+`        path to the agent credential
                                        (default `+config.DefaultCredentialFile+`)
+  `+config.EnvConfigFile+`            where to store the controller's monitoring
+                                       configuration
+                                       (default `+config.DefaultConfigFile+`)
   `+config.EnvEnrollmentFile+`  file holding the one-time credential (enroll only)
   `+config.EnvEnrollmentToken+`       the one-time credential itself (enroll only)
   `+config.EnvCAFile+`                extra CA bundle to trust, for an internal CA

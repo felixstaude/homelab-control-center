@@ -108,11 +108,12 @@ describe('a host that has measured nothing', () => {
 
     const card = resourcesCard();
     await waitFor(() => {
-      expect(within(card).getByText('CPU')).toBeInTheDocument();
+      expect(within(card).getAllByText('No data').length).toBeGreaterThan(0);
     });
-    for (const name of ['CPU', 'Memory', 'Swap', 'Load average', 'Uptime']) {
+    for (const name of ['CPU utilisation', 'Memory', 'Swap', 'Load average', 'System uptime']) {
       expect(within(card).getByText(name)).toBeInTheDocument();
     }
+    // One per module in the registry, including the four nobody enabled.
     expect(within(card).getAllByText('No data')).toHaveLength(5);
   });
 

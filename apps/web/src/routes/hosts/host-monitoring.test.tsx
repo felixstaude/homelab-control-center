@@ -109,7 +109,7 @@ describe('default-deny is visible', () => {
     await renderHost();
 
     const card = monitoringCard();
-    for (const name of ['CPU', 'Memory', 'Swap', 'Load average', 'Uptime']) {
+    for (const name of ['CPU utilisation', 'Memory', 'Swap', 'Load average', 'System uptime']) {
       expect(await within(card).findByText(name)).toBeInTheDocument();
     }
   });
@@ -137,7 +137,7 @@ describe('three states, not two', () => {
   it('offers on, off and inherit', async () => {
     await renderHost();
 
-    const control = await screen.findByLabelText<HTMLSelectElement>('CPU collection');
+    const control = await screen.findByLabelText<HTMLSelectElement>('CPU utilisation collection');
     const values = [...control.options].map((option) => option.value);
     expect(values).toEqual(['on', 'off', 'inherit']);
   });
@@ -146,7 +146,7 @@ describe('three states, not two', () => {
     // "Inherit" alone does not say whether the module would end up on.
     await renderHost();
 
-    const control = await screen.findByLabelText<HTMLSelectElement>('CPU collection');
+    const control = await screen.findByLabelText<HTMLSelectElement>('CPU utilisation collection');
     const inherit = [...control.options].find((option) => option.value === 'inherit');
     expect(inherit?.textContent).toBe('Inherit (on)');
   });
@@ -157,7 +157,7 @@ describe('three states, not two', () => {
     // decision that does not exist.
     await renderHost();
 
-    const control = await screen.findByLabelText<HTMLSelectElement>('CPU collection');
+    const control = await screen.findByLabelText<HTMLSelectElement>('CPU utilisation collection');
     expect(control.value).toBe('inherit');
     const card = monitoringCard();
     expect(within(card).getByText(/from the global default/i)).toBeInTheDocument();
@@ -166,7 +166,7 @@ describe('three states, not two', () => {
   it('sends enabled false for off, which is not the same as inheriting', async () => {
     await renderHost();
 
-    const control = await screen.findByLabelText('CPU collection');
+    const control = await screen.findByLabelText('CPU utilisation collection');
     await userEvent.selectOptions(control, 'off');
 
     await waitFor(() => {
@@ -189,7 +189,7 @@ describe('three states, not two', () => {
     backend.state.hostOverrides = { 'host-1': { cpu: { enabled: false, schedule: null } } };
     await renderHost();
 
-    const control = await screen.findByLabelText('CPU collection');
+    const control = await screen.findByLabelText('CPU utilisation collection');
     await waitFor(() => {
       expect((control as HTMLSelectElement).value).toBe('off');
     });
@@ -214,7 +214,7 @@ describe('three states, not two', () => {
     };
     await renderHost();
 
-    const control = await screen.findByLabelText('CPU collection');
+    const control = await screen.findByLabelText('CPU utilisation collection');
     await userEvent.selectOptions(control, 'off');
 
     await waitFor(() => {
@@ -346,7 +346,7 @@ describe('every control saves, and a refusal is shown', () => {
   it('reflects the new state after a save', async () => {
     await renderHost();
 
-    const control = await screen.findByLabelText('CPU collection');
+    const control = await screen.findByLabelText('CPU utilisation collection');
     await userEvent.selectOptions(control, 'on');
 
     const card = monitoringCard();
@@ -364,7 +364,7 @@ describe('every control saves, and a refusal is shown', () => {
       message: 'CPU cannot run more often than every 1 s.',
     };
 
-    const control = await screen.findByLabelText('CPU collection');
+    const control = await screen.findByLabelText('CPU utilisation collection');
     await userEvent.selectOptions(control, 'on');
 
     expect(
@@ -407,7 +407,7 @@ describe('who may change it', () => {
     await waitFor(() => {
       expect(within(monitoringCard()).getAllByText('Off').length).toBeGreaterThan(0);
     });
-    expect(screen.queryByLabelText('CPU collection')).toBeNull();
+    expect(screen.queryByLabelText('CPU utilisation collection')).toBeNull();
     expect(screen.getByText(/Only an administrator can change/i)).toBeInTheDocument();
   });
 

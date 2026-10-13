@@ -68,7 +68,7 @@ describe('the resting state of a fresh installation', () => {
   it('says what "not configured" means for collection', async () => {
     await renderSettings();
 
-    const cpu = row('CPU');
+    const cpu = row('CPU utilisation');
     expect(
       within(cpu).getByText(/nothing has been decided, so hosts collect nothing/i),
     ).toBeInTheDocument();
@@ -110,15 +110,15 @@ describe('each module reports the rules a save is judged by', () => {
 
     // CPU's floor is 1 s, load's is 5 s, uptime's is 60 s. An interface that
     // showed one number would offer an interval the server refuses.
-    expect(within(row('CPU')).getByText(/no faster than every 1 s/i)).toBeInTheDocument();
+    expect(within(row('CPU utilisation')).getByText(/no faster than every 1 s/i)).toBeInTheDocument();
     expect(within(row('Load average')).getByText(/no faster than every 5 s/i)).toBeInTheDocument();
-    expect(within(row('Uptime')).getByText(/no faster than every 1 min/i)).toBeInTheDocument();
+    expect(within(row('System uptime')).getByText(/no faster than every 1 min/i)).toBeInTheDocument();
   });
 
   it('shows the default that applies when nothing is stored', async () => {
     await renderSettings();
 
-    const cpu = row('CPU');
+    const cpu = row('CPU utilisation');
     expect(
       within(cpu).getByText(/Nothing stored, so the module's own default of 10 s applies/i),
     ).toBeInTheDocument();
@@ -127,8 +127,12 @@ describe('each module reports the rules a save is judged by', () => {
   it('counts the metrics each module produces', async () => {
     await renderSettings();
 
-    expect(within(row('Memory')).getByText(/2 metrics/i)).toBeInTheDocument();
-    expect(within(row('CPU')).getByText(/1 metric ·/i)).toBeInTheDocument();
+    // Four and three, from contracts/monitoring-modules.json. Load has one,
+    // which is the case that would read as "1 metrics" if the plural were not
+    // handled.
+    expect(within(row('Memory')).getByText(/4 metrics/i)).toBeInTheDocument();
+    expect(within(row('CPU utilisation')).getByText(/3 metrics/i)).toBeInTheDocument();
+    expect(within(row('Load average')).getByText(/1 metric ·/i)).toBeInTheDocument();
   });
 });
 
@@ -142,7 +146,7 @@ describe('turning a module on', () => {
     // clear a stored interval every time somebody flipped the switch.
     await renderSettings();
 
-    await userEvent.selectOptions(screen.getByLabelText('CPU default'), 'on');
+    await userEvent.selectOptions(screen.getByLabelText('CPU utilisation default'), 'on');
 
     await waitFor(() => {
       expect(
@@ -161,16 +165,16 @@ describe('turning a module on', () => {
   it('reflects the new state', async () => {
     await renderSettings();
 
-    await userEvent.selectOptions(screen.getByLabelText('CPU default'), 'on');
+    await userEvent.selectOptions(screen.getByLabelText('CPU utilisation default'), 'on');
 
-    expect(await within(row('CPU')).findByText('On by default')).toBeInTheDocument();
+    expect(await within(row('CPU utilisation')).findByText('On by default')).toBeInTheDocument();
   });
 
   it('can return a module to not-configured, which is a third choice', async () => {
     backend.state.globalDefaults = { cpu: { enabled: true, schedule: null } };
     await renderSettings();
 
-    const control = screen.getByLabelText('CPU default');
+    const control = screen.getByLabelText('CPU utilisation default');
     await waitFor(() => {
       expect((control as HTMLSelectElement).value).toBe('on');
     });
@@ -193,9 +197,9 @@ describe('the interval', () => {
   it('sends a schedule document, not a bare number', async () => {
     await renderSettings();
 
-    const field = within(row('CPU')).getByLabelText('Interval (seconds)');
+    const field = within(row('CPU utilisation')).getByLabelText('Interval (seconds)');
     await userEvent.type(field, '30');
-    await userEvent.click(within(row('CPU')).getByRole('button', { name: /save interval/i }));
+    await userEvent.click(within(row('CPU utilisation')).getByRole('button', { name: /save interval/i }));
 
     await waitFor(() => {
       expect(
@@ -250,7 +254,7 @@ describe('the interval', () => {
     // policy question — and the message says what to do.
     await renderSettings();
 
-    const cpu = row('CPU');
+    const cpu = row('CPU utilisation');
     await userEvent.type(cpu.querySelector('input')!, '2.5');
     await userEvent.click(within(cpu).getByRole('button', { name: /save interval/i }));
 
@@ -266,10 +270,10 @@ describe('the interval', () => {
     };
     await renderSettings();
 
-    const cpu = row('CPU');
+    const cpu = row('CPU utilisation');
     expect(await within(cpu).findByText(/Stored: every 45 s/i)).toBeInTheDocument();
     await userEvent.click(
-      within(cpu).getByRole('button', { name: /clear the CPU interval/i }),
+      within(cpu).getByRole('button', { name: /clear the CPU utilisation interval/i }),
     );
 
     await waitFor(() => {
@@ -284,7 +288,7 @@ describe('the interval', () => {
     // §24: a control that cannot do anything should not look like it can.
     await renderSettings();
 
-    const save = within(row('CPU')).getByRole('button', { name: /save interval/i });
+    const save = within(row('CPU utilisation')).getByRole('button', { name: /save interval/i });
     expect(save).toBeDisabled();
   });
 });
@@ -300,7 +304,7 @@ describe('who may reach this page', () => {
     expect(
       await screen.findByText(/Monitoring defaults requires the Administrator role/i),
     ).toBeInTheDocument();
-    expect(screen.queryByLabelText('CPU default')).toBeNull();
+    expect(screen.queryByLabelText('CPU utilisation default')).toBeNull();
   });
 
   it('does not fetch the defaults for a role that cannot see them', async () => {
