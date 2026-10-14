@@ -54,7 +54,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from hcc.agents.protocol import PROTOCOL_VERSION
+from hcc.agents.protocol import PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS
 from hcc.models.user import UserRole
 
 if TYPE_CHECKING:
@@ -1096,15 +1096,30 @@ async def test_an_agent_cannot_claim_a_protocol_version_it_likes(
 ) -> None:
     """A version field an attacker controls is a way to select older handling.
 
-    There is one version, so anything else is refused rather than negotiated
-    down — the pattern that produces downgrade attacks in protocols that do
-    negotiate.
+    **Updated for protocol 2.** There used to be one version, so anything else
+    was refused outright. There are now two, because update management added
+    frames that an older agent's parser refuses — so the set is closed rather
+    than singular, and the property to assert changed shape with it.
+
+    Two things are asserted, and the second is the one that matters:
+
+    1. A version outside `SUPPORTED_PROTOCOL_VERSIONS` is refused rather than
+       negotiated down, which is the pattern that produces downgrade attacks
+       in protocols that do negotiate.
+    2. Claiming the *older supported* version grants nothing. That is the
+       question two versions raise: if version 1 handling were more permissive
+       in any respect, an agent could select it. It is not — version 1 means
+       the agent is never offered an update over the socket, which is strictly
+       less capability, and nothing else differs. A test is the right place to
+       hold that, because "the old version is not more permissive" is an
+       invariant somebody could break while adding version 3.
     """
     async with api_factory() as client:
         host_id, credential, token = await enrolled_agent(client, seed_user, sign_in)
         await enable(client, host_id, token)
 
-        for version in (0, 2, 99, -1):
+        for version in (0, 3, 99, -1):
+            assert version not in SUPPORTED_PROTOCOL_VERSIONS
             messages = await drive_socket(
                 client,
                 credential=credential,
@@ -1113,6 +1128,18 @@ async def test_an_agent_cannot_claim_a_protocol_version_it_likes(
             assert not any(frame.get("accepted") for frame in decoded(messages, "telemetry_ack")), (
                 version
             )
+
+        # And every supported version is accepted, with the same
+        # authorization. An agent claiming the older one is not refused — that
+        # would strand the installed fleet — and gains nothing by it.
+        for version in SUPPORTED_PROTOCOL_VERSIONS:
+            messages = await drive_socket(
+                client,
+                credential=credential,
+                frames=[telemetry_frame(1, v=version)],
+            )
+            accepted = [frame.get("accepted") for frame in decoded(messages, "telemetry_ack")]
+            assert accepted and all(count == 1 for count in accepted), (version, accepted)
 
 
 async def test_an_oversized_frame_cannot_exhaust_memory(
