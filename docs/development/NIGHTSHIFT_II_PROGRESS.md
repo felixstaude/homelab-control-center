@@ -169,7 +169,7 @@ wants (install it / develop on it / connect a host), `docs/DEPLOYMENT.md`,
 `docs/RELEASING.md`, and the agent README's third copy of the systemd unit
 removed — see defect 14.
 
-### Phase I — performance — complete (`a41d26e`)
+### Phase I — performance — complete (`243f103`)
 
 Unblocked once CI went fully green at `8a8b6aa`, which is the precondition the
 brief sets. Measured first, in the one place this run created and nobody had
