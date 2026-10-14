@@ -75,13 +75,22 @@ class TestParsing:
         assert release is not None
         assert release["linux/amd64"].sha256 == DIGEST
 
-    def test_recommended_release_is_none_when_the_version_is_absent(self) -> None:
-        manifest = parse_release_manifest(encode(recommended="9.9.9"))
-
-        # Not an error at parse time: a manifest may legitimately carry old
-        # versions, and "recommended names something not listed" is caught by
-        # the endpoint, which has somewhere useful to report it.
-        assert manifest.recommended_release() is None
+    def test_a_recommended_version_with_no_release_entry_is_refused(self) -> None:
+        # **Changed in the Evergreen milestone.** This used to be tolerated at
+        # parse time, on the reasoning that the endpoint had somewhere useful
+        # to report it. It does — but it reports a `ManifestError` as
+        # "unavailable" with the error's own text, so refusing here loses no
+        # reporting location and gains a far more precise message: "recommended
+        # is '9.9.9', which has no release entry" rather than "the recommended
+        # version lists no platform this build knows about".
+        #
+        # It also matters more than it did. A dangling reference used to cost
+        # one unavailable install command; now the update planner reads the
+        # same manifest, and a `recommended` pointing at nothing would become
+        # "an update is available" followed by a download that 404s. Refusing
+        # once here is cheaper than handling it at every consumer.
+        with pytest.raises(ManifestError, match="no release entry"):
+            parse_release_manifest(encode(recommended="9.9.9"))
 
 
 class TestRefusals:

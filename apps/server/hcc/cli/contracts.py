@@ -30,11 +30,13 @@ with the controller.
 
 from __future__ import annotations
 
+import base64
+import itertools
 import json
 import sys
 import zoneinfo
 from datetime import datetime
-from typing import Any
+from typing import Any, Final
 
 from hcc.monitoring import modules as registry
 from hcc.monitoring.document import DOCUMENT_VERSION
@@ -44,6 +46,8 @@ from hcc.monitoring.schedule import (
     CalendarSchedule,
     next_run,
 )
+from hcc.updates import signing
+from hcc.updates import version as semver
 
 UTC = zoneinfo.ZoneInfo("UTC")
 
@@ -157,7 +161,12 @@ _CALENDAR_CASES: list[dict[str, Any]] = [
 
 def build() -> dict[str, Any]:
     """The whole contract document."""
-    return {"modules": _modules(), "calendar": _calendar()}
+    return {
+        "modules": _modules(),
+        "calendar": _calendar(),
+        "version_ordering": _version_ordering(),
+        "release_signing": _release_signing(),
+    }
 
 
 def _modules() -> dict[str, Any]:
@@ -219,6 +228,261 @@ def _calendar() -> dict[str, Any]:
             }
         )
     return {"cases": cases}
+
+
+#: Versions whose ordering the agent must agree about.
+#:
+#: Chosen for the mistakes they catch rather than for coverage. The first group
+#: is the lexicographic trap: any implementation comparing strings gets these
+#: backwards, and does so only from the tenth release onwards. The second is
+#: pre-release precedence, taken from semver 2.0.0 §11 — getting it inverted
+#: means a host on the stable channel is offered a beta. The third is build
+#: metadata, which must not affect precedence at all, or two builds of one
+#: release look like an upgrade from each other.
+_VERSION_SAMPLES: Final = (
+    # The lexicographic trap.
+    "0.1.0",
+    "0.2.0",
+    "0.9.0",
+    "0.10.0",
+    "0.11.0",
+    "1.0.0",
+    "1.99.0",
+    "1.100.0",
+    "99.0.0",
+    "100.0.0",
+    "0.1.9",
+    "0.1.10",
+    # Pre-release precedence, the specification's own example.
+    "1.0.0-alpha",
+    "1.0.0-alpha.1",
+    "1.0.0-alpha.beta",
+    "1.0.0-beta",
+    "1.0.0-beta.2",
+    "1.0.0-beta.11",
+    "1.0.0-rc.1",
+    # A numeric identifier sorts below an alphanumeric one.
+    "1.0.0-1",
+    "1.0.0-1.alpha",
+    # Build metadata: equal precedence to the version without it.
+    "0.1.0+abc123",
+    "0.1.0+def456",
+    "1.0.0-rc.1+build.9",
+)
+
+#: Strings the agent must refuse rather than coerce.
+#:
+#: A parser that accepts "1.2" has to invent a third component, and one that
+#: strips a leading "v" has to decide what "version" means. Both are decisions
+#: for the build that produced the string.
+_VERSION_REJECTIONS: Final = (
+    "v1.2.3",
+    "1.2",
+    "1.2.3.4",
+    "latest",
+    "",
+    "1.2.3-",
+    "1.2.3+",
+    "01.0.0",
+    "1.02.0",
+    "1.0.00",
+    "1.0.0-alpha..1",
+    "1.0.0-01",
+    "1.0.0_alpha",
+    "1.0.0 extra",
+)
+
+
+def _version_ordering() -> dict[str, Any]:
+    """Every pairwise comparison, plus the rejections and the step kinds.
+
+    Pairwise rather than a sorted list: a sorted list only proves the total
+    order, while every pair also pins reflexivity and the equal-precedence
+    cases that a sort would hide by picking an arbitrary stable order.
+    """
+    parsed = {raw: semver.parse(raw) for raw in _VERSION_SAMPLES}
+    comparisons = [
+        {
+            "left": left,
+            "right": right,
+            # -1, 0, +1 rather than a boolean, so the equal-precedence cases
+            # are asserted as equal rather than as "not less than".
+            "compare": (parsed[left] > parsed[right]) - (parsed[left] < parsed[right]),
+        }
+        for left, right in itertools.product(_VERSION_SAMPLES, repeat=2)
+    ]
+    steps = [
+        {
+            "installed": installed,
+            "target": target,
+            "step": semver.step_kind(parsed[installed], parsed[target]),
+        }
+        for installed, target in itertools.product(_VERSION_SAMPLES, repeat=2)
+    ]
+    return {
+        "max_length": semver.MAX_VERSION_LENGTH,
+        "versions": [
+            {
+                "raw": raw,
+                "major": parsed[raw].major,
+                "minor": parsed[raw].minor,
+                "patch": parsed[raw].patch,
+                "prerelease": list(parsed[raw].prerelease),
+                "build": parsed[raw].build,
+                "is_prerelease": parsed[raw].is_prerelease,
+            }
+            for raw in _VERSION_SAMPLES
+        ],
+        "comparisons": comparisons,
+        "rejections": list(_VERSION_REJECTIONS),
+        "steps": steps,
+    }
+
+
+#: The seed for the contract's test signing key.
+#:
+#: An Ed25519 private key *is* 32 bytes of seed, so a fixed one gives a fixed
+#: key, and Ed25519 signatures are deterministic (RFC 8032 §5.1.6) — which is
+#: what makes this contract file stable. A random key would produce a new
+#: signature on every regeneration, and `contracts.sh --check` would fail on
+#: every run.
+#:
+#: Spelled out in ASCII so that anybody who finds it knows immediately what it
+#: is. It signs nothing real: the contract carries only the *public* key, the
+#: payload and the signature, so no private key is committed and this value is
+#: the only thing that could reconstruct one.
+_SIGNING_CONTRACT_SEED: Final = b"hcc-contract-test-key-do-not-use"
+
+#: Payloads whose signatures the agent must agree about.
+#:
+#: Each is signed with the contract key. The agent replays them and must reach
+#: the same verdict — which is what proves the Go verifier accepts what the
+#: Python signer produces, rather than both being self-consistently wrong.
+_SIGNING_PAYLOADS: Final = (
+    b"",
+    b"{}",
+    b'{"schema_version": 2, "recommended": "0.1.0"}',
+    # Non-ASCII and awkward whitespace, because the signature is over exact
+    # bytes and any normalisation on either side would show up here.
+    '{"notes": "caf\u00e9 \u2014 r\u00e9sum\u00e9"}'.encode(),
+    b'{\n  "indented": true\n}\n',
+)
+
+
+def _release_signing() -> dict[str, Any]:
+    """Signature test vectors, plus the documents a verifier must refuse.
+
+    Deliberately does not call ``signing.generate_keypair``: that makes a
+    random key, which is right for production and wrong here. A random key
+    would give a different signature on every run, so the committed contract
+    would never match itself and ``contracts.sh --check`` would fail always.
+    """
+    private = _SIGNING_CONTRACT_SEED
+    public = _contract_public_key()
+
+    vectors: list[dict[str, str]] = []
+    for payload in _SIGNING_PAYLOADS:
+        document = signing.sign_manifest(payload, private)
+        vectors.append(
+            {
+                "payload_base64": base64.b64encode(payload).decode("ascii"),
+                "signature_document": json.dumps(document, sort_keys=True),
+                "expected_status": signing.SignatureStatus.VALID.value,
+            }
+        )
+
+    # A valid signature over a *different* payload, which must be INVALID
+    # rather than merely "not valid" — the distinction between tampering and a
+    # missing key is the one an operator acts on.
+    mismatched = signing.sign_manifest(b"a different document", private)
+    vectors.append(
+        {
+            "payload_base64": base64.b64encode(_SIGNING_PAYLOADS[2]).decode("ascii"),
+            "signature_document": json.dumps(mismatched, sort_keys=True),
+            "expected_status": signing.SignatureStatus.INVALID.value,
+        }
+    )
+
+    # Signed by a key the store does not hold.
+    stranger_seed = b"hcc-contract-stranger-key-nottru"
+    stranger = signing.sign_manifest(_SIGNING_PAYLOADS[2], stranger_seed)
+    vectors.append(
+        {
+            "payload_base64": base64.b64encode(_SIGNING_PAYLOADS[2]).decode("ascii"),
+            "signature_document": json.dumps(stranger, sort_keys=True),
+            "expected_status": signing.SignatureStatus.UNTRUSTED_KEY.value,
+        }
+    )
+
+    # A relabelled signature: the key_id is a selector, not a credential, so
+    # claiming a trusted identifier must not make a foreign signature verify.
+    relabelled = dict(stranger)
+    relabelled["key_id"] = signing.key_id(public)
+    vectors.append(
+        {
+            "payload_base64": base64.b64encode(_SIGNING_PAYLOADS[2]).decode("ascii"),
+            "signature_document": json.dumps(relabelled, sort_keys=True),
+            "expected_status": signing.SignatureStatus.INVALID.value,
+        }
+    )
+
+    # Another algorithm, refused rather than negotiated.
+    other_algorithm = dict(signing.sign_manifest(_SIGNING_PAYLOADS[2], private))
+    other_algorithm["algorithm"] = "md5-rsa-whatever"
+    vectors.append(
+        {
+            "payload_base64": base64.b64encode(_SIGNING_PAYLOADS[2]).decode("ascii"),
+            "signature_document": json.dumps(other_algorithm, sort_keys=True),
+            "expected_status": signing.SignatureStatus.UNSUPPORTED_ALGORITHM.value,
+        }
+    )
+
+    malformed: list[str] = [
+        "{not json",
+        "[]",
+        json.dumps({"key_id": "x", "signature": "AA=="}, sort_keys=True),
+        json.dumps({"algorithm": "ed25519", "signature": "AA=="}, sort_keys=True),
+        json.dumps({"algorithm": "ed25519", "key_id": "x"}, sort_keys=True),
+        json.dumps(
+            {"algorithm": "ed25519", "key_id": "x", "signature": "not base64!"},
+            sort_keys=True,
+        ),
+        json.dumps({"algorithm": "ed25519", "key_id": "x", "signature": "AA=="}, sort_keys=True),
+    ]
+    for malformed_document in malformed:
+        vectors.append(
+            {
+                "payload_base64": base64.b64encode(_SIGNING_PAYLOADS[2]).decode("ascii"),
+                "signature_document": malformed_document,
+                "expected_status": signing.SignatureStatus.MALFORMED.value,
+            }
+        )
+
+    return {
+        "algorithm": signing.ALGORITHM,
+        "key_id_length": signing.KEY_ID_LENGTH,
+        "max_signature_bytes": signing.MAX_SIGNATURE_BYTES,
+        "trusted_public_key_base64": signing.encode_public_key(public),
+        "trusted_key_id": signing.key_id(public),
+        "seed_note": (
+            "The private key for trusted_public_key_base64 is the ASCII bytes "
+            "of 'hcc-contract-test-key-do-not-use'. It is a test vector key and "
+            "signs nothing real."
+        ),
+        "vectors": vectors,
+    }
+
+
+def _contract_public_key() -> bytes:
+    """The public half of the deterministic contract key."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    return (
+        Ed25519PrivateKey.from_private_bytes(_SIGNING_CONTRACT_SEED)
+        .public_key()
+        .public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    )
 
 
 def main() -> None:

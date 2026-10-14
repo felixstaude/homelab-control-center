@@ -31,6 +31,8 @@ VENV="apps/server/.venv"
 OUTPUT_DIR="contracts"
 MODULES_FILE="$OUTPUT_DIR/monitoring-modules.json"
 CALENDAR_FILE="$OUTPUT_DIR/calendar-cases.json"
+VERSION_FILE="$OUTPUT_DIR/version-ordering.json"
+SIGNING_FILE="$OUTPUT_DIR/release-signing.json"
 
 green() { printf '\033[0;32m%s\033[0m\n' "$1"; }
 red() { printf '\033[0;31m%s\033[0m\n' "$1"; }
@@ -84,20 +86,25 @@ trap 'rm -rf "$WORK"' EXIT
 # noise on every run of an otherwise silent script.
 (cd apps/server && "$PYTHON" -m hcc.cli.contracts) >"$WORK/out.json"
 
-"$PYTHON" - "$WORK" "$MODULES_FILE" "$CALENDAR_FILE" <<'PY'
+"$PYTHON" - "$WORK" "$MODULES_FILE" "$CALENDAR_FILE" "$VERSION_FILE" "$SIGNING_FILE" <<'PY'
 import json
 import pathlib
 import sys
 
-work, modules_path, calendar_path = (pathlib.Path(arg) for arg in sys.argv[1:4])
+work, modules_path, calendar_path, version_path, signing_path = (
+    pathlib.Path(arg) for arg in sys.argv[1:6]
+)
 payload = json.loads((work / "out.json").read_text())
 
-# Two files rather than one, because they have different audiences: the module
-# registry is read by the Go agent *and* the browser client, while the calendar
-# cases are only read by the two next-run implementations.
+# Three files rather than one, because they have different audiences: the
+# module registry is read by the Go agent *and* the browser client, the
+# calendar cases by the two next-run implementations, and the version ordering
+# by the agent's own semver parser.
 for path, document in (
     (modules_path, payload["modules"]),
     (calendar_path, payload["calendar"]),
+    (version_path, payload["version_ordering"]),
+    (signing_path, payload["release_signing"]),
 ):
     # Sorted keys and a trailing newline, so the committed file is stable and
     # a regeneration that changes nothing produces no diff.
@@ -105,13 +112,13 @@ for path, document in (
 PY
 
 if [[ "$CHECK" -eq 1 ]]; then
-  if git diff --quiet -- "$MODULES_FILE" "$CALENDAR_FILE"; then
+  if git diff --quiet -- "$MODULES_FILE" "$CALENDAR_FILE" "$VERSION_FILE" "$SIGNING_FILE"; then
     green "✓ Contract files are up to date"
   else
     red "✗ Contract files are stale. Run ./scripts/contracts.sh and commit the result."
-    git --no-pager diff --stat -- "$MODULES_FILE" "$CALENDAR_FILE"
+    git --no-pager diff --stat -- "$MODULES_FILE" "$CALENDAR_FILE" "$VERSION_FILE" "$SIGNING_FILE"
     exit 1
   fi
 else
-  green "✓ Wrote $MODULES_FILE and $CALENDAR_FILE"
+  green "✓ Wrote $MODULES_FILE, $CALENDAR_FILE, $VERSION_FILE and $SIGNING_FILE"
 fi
