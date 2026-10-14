@@ -213,7 +213,20 @@ test.describe('host registration and the live agent', () => {
     // The agent's real self-report, not a placeholder: a version string and a
     // platform that match what the binary was built as.
     await expect(page.getByText('linux/amd64')).toBeVisible();
-    await expect(page.getByText('v1')).toBeVisible();
+
+    // The protocol version the agent negotiated has to be the one this
+    // controller says it speaks.
+    //
+    // Read from the API rather than written as a literal. This assertion was
+    // `getByText('v1')` and broke the moment the protocol went to 2 for
+    // update management — which is a version bump doing exactly what it
+    // should, caught by a test asserting a number that had gone stale.
+    // Deriving it keeps the real property: a *disagreement* between what the
+    // agent negotiated and what the controller speaks still fails here, and a
+    // future bump does not.
+    const releases = await apiFromPage(page, '/api/v1/agent-releases');
+    const spoken = (releases.body as { protocol_version: number }).protocol_version;
+    await expect(page.getByText(`v${String(spoken)}`)).toBeVisible();
 
     // And a real heartbeat timestamp in the row, rather than "Never".
     await page.goto('/hosts');
