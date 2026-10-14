@@ -218,6 +218,10 @@ test('every administrative endpoint answers 403 to the operator', async ({ page 
   const refusals = [
     await apiFromPage(page, '/api/v1/users'),
     await apiFromPage(page, '/api/v1/audit/events'),
+    // The release manifest describes what to download and verify onto a host.
+    // Reading it is not a read of monitoring data, so it sits with the
+    // administrative endpoints rather than with the dashboard's.
+    await apiFromPage(page, '/api/v1/agent-releases'),
     await apiFromPage(page, '/api/v1/users', {
       method: 'POST',
       headers,
@@ -362,6 +366,8 @@ test('the viewer is refused every administrative surface', async ({ page }) => {
   expect(listing.status).toBe(403);
   const events = await apiFromPage(page, '/api/v1/audit/events');
   expect(events.status).toBe(403);
+  const releases = await apiFromPage(page, '/api/v1/agent-releases');
+  expect(releases.status).toBe(403);
 
   // And the viewer is not signed out by being refused.
   await expect(page.locator('#main-content')).toBeVisible();

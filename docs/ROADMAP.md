@@ -359,22 +359,35 @@ both worked examples.
 
 ---
 
-## Phase 10 — Operability ⬜
+## Phase 10 — Operability (in progress)
 
 **Goal:** make it pleasant to run for a long time.
 
-| # | Milestone | Exit criterion |
-| --- | --- | --- |
-| 10.1 | Settings UI | **Users and sessions landed in 1.7**, along with the nested Settings structure they sit in. What remains here: agents, retention, per-host capabilities and notification destinations — each arriving with the subsystem that owns it, since a settings screen for a subsystem that does not exist would be a form that saves nothing |
-| 10.2 | Credential rotation | Agent-initiated with a confirm step and an overlap window; stalled rotations surfaced |
-| 10.3 | Production container image | Multi-stage build; non-root; health check; published |
-| 10.4 | Deployment Compose file | `docker compose up` yields a working install |
-| 10.5 | Backup and restore | Documented, tested procedure for database and configuration |
-| 10.6 | Agent packaging | `.deb` and `.rpm` with a hardened systemd unit |
-| 10.7 | Agent self-update | Opt-in, signature-verified; never automatic by default |
-| 10.8 | Upgrade path | Documented, tested version-to-version upgrade |
-| 10.9 | Security headers | CSP, HSTS, `X-Frame-Options` on the production image |
-| 10.10 | Observability of itself | Control plane exposes its own metrics |
+**Brought forward out of sequence.** 10.3, 10.4 and 10.5 shipped before
+phases 4–9, because "there is no way to install this" was the largest gap
+between the product and anybody using it — larger than any missing module.
+The work, what was measured and the thirteen defects it found:
+[`development/NIGHTSHIFT_II_PROGRESS.md`](development/NIGHTSHIFT_II_PROGRESS.md).
+
+| # | Milestone | Exit criterion | Status |
+| --- | --- | --- | --- |
+| 10.1 | Settings UI | **Users and sessions landed in 1.7**, along with the nested Settings structure they sit in. What remains here: agents, retention, per-host capabilities and notification destinations — each arriving with the subsystem that owns it, since a settings screen for a subsystem that does not exist would be a form that saves nothing | 🟡 |
+| 10.2 | Credential rotation | Agent-initiated with a confirm step and an overlap window; stalled rotations surfaced | ⬜ |
+| 10.3 | Production container image | ✅ Multi-stage: Node builds the client and the final stage carries neither it nor a compiler. Runs as uid 10001 with a read-only root filesystem, `cap_drop: ALL` and `no-new-privileges`. `HEALTHCHECK` on `/readyz`, which reports the database. Migrations run before the port is bound ([ADR-057](ARCHITECTURE.md#adr-057-migrations-run-on-container-start-before-the-port-is-bound)) and the controller serves the client, so the deployment is one origin ([ADR-055](ARCHITECTURE.md#adr-055-the-controller-serves-the-web-client-one-origin-one-port)). **Not published**: no registry has it, and `compose.yaml` therefore names a tag that does not resolve. **Not multi-arch**: `linux/amd64` only | ✅ |
+| 10.4 | Deployment Compose file | ✅ `deploy/production/` — the stack, a build overlay, a Caddy TLS overlay and a `.env.example` with exactly one uncommented line. PostgreSQL publishes no port; the database password is generated into a file rather than chosen ([ADR-058](ARCHITECTURE.md#adr-058-the-deployment-generates-its-own-database-credential-into-a-file)). `scripts/deployment-e2e.sh` runs the real stack in CI on every change: 44 assertions from `up -d` through bootstrap, sign-in, the served client and two kinds of restart. **`compose.tls.yaml` is unverified** — Caddy's issuance needs a publicly resolvable name | ✅ |
+| 10.5 | Backup and restore | ✅ `scripts/backup.sh` writes a `pg_dump -Fc` and a manifest stating what the backup does and does not contain; `scripts/restore.sh` verifies the digest before dropping anything, refuses a populated target without `--force`, and has a dry run. Both exercised against the real stack in CI. The restore drops the public schema rather than using `pg_restore --clean`, which cannot drop a partitioned table's inherited constraints | ✅ |
+| 10.6 | Agent packaging | `.deb` and `.rpm`. **The hardened unit and the install lifecycle landed early** — `hcc-agent install/upgrade/uninstall/doctor`, with the binary as its own installer ([ADR-053](ARCHITECTURE.md#adr-053-the-agent-binary-is-its-own-installer-there-is-no-installation-script)) and the unit embedded in it ([ADR-054](ARCHITECTURE.md#adr-054-the-systemd-unit-has-exactly-one-copy-embedded-in-the-binary)), verified by an installation matrix on Debian 13, Ubuntu 24.04 and Fedora 42. What remains is distribution-native packaging, which needs a signing key and a repository | 🟡 |
+| 10.7 | Agent self-update | Opt-in, signature-verified; never automatic by default. **The manual half landed**: `hcc-agent upgrade --from … --sha256 …` verifies, stages, swaps, restarts and rolls back if the new binary does not reconnect. There is no flag that skips the digest. What remains is the *automatic* half, which is deliberately still absent | 🟡 |
+| 10.8 | Upgrade path | Documented, tested version-to-version upgrade. The **mechanism** is tested — migrations on start, a second start being a no-op, data surviving a restart of the application and of the whole stack — and there is only one version to upgrade from, so nothing version-to-version has been run | 🟡 |
+| 10.9 | Security headers | CSP, HSTS, `X-Frame-Options` on the production image. CSP, `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy` and `Permissions-Policy` are applied in production and reach the *static* responses too, asserted by `deployment-e2e.sh`. HSTS is **not** set: it belongs at the TLS terminator, and setting it from behind a proxy on a deployment that may be plain HTTP on a LAN would be a header this application cannot honour | 🟡 |
+| 10.10 | Observability of itself | Control plane exposes its own metrics | ⬜ |
+
+Also landed alongside, and not previously a roadmap milestone: a reproducible
+agent artifact pipeline with a schema-versioned manifest, an SBOM and a
+verifier whose nineteen refusals are themselves tested
+([`RELEASING.md`](RELEASING.md)), and the controller as the trust anchor for
+agent downloads
+([ADR-056](ARCHITECTURE.md#adr-056-the-controller-is-the-trust-anchor-for-agent-downloads)).
 
 ---
 

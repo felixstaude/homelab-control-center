@@ -1,0 +1,238 @@
+# Homelab Control Center — the deployment.
+#
+#   mkdir hcc && cd hcc
+#   # copy this file and .env.example here
+#   cp .env.example .env
+#   $EDITOR .env                 # one required field: the URL browsers will use
+#   docker compose up -d
+#   docker compose exec hcc hcc bootstrap-admin
+#
+# Six commands, one of which is an editor, and one required setting. Everything
+# else has a working default or is generated.
+#
+# ## This file expects an image that does not exist yet
+#
+# `image:` names a tag in a registry nothing has been pushed to. Until a
+# release is published, build it locally instead:
+#
+#   docker compose -f compose.yaml -f compose.build.yaml up -d --build
+#
+# That overlay replaces `image:` with `build:`, so the same stack runs from a
+# source checkout. The documentation says which of the two has been tested —
+# see docs/DEPLOYMENT.md.
+#
+# ## Topology
+#
+#            :443
+#              │
+#      ┌───────▼────────┐   TLS terminates here. compose.tls.yaml adds Caddy;
+#      │ reverse proxy  │   any proxy works, and an existing Traefik or nginx
+#      │   (optional)   │   is the other documented variant.
+#      └───────┬────────┘
+#              │ http, on an internal bridge network
+#      ┌───────▼────────┐        ┌──────────────┐
+#      │      hcc       │───────▶│   postgres   │
+#      │  (one worker)  │        │ named volume │
+#      └────────────────┘        └──────────────┘
+#
+# PostgreSQL publishes **no port to the host**. The controller publishes one
+# on loopback only, for an existing proxy to reach; with compose.tls.yaml it
+# publishes none and Caddy publishes 443.
+
+name: hcc
+
+services:
+  # --------------------------------------------------------------------------
+  # The database credential, generated once
+  # --------------------------------------------------------------------------
+  # A one-shot service that writes 32 random bytes to ./secrets/db_password
+  # **only if the file does not exist**, so it is safe on every `up`.
+  #
+  # Why generated rather than asked for: an operator told to invent a password
+  # will reuse one or pick `postgres`, and a documented default ends up baked
+  # into every copy of the documentation. Why a *file* rather than an
+  # environment variable: a container's environment shows up in
+  # `docker inspect`, which people paste into issue reports. A file does not.
+  #
+  # ## Why a bind-mounted directory and not a Compose `secrets:` entry
+  #
+  # Because a file secret's source has to exist before `up` resolves it, and a
+  # one-shot service inside that same `up` cannot arrange that. The first
+  # draft used `secrets: {db_password: {file: ./secrets/db_password}}` and
+  # every first `up` failed with `statfs …/db_password: no such file or
+  # directory` — the init service had not run yet, and could not have.
+  #
+  # A bind mount of the *directory* needs only the directory, which both
+  # runtimes create. The two consumers mount it read-only.
+  #
+  # ## Why mode 0644 and not 0600
+  #
+  # Three containers with three different uids read this file: the generator,
+  # PostgreSQL (uid 70 in the alpine image) and the control plane (uid 10001).
+  # A 0600 file owned by one of them is unreadable by the other two, so 0600
+  # would not be stricter — it would be broken.
+  #
+  # The protection is the *directory* on the host, which is inside the
+  # deployment directory the operator owns, and the mount being read-only in
+  # both consumers. This is the same guarantee Docker's own secret mounts give:
+  # files under /run/secrets are mode 0444.
+  #
+  # There is no application signing secret to manage. Sessions are server-side
+  # and the cookie carries an opaque random token of which only the SHA-256
+  # digest is stored (ADR-027, ADR-028), so nothing is signed, nothing needs a
+  # key, and there is no key to rotate or leak. That property is worth
+  # protecting.
+  hcc-init:
+    image: docker.io/library/alpine:3.21
+    # `no`: this is a one-shot, and a restart policy would make Compose keep
+    # rerunning a container whose whole job is to have finished.
+    restart: "no"
+    volumes:
+      - ./secrets:/secrets
+    command:
+      - sh
+      - -ceu
+      - |
+        if [ -s /secrets/db_password ]; then
+          echo "db_password already exists; leaving it alone"
+          exit 0
+        fi
+        umask 077
+        # 32 bytes of kernel entropy, base64**url** — '+' and '/' replaced and
+        # the padding dropped. That is not cosmetic: the entrypoint puts this
+        # into a postgresql:// URL, and a '/' in the userinfo would silently
+        # produce a URL pointing at the wrong host, with an error about DNS.
+        # The entrypoint refuses a password outside this alphabet rather than
+        # trusting that this line stayed correct.
+        head -c 32 /dev/urandom | base64 | tr -d '\n=' | tr '+/' '-_' \
+          > /secrets/db_password
+        # 0644, because three containers with three different uids read it.
+        # See the note above: 0600 here would not be stricter, it would be
+        # unreadable.
+        chmod 644 /secrets/db_password
+        echo "generated /secrets/db_password (32 random bytes, base64url)"
+
+  # --------------------------------------------------------------------------
+  # PostgreSQL
+  # --------------------------------------------------------------------------
+  postgres:
+    image: docker.io/library/postgres:17-alpine
+    restart: unless-stopped
+    depends_on:
+      hcc-init:
+        condition: service_completed_successfully
+    environment:
+      POSTGRES_USER: hcc
+      POSTGRES_DB: hcc
+      # The file, not the value. POSTGRES_PASSWORD_FILE is read by the
+      # official image's entrypoint and never appears in the environment.
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+      # Deterministic collation, so index behaviour does not depend on the
+      # host's locale.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      # Read-only: PostgreSQL reads the password and has no business changing
+      # it.
+      #
+      # `z` relabels the mount for SELinux with a *shared* label, because two
+      # containers read this one directory. Without it the deployment is
+      # broken on every SELinux-enforcing host — Fedora, RHEL, CentOS Stream,
+      # Rocky, Alma — with "Permission denied" on a file that is plainly
+      # mode 0644, which is a confusing enough failure to be worth the flag.
+      # Docker and Podman both accept it and both ignore it where SELinux is
+      # not enforcing, so it costs nothing elsewhere.
+      - ./secrets:/run/secrets:ro,z
+    # No `ports:`. Nothing outside this stack needs to reach the database, and
+    # a published PostgreSQL is the single most common way a self-hosted
+    # deployment ends up on Shodan.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hcc -d hcc"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # --------------------------------------------------------------------------
+  # The control plane, with the web client built in
+  # --------------------------------------------------------------------------
+  hcc:
+    image: ghcr.io/felixstaude/homelab-control-center:0.1.0
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      hcc-init:
+        condition: service_completed_successfully
+    environment:
+      # The database URL is assembled by the *application* from these parts
+      # and the password file. The password is therefore never in the
+      # container's configured environment, where `docker inspect` would show
+      # it — and `docker inspect` is what people paste into issue reports.
+      #
+      # By the application rather than by the entrypoint, because
+      # `docker compose exec hcc hcc bootstrap-admin` — the documented
+      # first-run step — does not run an entrypoint. See hcc/config.py.
+      #
+      # Set HCC_DATABASE_URL instead to point at an existing PostgreSQL; an
+      # explicit URL always wins and none of this runs.
+      HCC_DATABASE_PASSWORD_FILE: /run/secrets/db_password
+      HCC_DATABASE_HOST: postgres
+      HCC_DATABASE_PORT: "5432"
+      HCC_DATABASE_USER: hcc
+      HCC_DATABASE_NAME: hcc
+      HCC_ENVIRONMENT: production
+      HCC_LOG_FORMAT: json
+      # The one required setting, from .env.
+      HCC_PUBLIC_ORIGIN: ${HCC_PUBLIC_ORIGIN:?set HCC_PUBLIC_ORIGIN in .env — the URL browsers use}
+      # The Compose bridge network, not loopback: the proxy is a sibling
+      # container, so its address is on this network and trusting 127.0.0.1
+      # would trust nothing. See apps/server/.env.example.
+      HCC_TRUSTED_PROXIES: ${HCC_TRUSTED_PROXIES:-["172.16.0.0/12","192.168.0.0/16","10.0.0.0/8"]}
+      HCC_LOG_LEVEL: ${HCC_LOG_LEVEL:-INFO}
+      HCC_METRICS_RAW_RETENTION_DAYS: ${HCC_METRICS_RAW_RETENTION_DAYS:-7}
+      HCC_METRICS_5M_RETENTION_DAYS: ${HCC_METRICS_5M_RETENTION_DAYS:-90}
+      HCC_METRICS_1H_RETENTION_DAYS: ${HCC_METRICS_1H_RETENTION_DAYS:-730}
+      HCC_AUTO_MIGRATE: ${HCC_AUTO_MIGRATE:-true}
+    volumes:
+      # Read-only. The application reads the password and assembles a URL
+      # from it; nothing writes here.
+      #
+      # `z` for SELinux — see the note on the postgres service.
+      - ./secrets:/run/secrets:ro,z
+    ports:
+      # Loopback only. An existing reverse proxy on the host reaches this; the
+      # LAN does not. With compose.tls.yaml this is removed and Caddy
+      # publishes 443 instead.
+      - "127.0.0.1:${HCC_BIND_PORT:-8000}:8000"
+    # --- Hardening ---------------------------------------------------------
+    # The application writes nothing to the filesystem: every piece of state
+    # is in PostgreSQL, which is an architectural property rather than a
+    # convenience. So the root filesystem can be read-only, and a tmpfs is
+    # enough for the one directory Python may touch.
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # A monitoring controller that becomes the reason a server fell over has
+    # failed at its job. Argon2id is charged per concurrent hash — four
+    # simultaneous logins at the default parameters is a ~256 MiB peak
+    # (ADR-029) — so this has to be comfortably above that.
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+volumes:
+  # The only state in the stack. `pg_dump` of this is the backup; see
+  # scripts/backup.sh and docs/DEPLOYMENT.md.
+  postgres-data:
+    driver: local

@@ -766,3 +766,58 @@ export type MetricRangeParams = {
   /** Omit to let the range and point budget choose, which is usually right. */
   resolution?: MetricResolution | undefined;
 };
+
+/* ===========================================================================
+ * Agent releases (Nightshift II)
+ * ======================================================================== */
+
+/**
+ * How much a platform has actually been exercised.
+ *
+ * Not a severity and not a preference — a statement about evidence.
+ * `supported` means built, executed and covered by the installation matrix;
+ * `best-effort` means built and executed under emulation only, with no
+ * hardware behind the claim. The interface says which, because a Raspberry Pi
+ * owner is entitled to know that nobody has run this on one.
+ */
+export type ReleaseTier = 'supported' | 'best-effort';
+
+/** One architecture's download, with the digest that pins it. */
+export type PlatformArtifact = {
+  /** `linux/amd64`, `linux/arm64` or `linux/arm`. */
+  platform: string;
+  archive: string;
+  url: string;
+  /**
+   * The archive's SHA-256.
+   *
+   * Rendered into the install command the administrator copies, so that
+   * `sha256sum -c -` fails before the `tar` if the bytes are not the bytes the
+   * controller expects. It arrives inside this authenticated session, which is
+   * what makes it worth checking: an attacker who controls the download origin
+   * cannot make a substituted tarball match it.
+   */
+  sha256: string;
+  size_bytes: number;
+  tier: ReleaseTier;
+};
+
+/**
+ * `GET /api/v1/agent-releases`.
+ *
+ * `available: false` is a normal answer, not an error. No release of this
+ * project has been published, so every build so far reports it — and the
+ * interface then shows the build-from-source path rather than a download
+ * command whose URL would not resolve.
+ */
+export type AgentReleases = {
+  available: boolean;
+  /** Why there is nothing to download. Null when `available`. */
+  unavailable_reason: string | null;
+  recommended_version: string | null;
+  minimum_supported_version: string | null;
+  platforms: PlatformArtifact[];
+  protocol_version: number;
+  supported_protocol_versions: number[];
+  server_version: string;
+};

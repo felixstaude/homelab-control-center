@@ -76,6 +76,23 @@ CI runs more than `make check` does, and you can run those locally too:
 | Browser end to end | `make e2e` | `make db-up`, Playwright |
 | Real agent, real `/proc` | `make monitoring-e2e` | `make db-up`, Go |
 | Failure recovery | `make reliability-e2e` | `make db-up`, Go |
+| Release artifacts | `make check-artifacts` | Go |
+| Reproducible build | `make check-reproducible` | Go |
+| The agent's whole install lifecycle | `make install-matrix` | `make db-up`, Go, Docker **or** Podman |
+| The Compose deployment | `make deployment-e2e` | Docker Compose |
+
+The last four are the heavy ones and the ones that prove the installation
+actually works rather than merely compiles:
+
+* **`make install-matrix`** starts a privileged container with systemd as pid
+  1, installs the agent into it against a real controller behind real TLS,
+  enables a module and asserts a real sample reaches the database. Pass
+  `--image fedora:42` to the script for another distribution. It is
+  privileged, which is why it is not part of `make check`.
+* **`make deployment-e2e`** builds the controller image, brings the Compose
+  stack up, bootstraps an administrator, signs in, and restarts everything.
+  **Needs Docker Compose**: podman-compose 1.6.0 hangs on this stack's
+  `depends_on` conditions, so the script skips rather than hanging.
 
 If you cannot run one of these, say so in the pull request rather than
 guessing. CI will run them.

@@ -314,6 +314,26 @@ export type RecordedRequest = {
 };
 
 /** How the fake should behave. Every field is mutable mid-test. */
+/**
+ * A release the fake controller can vouch for.
+ *
+ * Deliberately not the full `AgentReleases` shape: a test setting this up
+ * cares about the version and the platforms, and the protocol fields are the
+ * same in every case. The handler fills in the rest, so a test cannot
+ * accidentally assert against a protocol version it invented.
+ */
+export type AgentReleasesFixture = {
+  recommended_version: string;
+  platforms: {
+    platform: string;
+    archive: string;
+    url: string;
+    sha256: string;
+    size_bytes: number;
+    tier: 'supported' | 'best-effort';
+  }[];
+};
+
 export type FakeBackendState = {
   /** `/setup/status`. */
   initialized: boolean;
@@ -369,6 +389,18 @@ export type FakeBackendState = {
    * elsewhere cannot pass by coincidence.
    */
   enrollmentCredential: string;
+
+  /* --- Agent releases (Nightshift II) --- */
+
+  /**
+   * What `GET /agent-releases` answers.
+   *
+   * `null` is the **default**, and it is the default because it is what every
+   * build of this project actually reports: no release has been published, so
+   * the interface shows the build-from-source path. A fake whose default was
+   * "a release is available" would make the honest case the one nobody tested.
+   */
+  agentReleases: AgentReleasesFixture | null;
 
   /* --- Phase 2: monitoring configuration --- */
 
@@ -512,6 +544,7 @@ export function installFakeBackend(initial: Partial<FakeBackendState> = {}): Fak
     metricResolution: 'raw',
     metricSampleCount: {},
     enrollmentCredential: 'TEST-ENROLMENT-CREDENTIAL-0000000000000000',
+    agentReleases: null,
     ...initial,
   };
 
@@ -768,6 +801,41 @@ export function installFakeBackend(initial: Partial<FakeBackendState> = {}): Fak
       state.session = null;
       clearCookies();
       return json({ status: 'logged_out' });
+    }
+
+    if (path.endsWith('/agent-releases') && method === 'GET') {
+      const refused = requireSession();
+      if (refused) return refused;
+      // Administrator-only on the server. The fake enforces it so a test
+      // cannot accidentally prove the dialog works for an Operator.
+      if (state.session && state.session.role !== 'admin') {
+        return envelope(403, 'forbidden', 'Administrator role required.');
+      }
+      const releases = state.agentReleases;
+      if (!releases) {
+        return json({
+          available: false,
+          unavailable_reason:
+            'No agent release has been published for this version of the control plane, ' +
+            'so there is no verified download to offer. Build the agent from source.',
+          recommended_version: null,
+          minimum_supported_version: null,
+          platforms: [],
+          protocol_version: 1,
+          supported_protocol_versions: [1],
+          server_version: '0.1.0',
+        });
+      }
+      return json({
+        available: true,
+        unavailable_reason: null,
+        recommended_version: releases.recommended_version,
+        minimum_supported_version: releases.recommended_version,
+        platforms: releases.platforms,
+        protocol_version: 1,
+        supported_protocol_versions: [1],
+        server_version: '0.1.0',
+      });
     }
 
     if (path.endsWith('/info') && method === 'GET') {

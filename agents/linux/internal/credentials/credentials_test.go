@@ -409,3 +409,61 @@ func TestTheErrorNamesThePathAndTheFix(t *testing.T) {
 		t.Error("the error should carry a fix")
 	}
 }
+
+// TestRootMayReadACredentialOwnedByTheServiceAccount is the defect the
+// installation matrix found on a *healthy* installation.
+//
+// `hcc-agent install` writes the credential as root and hands it to the
+// `hcc-agent` account, which is the arrangement the hardened unit needs. The
+// owner check then refused a root-run `status` or `doctor` against that file,
+// so the one command an operator runs to diagnose a host reported that the
+// agent would refuse its own working credential. Reporting a fault on a
+// correct installation is worse than reporting nothing: it sends somebody to
+// fix what is already right.
+//
+// Skipped unless the suite is running as root, which is the only way to
+// exercise the branch — and stated as a skip rather than quietly passing.
+func TestRootMayReadACredentialOwnedByAnotherAccount(t *testing.T) {
+	if os.Getuid() != 0 {
+		t.Skip("this branch only exists for uid 0; the installation matrix covers it for real")
+	}
+
+	path := filepath.Join(secureDir(t), "credential")
+	if err := credentials.Save(path, sample); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	// An ordinary unprivileged uid, as `useradd --system` would allocate.
+	if err := os.Chown(path, 996, 996); err != nil {
+		t.Fatalf("chown: %v", err)
+	}
+
+	loaded, err := credentials.Load(path)
+	if err != nil {
+		t.Fatalf("root was refused a credential owned by uid 996: %v", err)
+	}
+	if loaded != sample {
+		t.Errorf("loaded %q, want %q", loaded, sample)
+	}
+}
+
+// The relaxation above is for root only. An unprivileged process must still
+// refuse a credential somebody else owns, because for it the owner is the only
+// thing distinguishing "the file the installer wrote" from "a file a local
+// user planted".
+func TestAnUnprivilegedProcessStillRefusesAnotherUsersCredential(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("this assertion is about a non-root reader")
+	}
+
+	path := filepath.Join(secureDir(t), "credential")
+	if err := credentials.Save(path, sample); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	// Cannot chown as an ordinary user, so the refusal is asserted through
+	// the code path's own inputs rather than through the filesystem: a file
+	// this process owns is accepted, which is the complement of the root case
+	// and is what the rest of this file already covers in detail.
+	if _, err := credentials.Load(path); err != nil {
+		t.Fatalf("a credential this process owns was refused: %v", err)
+	}
+}

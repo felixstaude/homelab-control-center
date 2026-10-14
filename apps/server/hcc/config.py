@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import sys
 from functools import lru_cache
+from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal
 
 from pydantic import Field, PostgresDsn, ValidationError, field_validator, model_validator
@@ -19,6 +20,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from hcc.security.forwarded import TrustedNetworks, parse_trusted_networks
 from hcc.security.origins import normalize_configured_origin
 
+# `Path` above is a runtime import for two reasons: it annotates pydantic
+# fields on `Settings`, which pydantic resolves at runtime to build its
+# validators, and `_assemble_database_url_from_parts` calls it. The first is
+# the trap — a type that exists only for the type checker makes the model
+# unconstructable, with a confusing `NameError` at import rather than a type
+# error. Same constraint FastAPI imposes in hcc/api/deps.py.
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
@@ -37,6 +44,16 @@ def _parse_networks_cached(entries: tuple[str, ...]) -> TrustedNetworks:
     """
     return parse_trusted_networks(entries)
 
+
+#: Characters permitted in an assembled database password.
+#:
+#: base64url's alphabet. Anything outside it has a meaning inside a URL's
+#: userinfo — "/" and "@" in particular change which host is addressed — and
+#: the resulting failure is a connection error about DNS rather than about the
+#: password.
+_URL_SAFE_PASSWORD: Final = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+)
 
 Environment = Literal["development", "test", "production"]
 LogFormat = Literal["console", "json"]
@@ -68,6 +85,19 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = Field(default=8000, ge=1, le=65535)
     api_prefix: str = "/api"
+
+    # Where the built web client lives, if this deployment serves one.
+    #
+    # Set in the container image, which serves the API and the client from one
+    # origin — the arrangement the session cookies, the CSRF Origin check and
+    # the empty production CORS list are all written for. Unset in
+    # development, where Vite serves the client on :5173 and `cors_origins`
+    # names it.
+    #
+    # A path that is set and holds no built client makes startup fail, because
+    # the alternative is a container that reports itself ready and answers
+    # every page with a 404 — healthy, and useless. See hcc/web.py.
+    web_root: Path | None = None
 
     # Browser origins permitted to call the API. Empty by default: the
     # production deployment serves the web client from the same origin and
@@ -104,7 +134,40 @@ class Settings(BaseSettings):
     # No default. A missing database URL is a configuration error, not
     # something to paper over with a localhost guess that fails confusingly
     # later.
+    #
+    # It may be *assembled* rather than given — see
+    # :meth:`_assemble_database_url_from_parts` below and the five fields
+    # under it. Either way this field is required after validation.
     database_url: PostgresDsn
+
+    # The parts a database URL is assembled from when one is not given
+    # directly.
+    #
+    # ## Why the password comes from a file
+    #
+    # A container's environment appears in `docker inspect`, and
+    # `docker inspect` is what people paste into issue reports. A file does
+    # not. The Compose deployment generates the password into one on first
+    # start and passes the *path*.
+    #
+    # ## Why this is in the application and not the entrypoint
+    #
+    # It was in the entrypoint, which assembled the URL and exported it before
+    # exec-ing the server. That worked for the server and broke the documented
+    # first-run command: `docker compose exec hcc hcc bootstrap-admin` does
+    # not go through the entrypoint, so it saw no URL and failed with
+    # "HCC_DATABASE_URL: Field required" on a perfectly good deployment
+    # (ADR-033 makes that command the only way to create the first
+    # administrator, so this was the one step that had to work).
+    #
+    # Here, every process in the container gets it: the server, `hcc`
+    # anything, and alembic — which resolves its URL through these settings
+    # too.
+    database_password_file: Path | None = None
+    database_host: str | None = None
+    database_port: int = Field(default=5432, ge=1, le=65535)
+    database_user: str = "hcc"
+    database_name: str = "hcc"
     database_pool_size: int = Field(default=5, ge=1, le=100)
     database_max_overflow: int = Field(default=10, ge=0, le=100)
     database_echo: bool = False
@@ -239,6 +302,23 @@ class Settings(BaseSettings):
         le=86400,
         description="Lifetime of a one-time agent enrollment credential.",
     )
+    # Where the agent release manifest lives, if this build has one.
+    #
+    # The interface renders an install command carrying the expected SHA-256 of
+    # the archive it tells somebody to download, and that digest has to come
+    # from here rather than from the download origin — the administrator is
+    # already authenticated to this controller over TLS, so it is the thing
+    # that can vouch for the bytes (see hcc/agents/releases.py).
+    #
+    # None means "no release has been published for this build", which is the
+    # honest default for a source checkout and for every image built so far.
+    # The endpoint then says so and the interface shows the build-from-source
+    # path, rather than a command pointing at a URL that would not resolve.
+    #
+    # A path that is set and unusable is a deployment fault and is reported as
+    # one, which is why absence and breakage are different states here.
+    agent_release_manifest: Path | None = None
+
     # How long a recorded connection may go without a heartbeat before the
     # interface reports it as stale rather than connected. Three heartbeat
     # intervals, so one dropped heartbeat does not flap the status while a
@@ -324,6 +404,65 @@ class Settings(BaseSettings):
     # --- Logging ----------------------------------------------------------
     log_level: LogLevel = "INFO"
     log_format: LogFormat = "console"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _assemble_database_url_from_parts(cls, values: object) -> object:
+        """Build ``database_url`` from a password file when one is not given.
+
+        ``mode="before"``, so the assembled string goes through
+        ``PostgresDsn``'s own validation exactly as a supplied one does — and
+        so ``database_url`` stays a required field rather than becoming an
+        optional one with a reconstruction step after it.
+
+        An explicit ``database_url`` always wins: an operator pointing at an
+        existing PostgreSQL gives the whole URL and none of this runs.
+        """
+        if not isinstance(values, dict):
+            return values
+        if values.get("database_url"):
+            return values
+
+        password_file = values.get("database_password_file")
+        if not password_file:
+            # Left alone: ``database_url`` is required, so validation produces
+            # its own error. The message is sharpened in
+            # :func:`load_settings_or_exit`, which knows about both forms.
+            return values
+
+        path = Path(str(password_file))
+        try:
+            password = path.read_text(encoding="utf-8").strip()
+        except OSError as error:
+            raise ValueError(
+                f"database_password_file is {path} and cannot be read: {error}"
+            ) from error
+        if not password:
+            raise ValueError(f"database_password_file is {path} and is empty")
+
+        # The password goes into a URL's userinfo, where "/" and "@" change
+        # which host is being addressed. The Compose stack generates a
+        # base64url password for exactly this reason; checked here rather than
+        # trusted, because the failure otherwise is a connection error about
+        # DNS on a correctly configured deployment.
+        if any(character not in _URL_SAFE_PASSWORD for character in password):
+            raise ValueError(
+                f"the password in {path} contains characters that are not safe in a "
+                "URL. Regenerate it from [A-Za-z0-9_-], or set HCC_DATABASE_URL "
+                "yourself with the password percent-encoded."
+            )
+
+        host = values.get("database_host")
+        if not host:
+            raise ValueError(
+                "database_password_file is set and database_host is not; the URL "
+                "cannot be assembled without knowing which host to connect to"
+            )
+        port = values.get("database_port", 5432)
+        user = values.get("database_user", "hcc")
+        name = values.get("database_name", "hcc")
+        values["database_url"] = f"postgresql://{user}:{password}@{host}:{port}/{name}"
+        return values
 
     @field_validator("api_prefix")
     @classmethod
@@ -510,11 +649,34 @@ class Settings(BaseSettings):
 
 #: ``HCC_``-prefixed variables that are deliberately not settings.
 #:
-#: Only one: the integration-test harness reads ``HCC_TEST_DATABASE_URL`` to
-#: decide whether to run database-backed tests. It shares the prefix for
-#: discoverability, so it has to be exempted by name rather than by pattern —
-#: a pattern would reopen the hole this check exists to close.
-KNOWN_NON_SETTING_VARIABLES: Final = frozenset({"HCC_TEST_DATABASE_URL"})
+#: Each is read by something *other* than this model and shares the prefix for
+#: discoverability, so each has to be exempted by name. Deliberately not a
+#: pattern: a pattern would reopen the hole the unknown-variable check exists
+#: to close, which is a typo'd setting being silently ignored.
+#:
+#: Adding a variable to the container entrypoint without adding it here makes
+#: the application **refuse to start** — which is the check working, and is
+#: also why ``tests/test_deployment.py`` asserts that the entrypoint and the
+#: Compose file name nothing this set and the model do not between them cover.
+KNOWN_NON_SETTING_VARIABLES: Final = frozenset(
+    {
+        # The integration-test harness reads this to decide whether to run
+        # database-backed tests.
+        "HCC_TEST_DATABASE_URL",
+        # Read by deploy/docker-entrypoint.sh, which runs before the
+        # application and is not configured by it.
+        #
+        # Whether to run `alembic upgrade head` before binding a port. False
+        # is for an operator who would rather run the migration themselves and
+        # watch it.
+        #
+        # The only one. The database parts used to be here too, assembled into
+        # a URL by the entrypoint — until `docker compose exec hcc hcc
+        # bootstrap-admin` turned out not to go through the entrypoint and so
+        # saw no URL at all. They are real settings now.
+        "HCC_AUTO_MIGRATE",
+    }
+)
 
 
 def unknown_environment_variables(environ: Mapping[str, str] | None = None) -> list[str]:
@@ -578,9 +740,28 @@ def load_settings_or_exit() -> Settings:
         return get_settings()
     except ValidationError as exc:
         print("Invalid configuration — refusing to start:\n", file=sys.stderr)
+        missing_database_url = False
         for error in exc.errors():
             location = ".".join(str(part) for part in error["loc"])
-            variable = f"HCC_{location.upper()}"
-            print(f"  {variable}: {error['msg']}", file=sys.stderr)
+            if location:
+                print(f"  HCC_{location.upper()}: {error['msg']}", file=sys.stderr)
+            else:
+                # A model-level validator failed, so there is no field to
+                # name. Printing "HCC_:" for it — which this did — invents a
+                # variable the operator will then go looking for.
+                print(f"  {error['msg']}", file=sys.stderr)
+            if location == "database_url" and error["type"] == "missing":
+                missing_database_url = True
+        if missing_database_url:
+            # "Field required" is true and unhelpful: there are two ways to
+            # supply it and the deployment uses the second one.
+            print(
+                "\nThe database can be named either way:\n"
+                "  HCC_DATABASE_URL=postgresql://user:password@host:5432/hcc\n"
+                "or, to keep the password out of the environment:\n"
+                "  HCC_DATABASE_PASSWORD_FILE=/run/secrets/db_password\n"
+                "  HCC_DATABASE_HOST=postgres",
+                file=sys.stderr,
+            )
         print("\nSee apps/server/.env.example for the expected values.", file=sys.stderr)
         raise SystemExit(2) from exc

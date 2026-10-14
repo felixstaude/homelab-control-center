@@ -45,6 +45,7 @@ from hcc import __version__
 from hcc.api.deps import SettingsDep, get_current_session, require_min_role
 from hcc.api.v1 import (
     account,
+    agent_releases,
     agents,
     audit,
     auth,
@@ -150,6 +151,11 @@ _protected.include_router(monitoring.read_router)
 # fabricate history. See hcc/api/v1/metrics.py.
 _protected.include_router(metrics.read_router)
 
+# Administrator-only, and deliberately not under /api/v1/agents: everything in
+# that prefix authenticates a per-host agent credential and refuses a browser
+# session, and one session-gated exception there would make the module's own
+# invariant false. See hcc/api/v1/agent_releases.py.
+_admin.include_router(agent_releases.router)
 _admin.include_router(users.router)
 _admin.include_router(audit.router)
 _admin.include_router(hosts.router)

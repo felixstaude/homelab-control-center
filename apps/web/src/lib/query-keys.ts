@@ -113,6 +113,18 @@ export const queryKeys = {
     hostMonitoring: (hostId: string) =>
       ['session', 'monitoring', 'host', hostId] as const,
 
+    /* --- Agent releases (Nightshift II) --- */
+
+    /**
+     * What the controller can vouch for, for the install command.
+     *
+     * Session-scoped because the endpoint is Administrator-only, and
+     * long-lived because the answer changes only when the controller is
+     * upgraded — so the enrolment dialog does not refetch it every time it
+     * opens.
+     */
+    agentReleases: () => ['session', 'agent-releases'] as const,
+
     /* --- Metrics (phase 3) --- */
 
     /**

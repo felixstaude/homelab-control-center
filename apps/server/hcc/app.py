@@ -19,6 +19,7 @@ from hcc.agents.registry import ConnectionRegistry
 from hcc.api import health
 from hcc.api.v1 import router as v1_router
 from hcc.api.v1.router import PUBLIC_V1_PATHS
+from hcc.compression import ScopedGZipMiddleware
 from hcc.config import Settings, get_settings
 from hcc.db import Database
 from hcc.errors import ErrorResponse, register_exception_handlers
@@ -39,6 +40,7 @@ from hcc.services.metrics import MetricsService
 from hcc.services.monitoring import MonitoringConfigService
 from hcc.services.retention import RetentionService, policy_from_settings
 from hcc.services.users import UserService
+from hcc.web import mount_web_client
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -415,10 +417,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             expose_headers=["X-Request-ID", "Retry-After"],
             max_age=600,
         )
+    # Outermost, so it compresses the final body — after the security headers
+    # are on it and after an exception handler has produced one. It compresses
+    # an explicit allow-list of paths and nothing else, which is a security
+    # boundary rather than a tuning choice: see hcc/compression.py.
+    app.add_middleware(ScopedGZipMiddleware)
 
     # Operational probes stay unversioned at the root.
     app.include_router(health.router)
     # Product API is versioned.
     app.include_router(v1_router, prefix=f"{settings.api_prefix}/v1")
+
+    # The web client, last, because its fallback matches every path.
+    #
+    # Unset in development, where Vite serves the client on its own port with
+    # a CORS exception. Set in the container image, which is the deployment
+    # the security model is actually written for: one origin, so session
+    # cookies are SameSite=Lax, the CSRF Origin check has something to compare
+    # against, and CORS needs no entries at all. See hcc/web.py.
+    if settings.web_root is not None:
+        mount_web_client(app, settings.web_root, api_prefix=settings.api_prefix)
 
     return app

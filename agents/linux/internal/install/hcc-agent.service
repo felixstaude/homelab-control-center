@@ -1,7 +1,11 @@
 ; systemd unit for the Homelab Control Center Linux agent.
 ;
-; Install to /etc/systemd/system/hcc-agent.service. See
-; agents/linux/deploy/README.md for the whole procedure.
+; THIS FILE IS THE INSTALLED UNIT. It is embedded into the agent binary and
+; written verbatim to /etc/systemd/system/hcc-agent.service by
+; `hcc-agent install`. There is deliberately no second copy to drift from it:
+; `hcc-agent install --dry-run` prints exactly these bytes, which is how an
+; operator reviews what is about to be installed, and
+; agents/linux/deploy/README.md documents the manual path by pointing here.
 ;
 ; Every hardening directive below is here because the agent is a long-lived
 ; process on somebody else's server, and a monitoring agent is a tempting
@@ -93,8 +97,25 @@ ProtectKernelModules=yes
 ProtectKernelLogs=yes
 ProtectControlGroups=yes
 ProtectClock=yes
+; Other processes' /proc directories are hidden. The agent reads its own and
+; the kernel's global files, never another process's.
 ProtectProc=invisible
-ProcSubset=pid
+; ProcSubset=pid is deliberately ABSENT, and this is the one directive whose
+; omission is load-bearing.
+;
+; It mounts /proc with subset=pid, which hides every non-process file in
+; /proc — including /proc/stat, /proc/meminfo, /proc/loadavg and /proc/uptime.
+; Those four files are the entire data source for the cpu, memory, swap, load
+; and uptime modules. With ProcSubset=pid the service starts, connects,
+; reports itself healthy, accepts a configuration, and then fails every
+; collection, which is the worst available failure mode: a monitoring agent
+; that looks fine and measures nothing.
+;
+; It was in this file until the installer took ownership of it. The unit had
+; never been started — only `systemd-analyze verify`-ed, which does not
+; execute anything — so nothing had ever caught it. The installation matrix
+; now starts the service and asserts a real sample arrives, which is the test
+; that would have.
 PrivateDevices=yes
 DevicePolicy=closed
 

@@ -1,0 +1,202 @@
+name: Release prepare
+
+# Build and validate release artifacts. **Publishes nothing.**
+#
+# The artifacts land in the workflow run, where they can be downloaded,
+# inspected and verified. Creating the GitHub Release, uploading the assets
+# and pushing a container image are separate, deliberate acts performed by a
+# maintainer against a run that has already gone green — see
+# docs/RELEASING.md. A workflow that published on every tag would mean a
+# mistyped tag is a release.
+#
+# Triggers:
+#   workflow_dispatch  a dry run against any branch, at any time
+#   push: tags v*      the real candidate build, named by the tag
+#
+# Deliberately **not** `pull_request`. A pull request from a fork must never
+# reach a workflow holding `id-token: write`; the per-PR confidence that the
+# build script still works comes from the `artifacts` job in ci.yml, which
+# runs with `contents: read` and nothing else.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: >-
+          Override the version in VERSION. For rehearsing a release build;
+          the tag path ignores this and uses the tag.
+        required: false
+        type: string
+      attest:
+        description: >-
+          Produce GitHub build-provenance attestations. Requires a tag, and
+          writes to this repository's attestation store.
+        required: false
+        default: false
+        type: boolean
+  push:
+    tags: ['v*']
+
+# Least privilege at the top; the one job that needs more asks for it.
+permissions:
+  contents: read
+
+# A second push to the same tag or branch supersedes the first — except for a
+# tag, where a half-finished candidate build being cancelled by a re-push is
+# more confusing than two runs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+env:
+  GO_VERSION: '1.24'
+  PYTHON_VERSION: '3.12'
+
+jobs:
+  # ==========================================================================
+  # Build the artifacts, reproducibly, and verify them
+  # ==========================================================================
+  agent:
+    name: Agent artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The build stamps the commit's own date as SOURCE_DATE_EPOCH, so
+          # the tag's commit has to be fetched with its metadata. A shallow
+          # checkout of depth 1 is enough for `git log -1`, which is all the
+          # build script reads.
+          fetch-depth: 1
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: agents/linux/go.sum
+
+      - name: Resolve the version
+        id: version
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            version="${GITHUB_REF_NAME#v}"
+            echo "Building from tag ${GITHUB_REF_NAME}"
+            # The tag and the committed VERSION must agree. A tag that does
+            # not match produces artifacts named after a version that does
+            # not exist in the tree they were built from.
+            ./scripts/check-versions.sh --tag "${GITHUB_REF_NAME}"
+          elif [ -n "${{ inputs.version }}" ]; then
+            version="${{ inputs.version }}"
+            echo "::notice::Dry run with an overridden version: $version"
+          else
+            version="$(tr -d '[:space:]' < VERSION)"
+            ./scripts/check-versions.sh
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        run: ./scripts/build-agent-artifacts.sh --clean --version '${{ steps.version.outputs.version }}'
+
+      - name: Verify
+        run: ./scripts/verify-artifacts.sh --expect-version '${{ steps.version.outputs.version }}'
+
+      - name: Prove the verifier rejects what it claims to
+        # The verification above is the release gate. A gate whose refusals
+        # have never fired is a gate nobody has tested, so every refusal is
+        # exercised against a deliberately corrupted copy on every run.
+        run: ./scripts/verify-artifacts.sh --self-test
+
+      - name: Install qemu-user-static
+        # From Ubuntu's own archive. Executing the arm64 and arm binaries is
+        # the difference between "cross-compiled" and "runs", and emulation is
+        # the honest middle ground between the two — recorded as such in the
+        # manifest's `tier` field rather than presented as hardware testing.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-user-static
+
+      - name: Run every binary
+        run: ./scripts/verify-artifacts.sh --execute
+
+      - name: Prove the build is reproducible
+        run: ./scripts/check-reproducible.sh
+
+      - name: Summarise
+        run: |
+          {
+            echo "## hcc-agent ${{ steps.version.outputs.version }}"
+            echo
+            echo '```'
+            cat dist/agent/checksums.txt
+            echo '```'
+            echo
+            echo "<details><summary>artifacts.json</summary>"
+            echo
+            echo '```json'
+            cat dist/agent/artifacts.json
+            echo '```'
+            echo
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcc-agent-${{ steps.version.outputs.version }}
+          path: dist/agent
+          # Long enough to inspect and verify a candidate, short enough that
+          # unpublished binaries do not accumulate indefinitely.
+          retention-days: 14
+          if-no-files-found: error
+
+  # ==========================================================================
+  # Build provenance — only for a tag, and only when asked
+  # ==========================================================================
+  attest:
+    name: Build provenance
+    needs: agent
+    # Two conditions, both required. A dry run must not write to the
+    # repository's attestation store, and an accidental dispatch must not
+    # either.
+    if: github.ref_type == 'tag' && inputs.attest
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # Both are needed by actions/attest-build-provenance and neither is
+      # granted to any other job here.
+      id-token: write
+      attestations: write
+
+    steps:
+      - name: Download the artifacts
+        uses: actions/download-artifact@v5
+        with:
+          name: hcc-agent-${{ needs.agent.outputs.version }}
+          path: dist/agent
+
+      - name: Attest
+        # GitHub's own action, which signs through Sigstore using the
+        # workflow's OIDC identity and records the result in a public
+        # transparency log. Keyless: there is no private key for a
+        # one-maintainer project to store, rotate or lose, which was the
+        # deciding property in the design.
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: 'dist/agent/hcc-agent_*.tar.gz'
+
+      - name: Say what to do with it
+        run: |
+          {
+            echo "## Provenance attested"
+            echo
+            echo "Verify any published archive with:"
+            echo
+            echo '```bash'
+            echo "gh attestation verify hcc-agent_${{ needs.agent.outputs.version }}_linux_amd64.tar.gz \\"
+            echo "  --repo ${{ github.repository }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

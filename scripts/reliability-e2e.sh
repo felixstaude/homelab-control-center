@@ -475,12 +475,24 @@ fi
 # ===========================================================================
 info "== 5. What survived =="
 
-total="$(raw_count)"
-distinct="$(query "SELECT count(DISTINCT (series_id, recorded_at)) FROM metric_samples_raw")"
+# Both counts in **one** query, which is not a tidiness point.
+#
+# They were two queries, and the agent is still collecting while they run — so
+# a sample inserted between them made the second count larger than the first
+# and the assertion reported "68 rows but only 72 distinct keys", which is
+# arithmetically impossible and read as data corruption. It failed in CI
+# exactly once, intermittently, on a run that had changed nothing in this
+# path. One query describes one instant, which is what the assertion was
+# always meant to say.
+counts="$(query "
+  SELECT count(*) AS total, count(DISTINCT (series_id, recorded_at)) AS distinct_keys
+  FROM metric_samples_raw")"
+total="$(printf '%s' "$counts" | cut -f1)"
+distinct="$(printf '%s' "$counts" | cut -f2)"
 if [[ "$total" == "$distinct" ]]; then
   ok "every stored sample is unique: $total rows, $distinct distinct keys"
 else
-  bad "$total rows but only $distinct distinct keys"
+  bad "$total rows but $distinct distinct keys — at-least-once delivery stored a duplicate"
 fi
 
 # Values still have to be plausible measurements after all of that: a recovery

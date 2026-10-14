@@ -244,6 +244,50 @@ jobs:
           done
 
   # ==========================================================================
+  # Release artifacts: built and verified on every change, published by none
+  # ==========================================================================
+  artifacts:
+    name: Artifacts (build and verify)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: agents/linux/go.sum
+
+      - name: Versions agree
+        run: ./scripts/check-versions.sh
+
+      - name: Build the artifact set
+        # The same script the release workflow runs. A release process whose
+        # first execution is the release is not a process.
+        run: ./scripts/build-agent-artifacts.sh --clean
+
+      - name: Verify it
+        run: ./scripts/verify-artifacts.sh
+
+      - name: Prove the verifier rejects what it claims to
+        # Nineteen deliberate corruptions, each of which must be caught by
+        # the specific check it is aimed at. Without this the release gate
+        # could silently degrade into a gate that passes everything.
+        run: ./scripts/verify-artifacts.sh --self-test
+
+      - name: Prove the build is reproducible
+        # Two builds, byte-identical. This is what makes the digest the
+        # controller pins a statement about the source rather than about one
+        # machine.
+        run: ./scripts/check-reproducible.sh
+
+      # Deliberately no upload-artifact step. These are built to be checked,
+      # not distributed; the release-prepare workflow is where a candidate
+      # becomes downloadable.
+
+  # ==========================================================================
   # Smoke test: a real process, on the newest supported Python
   # ==========================================================================
   smoke:
@@ -377,6 +421,115 @@ jobs:
           path: |
             /tmp/hcc-mon-*.log
             /tmp/hcc-rel-*.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # ==========================================================================
+  # The Compose deployment, from nothing to a working installation
+  # ==========================================================================
+  deployment:
+    name: Deployment (Compose)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build, start, bootstrap, sign in, restart
+        # An image building is not evidence of a working deployment, and a
+        # Compose file parsing is not evidence that `up -d` produces something
+        # you can log in to. This builds the real image from the real
+        # Dockerfile, brings the real stack up, runs `hcc bootstrap-admin`
+        # through `compose exec`, signs in through the published port, checks
+        # the web client is served from the same origin as the API, and
+        # restarts the whole thing to prove the volume persists.
+        #
+        # Docker Compose specifically: podman-compose 1.6.0 hangs on this
+        # stack's `depends_on` conditions, so the script skips rather than
+        # hanging when Docker is absent — which means this job is the only
+        # place it actually runs.
+        run: ./scripts/deployment-e2e.sh
+
+      - name: Upload failure artefacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-failure
+          path: /tmp/hcc-deploy-*/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # ==========================================================================
+  # The installation lifecycle, against real systemd
+  # ==========================================================================
+  install-matrix:
+    name: Install (${{ matrix.image }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      # Every distribution runs even when one fails. "It works on Debian and
+      # not on Fedora" is the finding; cancelling the others would hide half
+      # of it.
+      fail-fast: false
+      matrix:
+        image: ['debian:13', 'ubuntu:24.04', 'fedora:42']
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: hcc
+          POSTGRES_PASSWORD: hcc_local_dev
+          POSTGRES_DB: hcc
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U hcc -d hcc"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: apps/server/pyproject.toml
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: agents/linux/go.sum
+
+      - name: Install the backend
+        run: |
+          python -m venv apps/server/.venv
+          apps/server/.venv/bin/pip install --quiet --upgrade pip
+          apps/server/.venv/bin/pip install --quiet -e 'apps/server[dev]'
+
+      - name: Install, collect, diagnose, upgrade, roll back, uninstall
+        # A privileged container with systemd as pid 1, a real controller
+        # behind real TLS with a real internal CA, and the actual `hcc-agent
+        # install` command a person would paste.
+        #
+        # This is the job that proves the hardened unit *works* rather than
+        # merely parses. `systemd-analyze verify` does not execute anything,
+        # and the unit carried `ProcSubset=pid` for several milestones — which
+        # hides every /proc file the agent reads, so the service would have
+        # started, connected, reported itself healthy and collected nothing.
+        # Step 10 of the script enables a module and asserts a row appears.
+        run: ./scripts/install-matrix.sh --image '${{ matrix.image }}'
+
+      - name: Upload failure artefacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: install-matrix-${{ strategy.job-index }}
+          path: /tmp/hcc-inst-*.log
           retention-days: 7
           if-no-files-found: ignore
 
@@ -526,6 +679,12 @@ jobs:
         # heavily; a broken link silently turns a documented decision into an
         # undocumented one.
         run: ./scripts/check-docs.sh
+
+      - name: Check version consistency
+        # Four files carry the version and release artifacts are named from
+        # one of them. A mismatch makes the download URL in the install
+        # command point at a release that was never published.
+        run: ./scripts/check-versions.sh
 
       - name: Verify every .env.example documents no real secret
         run: |

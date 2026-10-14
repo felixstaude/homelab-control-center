@@ -1,10 +1,11 @@
-import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, Check, Copy, KeyRound } from 'lucide-react';
-import { useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Check, Copy, KeyRound } from 'lucide-react';
+import { useEffect, useState } from 'react';
 
+import { fetchAgentReleases } from '@/api/agent-releases';
 import { isApiError } from '@/api/errors';
 import { issueEnrollment } from '@/api/hosts';
-import type { Host, IssuedEnrollment } from '@/api/types';
+import type { AgentReleases, Host, IssuedEnrollment } from '@/api/types';
 import { MutationError } from '@/components/states/panel-states';
 import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
@@ -12,6 +13,7 @@ import { Modal } from '@/components/ui/modal';
 import { Spinner } from '@/components/ui/spinner';
 import { formatDateTime } from '@/lib/datetime';
 import { queryKeys } from '@/lib/query-keys';
+import { InstallInstructions } from '@/routes/hosts/install-instructions';
 
 /**
  * Issue and display a one-time enrollment credential.
@@ -63,6 +65,27 @@ export function EnrollmentDialog({
   /** Set when the server reports the host is already enrolled. */
   const [needsConfirmation, setNeedsConfirmation] = useState(false);
   const [copied, setCopied] = useState(false);
+
+  /**
+   * What the controller can vouch for, for the install command.
+   *
+   * Fetched as soon as the dialog opens rather than after issuing, so the
+   * command is on screen at the same moment as the credential — the
+   * credential expires and the command does not, and making somebody wait for
+   * a second request while a fifteen-minute clock runs is the wrong order.
+   *
+   * A failure here is deliberately not fatal: the install command is a
+   * convenience and the credential is the thing that cannot be obtained
+   * again. `releases` is then undefined and the instructions component falls
+   * back to the build-from-source path.
+   */
+  const releases = useQuery({
+    queryKey: queryKeys.session.agentReleases(),
+    queryFn: ({ signal }) => fetchAgentReleases(signal),
+    // The answer changes only when the controller is upgraded.
+    staleTime: 5 * 60 * 1000,
+    retry: false,
+  });
 
   const issue = useMutation({
     mutationFn: (allowReenrollment: boolean) =>
@@ -160,7 +183,13 @@ export function EnrollmentDialog({
       }
     >
       {issued ? (
-        <IssuedCredential issued={issued} copied={copied} onCopy={copy} hostName={host.name} />
+        <IssuedCredential
+          issued={issued}
+          copied={copied}
+          onCopy={copy}
+          hostName={host.name}
+          releases={releases.data}
+        />
       ) : (
         <div className="flex flex-col gap-4">
           <p className="text-text-secondary text-sm leading-relaxed">
@@ -199,19 +228,74 @@ export function EnrollmentDialog({
   );
 }
 
+/**
+ * How often the expiry countdown redraws.
+ *
+ * One second. The credential is valid for minutes and the countdown is the
+ * only thing on screen that tells somebody whether they still have time to
+ * walk to the machine — a minute-granularity clock would sit on "1 minute"
+ * through the last fifty-nine seconds of it.
+ */
+const COUNTDOWN_INTERVAL_MS = 1000;
+
+/**
+ * Seconds left before the credential expires.
+ *
+ * Counted down from the server's own `expires_in_seconds` rather than from
+ * `expires_at` minus the browser's clock. A host whose clock is minutes out
+ * would otherwise be shown an expiry that is wrong in whichever direction
+ * their clock is wrong — and "expired" on a credential that is fine is the
+ * worse of the two.
+ */
+function useExpiryCountdown(initialSeconds: number): number {
+  // Captured once per mount, which is also once per credential: every call
+  // site gives this dialog a `key` that changes when it opens, so React
+  // discards the instance rather than reusing it.
+  const [startedAt] = useState(() => Date.now());
+  const [now, setNow] = useState(startedAt);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setNow(Date.now());
+    }, COUNTDOWN_INTERVAL_MS);
+    return () => {
+      clearInterval(timer);
+    };
+  }, []);
+
+  // Derived from elapsed wall time rather than decremented on each tick. An
+  // interval in a background tab — which this dialog will be while somebody
+  // walks to a machine — is throttled and fires fewer times than the seconds
+  // that passed, so a decrementing counter would run slow and claim time the
+  // operator does not have.
+  const elapsed = Math.floor((now - startedAt) / 1000);
+  return Math.max(0, initialSeconds - elapsed);
+}
+
+function formatRemaining(seconds: number): string {
+  if (seconds <= 0) return 'expired';
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  if (minutes === 0) return `${String(rest)}s`;
+  return `${String(minutes)}m ${String(rest).padStart(2, '0')}s`;
+}
+
 /** The credential itself, with the one-time warning that goes with it. */
 function IssuedCredential({
   issued,
   copied,
   onCopy,
   hostName,
+  releases,
 }: {
   issued: IssuedEnrollment;
   copied: boolean;
   onCopy: () => void;
   hostName: string;
+  releases: AgentReleases | undefined;
 }) {
-  const minutes = Math.max(1, Math.round(issued.expires_in_seconds / 60));
+  const remaining = useExpiryCountdown(issued.expires_in_seconds);
+  const expired = remaining <= 0;
 
   return (
     <div className="flex flex-col gap-4">
@@ -229,12 +313,21 @@ function IssuedCredential({
         </Alert>
       ) : null}
 
+      {expired ? (
+        <Alert variant="critical" title="This credential has expired">
+          Close this dialog and issue another one. The agent will refuse it, and the controller
+          records the attempt.
+        </Alert>
+      ) : null}
+
       <div>
         <div className="mb-1.5 flex items-center justify-between gap-2">
-          <span className="text-text-secondary text-xs font-medium">Enrolment credential</span>
+          <span className="text-text-secondary text-xs font-medium">
+            Enrolment credential &mdash; this is the secret
+          </span>
           <Button variant="secondary" size="sm" onClick={onCopy}>
             {copied ? <Check /> : <Copy />}
-            {copied ? 'Copied' : 'Copy'}
+            {copied ? 'Copied' : 'Copy credential'}
           </Button>
         </div>
         {/*
@@ -253,44 +346,31 @@ function IssuedCredential({
         >
           {issued.credential}
         </output>
-        <p className="text-text-faint mt-1.5 text-xs">
-          Expires {formatDateTime(issued.expires_at)} &mdash; about {minutes}{' '}
-          {minutes === 1 ? 'minute' : 'minutes'} from now.
+        {/*
+         * A live countdown, not just the expiry timestamp. The timestamp
+         * answers "when", and the question somebody standing between a
+         * browser and a server actually has is "do I still have time".
+         *
+         * `aria-live="off"`: a region that announced every second would make
+         * the dialog unusable with a screen reader, and the remaining time is
+         * also stated in the timestamp beside it.
+         */}
+        <p className="text-text-faint mt-1.5 text-xs" aria-live="off">
+          Single use. Expires in{' '}
+          <span className={expired ? 'text-status-critical-fg' : 'text-text-secondary'}>
+            {formatRemaining(remaining)}
+          </span>{' '}
+          &mdash; at {formatDateTime(issued.expires_at)}.
         </p>
       </div>
 
       <div className="border-border-subtle border-t pt-4">
         <h3 className="text-text-primary text-sm font-medium">On {hostName}, run</h3>
-        <p className="text-text-muted mt-1 text-xs leading-relaxed">
-          Write the credential to a file rather than passing it on the command line or in the
-          service&rsquo;s environment: a command line is readable by every local user through{' '}
-          <code className="font-mono">/proc</code>, and so is a process&rsquo;s environment.
+        <p className="text-text-muted mt-1 mb-3 text-xs leading-relaxed">
+          The installer asks for the credential with the input hidden, so it never reaches a
+          command line or a shell history. Paste it when it asks.
         </p>
-        <pre
-          className="bg-surface-overlay border-border-default text-text-secondary mt-2
-            overflow-x-auto rounded-lg border px-3 py-2.5 font-mono text-xs leading-relaxed"
-        >
-          {[
-            'sudo install -m 0600 /dev/null /root/hcc-enrolment-token',
-            'sudo editor /root/hcc-enrolment-token    # paste the credential',
-            '',
-            'sudo HCC_AGENT_ENROLLMENT_TOKEN_FILE=/root/hcc-enrolment-token \\',
-            '  hcc-agent enroll',
-            '',
-            'sudo chown hcc-agent:hcc-agent /etc/hcc-agent/credential',
-            'sudo systemctl enable --now hcc-agent',
-          ].join('\n')}
-        </pre>
-        <p className="text-text-faint mt-2 flex items-start gap-1.5 text-xs">
-          <AlertTriangle aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
-          <span>
-            Install the agent first &mdash; see <code className="font-mono">
-              agents/linux/deploy/README.md
-            </code>{' '}
-            in the repository. This host appears as connected within a second or two of the
-            agent starting.
-          </span>
-        </p>
+        <InstallInstructions releases={releases} controllerOrigin={window.location.origin} />
       </div>
     </div>
   );

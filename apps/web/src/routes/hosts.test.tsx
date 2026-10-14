@@ -433,3 +433,179 @@ describe('the enrollment credential', () => {
     expect(await screen.findByText(/previous credential was revoked/i)).toBeInTheDocument();
   });
 });
+
+describe('the install instructions beside the credential', () => {
+  const CREDENTIAL = 'TEST-ENROLMENT-CREDENTIAL-0000000000000000';
+  const DIGEST_AMD64 = 'a'.repeat(64);
+  const DIGEST_ARM64 = 'b'.repeat(64);
+
+  const RELEASES = {
+    recommended_version: '0.2.0',
+    platforms: [
+      {
+        platform: 'linux/amd64',
+        archive: 'hcc-agent_0.2.0_linux_amd64.tar.gz',
+        url: 'https://downloads.example.test/hcc-agent_0.2.0_linux_amd64.tar.gz',
+        sha256: DIGEST_AMD64,
+        size_bytes: 2931200,
+        tier: 'supported' as const,
+      },
+      {
+        platform: 'linux/arm64',
+        archive: 'hcc-agent_0.2.0_linux_arm64.tar.gz',
+        url: 'https://downloads.example.test/hcc-agent_0.2.0_linux_arm64.tar.gz',
+        sha256: DIGEST_ARM64,
+        size_bytes: 2651026,
+        tier: 'supported' as const,
+      },
+      {
+        platform: 'linux/arm',
+        archive: 'hcc-agent_0.2.0_linux_arm.tar.gz',
+        url: 'https://downloads.example.test/hcc-agent_0.2.0_linux_arm.tar.gz',
+        sha256: 'c'.repeat(64),
+        size_bytes: 2828214,
+        tier: 'best-effort' as const,
+      },
+    ],
+  };
+
+  async function issue() {
+    renderApp('/hosts/host-new');
+    await waitForAuthToResolve();
+    await userEvent.click(
+      await screen.findByRole('button', { name: /issue enrolment credential/i }),
+    );
+    await screen.findByRole('heading', { name: /enrol zeta/i });
+    await userEvent.click(screen.getByRole('button', { name: /issue credential/i }));
+    await screen.findByText(CREDENTIAL);
+  }
+
+  describe('when the controller has a release to offer', () => {
+    beforeEach(() => {
+      backend = installFakeBackend({
+        session: ADMIN,
+        hosts: [makeHost({ host_id: 'host-new', name: 'zeta' })],
+        enrollmentCredential: CREDENTIAL,
+        agentReleases: RELEASES,
+      });
+    });
+
+    it('shows the download command with the digest, defaulting to amd64', async () => {
+      await issue();
+
+      // The digest is the whole trust model: it reaches the operator inside
+      // the session they are already authenticated in, so an attacker who
+      // controls the download origin cannot make a substituted tarball match.
+      expect(await screen.findByText(new RegExp(DIGEST_AMD64))).toBeInTheDocument();
+      expect(screen.getByText(/hcc-agent_0\.2\.0_linux_amd64\.tar\.gz/)).toBeInTheDocument();
+      expect(screen.getByText(/sha256sum -c -/)).toBeInTheDocument();
+    });
+
+    it('switches the command when another architecture is chosen', async () => {
+      await issue();
+
+      await userEvent.selectOptions(
+        screen.getByLabelText(/architecture of the host/i),
+        'linux/arm64',
+      );
+
+      expect(await screen.findByText(new RegExp(DIGEST_ARM64))).toBeInTheDocument();
+      // And the previous architecture's digest is gone, rather than both
+      // being on screen for somebody to copy the wrong one of.
+      expect(screen.queryByText(new RegExp(DIGEST_AMD64))).toBeNull();
+    });
+
+    it('says which architectures nobody has run on real hardware', async () => {
+      await issue();
+
+      await userEvent.selectOptions(
+        screen.getByLabelText(/architecture of the host/i),
+        'linux/arm',
+      );
+
+      // `best-effort` is a statement about evidence, not a preference. A
+      // Raspberry Pi owner is entitled to know it has only ever been emulated.
+      expect(await screen.findByText(/best-effort/i)).toBeInTheDocument();
+      expect(screen.getByText(/never run on real hardware/i)).toBeInTheDocument();
+    });
+
+    it('has a copy button for the command, separate from the credential', async () => {
+      await issue();
+
+      // Two buttons, each labelled with what it copies. Two unlabelled copy
+      // buttons invites pasting the secret where the command belongs.
+      expect(screen.getByRole('button', { name: /copy command/i })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /copy credential/i })).toBeInTheDocument();
+      expect(screen.getByText(/this command contains no secret/i)).toBeInTheDocument();
+    });
+
+    it('never puts the credential in the install command', async () => {
+      await issue();
+
+      // The one assertion that would matter most if it ever broke. The
+      // command is meant to be safe in shell history; the credential is not.
+      const command = screen.getByText(/sha256sum -c -/).textContent;
+      expect(command).not.toContain(CREDENTIAL);
+      expect(command).not.toMatch(/--token[ =]/);
+    });
+  });
+
+  describe('when no release has been published', () => {
+    beforeEach(() => {
+      // The default, and the state of every build of this project so far.
+      backend = installFakeBackend({
+        session: ADMIN,
+        hosts: [makeHost({ host_id: 'host-new', name: 'zeta' })],
+        enrollmentCredential: CREDENTIAL,
+      });
+    });
+
+    it('says so and shows how to build the agent instead', async () => {
+      await issue();
+
+      expect(await screen.findByText(/no prebuilt agent is available/i)).toBeInTheDocument();
+      expect(screen.getByText(/make agent-build/)).toBeInTheDocument();
+    });
+
+    it('invents no download URL and no digest', async () => {
+      await issue();
+
+      // A command that looks real and 404s costs an operator more time than a
+      // paragraph telling them to build it — and a digest beside an invented
+      // URL is a claim nobody can check.
+      expect(screen.queryByText(/curl -fsSLO https:\/\/github/)).toBeNull();
+      expect(screen.queryByText(/sha256sum -c -/)).toBeNull();
+    });
+
+    it('still shows the credential, because that is the part that expires', async () => {
+      await issue();
+
+      // The install command is a convenience; the credential cannot be
+      // obtained again. A failure to render the first must not withhold the
+      // second.
+      expect(screen.getByText(CREDENTIAL)).toBeInTheDocument();
+    });
+  });
+
+  describe('the expiry countdown', () => {
+    beforeEach(() => {
+      backend = installFakeBackend({
+        session: ADMIN,
+        hosts: [makeHost({ host_id: 'host-new', name: 'zeta' })],
+        enrollmentCredential: CREDENTIAL,
+      });
+    });
+
+    it('counts down from the server’s own figure', async () => {
+      await issue();
+
+      // Counted from `expires_in_seconds` rather than from `expires_at` minus
+      // the browser's clock: a host whose clock is minutes out would
+      // otherwise be shown an expiry that is wrong in whichever direction its
+      // clock is wrong, and "expired" on a credential that is fine is the
+      // worse of the two.
+      expect(screen.getByText(/single use\. expires in/i)).toBeInTheDocument();
+      expect(screen.getByText(/^\d+m \d{2}s$/)).toBeInTheDocument();
+    });
+  });
+});

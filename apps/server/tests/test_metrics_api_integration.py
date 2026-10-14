@@ -608,6 +608,82 @@ async def test_every_authenticated_role_may_read_metrics(
             assert response.status_code == 200, f"{leaf}: {response.text}"
 
 
+async def test_a_real_range_response_arrives_compressed(
+    api_factory: ApiFactory, seed_user: SeedUser, sign_in: SignIn
+) -> None:
+    """The measured reason this endpoint is on the compression allow-list.
+
+    ``tests/test_compression.py`` asserts the middleware's behaviour against a
+    stand-in route, which proves the path pattern and the negotiation but not
+    that it matches the route as mounted. This is the real route, with real
+    samples, through the real application: if the path ever changes shape, the
+    pattern stops matching and the saving disappears silently. That is the
+    failure this catches.
+
+    Measured at the interface's own budget of 600 points, a chart is 59.5 kB
+    uncompressed and 6.8 kB gzipped — timestamps five minutes apart being about
+    the most repetitive thing a JSON encoder can emit.
+    """
+    async with api_factory() as client:
+        host_id, _ = await admin_host(client, seed_user, sign_in)
+        base = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
+        # Enough points for the response to clear the compression threshold,
+        # one second apart so they stay at raw resolution within the budget.
+        series_id = await write_samples(
+            client,
+            host_id,
+            [(base + timedelta(seconds=n), 17.0 + (n % 97) * 0.37) for n in range(600)],
+        )
+        params: dict[str, str | int] = {
+            "series_id": series_id,
+            "start": base.isoformat(),
+            "end": (base + timedelta(minutes=10)).isoformat(),
+        }
+
+        compressed = await client.get(
+            metrics_path(host_id, "range"), params=params, headers={"Accept-Encoding": "gzip"}
+        )
+        verbatim = await client.get(
+            metrics_path(host_id, "range"), params=params, headers={"Accept-Encoding": "identity"}
+        )
+
+    assert compressed.status_code == 200, compressed.text
+    assert compressed.headers["content-encoding"] == "gzip"
+    # A client that does not ask is not given it, which is the other half of
+    # honouring Accept-Encoding.
+    assert "content-encoding" not in verbatim.headers
+    # httpx decompresses, so matching bodies is the round-trip assertion: a
+    # truncated chart would fail in the browser rather than here.
+    assert compressed.json() == verbatim.json()
+    assert len(compressed.json()["points"]) == 600
+
+
+async def test_the_enrollment_credential_is_never_compressed(
+    api_factory: ApiFactory, seed_user: SeedUser, sign_in: SignIn
+) -> None:
+    """The boundary the allow-list exists for, on the real endpoint.
+
+    ``hcc/api/v1/hosts.py`` documents the enrollment response as the only one
+    in the API containing a secret. Compressing a response that holds both a
+    secret and attacker-influenced text leaks the secret through its length —
+    so this asserts, against the route that actually returns a credential,
+    that no ``Content-Encoding`` is applied to it however the client asks.
+    """
+    async with api_factory() as client:
+        host_id, token = await admin_host(client, seed_user, sign_in)
+
+        response = await client.post(
+            f"{HOSTS}/{host_id}/enrollment",
+            headers={**csrf(token), "Accept-Encoding": "gzip, deflate, br"},
+        )
+
+    assert response.status_code == 201, response.text
+    # The credential is there, so this is the secret-bearing response and not
+    # an error that happens to be uncompressed.
+    assert response.json()["credential"]
+    assert "content-encoding" not in response.headers
+
+
 async def test_no_write_endpoint_exists_for_metrics(
     api_factory: ApiFactory, seed_user: SeedUser, sign_in: SignIn
 ) -> None:

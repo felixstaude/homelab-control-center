@@ -304,7 +304,7 @@ func Load(lookupEnv func(string) (string, bool)) (Config, error) {
 // should not have to create a file first.
 func EnrollmentCredential(lookupEnv func(string) (string, bool)) (string, error) {
 	if path, ok := lookupEnv(EnvEnrollmentFile); ok && strings.TrimSpace(path) != "" {
-		return readSecretFile(strings.TrimSpace(path))
+		return ReadEnrollmentCredentialFile(strings.TrimSpace(path))
 	}
 	if value, ok := lookupEnv(EnvEnrollmentToken); ok && strings.TrimSpace(value) != "" {
 		return strings.TrimSpace(value), nil
@@ -315,13 +315,18 @@ func EnrollmentCredential(lookupEnv func(string) (string, bool)) (string, error)
 	)
 }
 
-// readSecretFile reads a secret from disk and refuses an overly permissive file.
+// ReadEnrollmentCredentialFile reads a one-time credential from disk and
+// refuses an overly permissive file.
 //
 // The same permission rule the agent credential gets, applied here too. An
 // enrollment credential is short-lived, which makes exposure survivable rather
 // than acceptable: fifteen minutes is long enough for another local user to
 // read the file and enroll a host of their own choosing.
-func readSecretFile(path string) (string, error) {
+//
+// Exported so the installer's --token-file path gets exactly these refusals
+// rather than its own almost-identical set. The two were separate for one
+// commit and the installer's copy was already missing the symlink check.
+func ReadEnrollmentCredentialFile(path string) (string, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return "", fmt.Errorf("%s: cannot read %q: %w", EnvEnrollmentFile, path, err)

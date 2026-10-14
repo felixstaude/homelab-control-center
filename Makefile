@@ -54,7 +54,12 @@ AGENT_LDFLAGS   := -s -w \
 help: ## Show this help
 	@echo "Homelab Control Center — development targets"
 	@echo
-	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
+# The character class includes digits, which it did not until now: every
+# target with a number in its name — `e2e`, `monitoring-e2e`,
+# `reliability-e2e`, `deployment-e2e` — had a `##` description and was absent
+# from this list, so four gates were documented in the file and invisible to
+# the command that lists them.
+	@grep -hE '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 		| sort \
 		| awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}'
 	@echo
@@ -166,7 +171,7 @@ agent-run: ## Run the agent against the local control plane
 # ============================================================================
 
 .PHONY: check
-check: check-docs check-contract check-server check-web check-agent ## Run the local quality gates
+check: check-docs check-versions check-contract check-server check-web check-agent ## Run the local quality gates
 # Not everything CI runs: CI additionally executes the PostgreSQL integration
 # tests, the migration apply/reverse/check cycle, the frontend production
 # build, Go cross-compilation and the browser end-to-end suite. Use
@@ -291,6 +296,31 @@ agent-build: ## Build the agent binary with version stamping
 	@$(AGENT_DIR)/bin/hcc-agent version
 
 # ============================================================================
+# Release artifacts
+# ============================================================================
+
+.PHONY: artifacts
+artifacts: ## Build the agent release artifacts into dist/agent
+	@./scripts/build-agent-artifacts.sh --clean
+
+.PHONY: verify-artifacts
+verify-artifacts: ## Verify dist/agent against its own manifest
+	@./scripts/verify-artifacts.sh --execute
+
+.PHONY: check-artifacts
+check-artifacts: artifacts ## Build, verify, and prove the verifier's refusals fire
+	@./scripts/verify-artifacts.sh --execute
+	@./scripts/verify-artifacts.sh --self-test
+
+.PHONY: check-reproducible
+check-reproducible: ## Build twice and compare every digest
+	@./scripts/check-reproducible.sh
+
+.PHONY: check-versions
+check-versions: ## Fail if VERSION and the three package versions disagree
+	@./scripts/check-versions.sh
+
+# ============================================================================
 # Housekeeping
 # ============================================================================
 
@@ -318,6 +348,44 @@ measure-metrics: ## Measure metric ingestion, storage and query cost (requires m
 # Creates its own disposable database, so it never touches the development
 # installation — see scripts/measure-metrics.py.
 	@apps/server/.venv/bin/python scripts/measure-metrics.py
+
+.PHONY: measure-transfer
+measure-transfer: ## Measure the bytes the control plane sends a browser (requires a built client)
+# Opens no listener and connects to no database — see scripts/measure-transfer.py.
+	@test -f $(WEB_DIR)/dist/index.html || { \
+		echo "No built client at $(WEB_DIR)/dist."; \
+		echo "Build it first:  cd $(WEB_DIR) && npm run build"; exit 1; }
+	@apps/server/.venv/bin/python scripts/measure-transfer.py
+
+.PHONY: image
+image: ## Build the controller container image
+	@test -n "$(COMPOSE)" || { echo "No container runtime found."; exit 1; }
+	@$(firstword $(COMPOSE)) build \
+		--build-arg HCC_VERSION="$$(tr -d '[:space:]' < VERSION)" \
+		--build-arg HCC_COMMIT="$(AGENT_COMMIT)" \
+		--build-arg HCC_BUILD_DATE="$(AGENT_BUILDDATE)" \
+		-t hcc:local -f Dockerfile .
+	@echo "✓ Built hcc:local"
+
+.PHONY: deployment-e2e
+deployment-e2e: ## Build the image, run the Compose stack, bootstrap, sign in, restart
+# Needs Docker Compose: podman-compose 1.6.0 hangs on this stack's
+# depends_on conditions, so the script skips rather than hanging. Its own
+# project name, volumes and generated secret, all removed on exit.
+	@./scripts/deployment-e2e.sh
+
+.PHONY: backup
+backup: ## Back up the Compose deployment's database into ./  (see scripts/backup.sh --help)
+	@./scripts/backup.sh
+
+.PHONY: install-matrix
+install-matrix: ## Install the agent into a real-systemd container and exercise its whole lifecycle (requires make db-up)
+# A privileged container with systemd as pid 1, a real controller behind real
+# TLS with a real internal CA, and the actual install command. Its own
+# disposable database and container, both removed on every exit path. The
+# container is privileged, which is why this is not part of `make check` —
+# see scripts/install-matrix.sh.
+	@./scripts/install-matrix.sh
 
 .PHONY: reliability-e2e
 reliability-e2e: ## Kill the controller, the agent and the database connections; check what survived (requires make db-up)

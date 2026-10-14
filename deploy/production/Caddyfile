@@ -1,0 +1,50 @@
+# Caddy, for the compose.tls.yaml variant.
+#
+# Three jobs: terminate TLS, set the forwarded headers the control plane needs,
+# and proxy WebSockets without being told to.
+#
+# Short on purpose. Every directive here is load-bearing and the comments say
+# why; a longer file would mostly be defaults restated.
+
+{$HCC_SITE_ADDRESS} {
+	# Empty by default, so Caddy's automatic HTTPS applies: a publicly
+	# resolvable name gets a Let's Encrypt certificate with no further
+	# configuration.
+	#
+	# `tls internal` issues from Caddy's own local CA, for a LAN-only name
+	# that Let's Encrypt cannot validate — and then the CA has to be
+	# installed on the machines that use the interface, and passed to
+	# `hcc-agent install --ca-file` on every monitored host.
+	#
+	# `tls /tls/cert.pem /tls/key.pem` serves a certificate you already have.
+	{$HCC_TLS_DIRECTIVE}
+
+	encode zstd gzip
+
+	reverse_proxy hcc:8000 {
+		# X-Forwarded-For, X-Forwarded-Proto and X-Forwarded-Host are set by
+		# Caddy automatically. The control plane believes them only from an
+		# address in HCC_TRUSTED_PROXIES, which the Compose file presets to
+		# the private ranges a Compose bridge network uses — so this header
+		# set and that setting have to agree or every client collapses onto
+		# one rate-limit budget. See apps/server/hcc/security/forwarded.py.
+		#
+		# WebSockets need no directive: Caddy proxies an upgrade request
+		# transparently. That matters more here than it looks — the agent
+		# connection *is* a WebSocket, so a proxy needing an explicit rule
+		# would work for the interface and silently fail for every host.
+
+		# Long enough for an agent connection, which is meant to stay open
+		# for hours. Without this a proxy read timeout would disconnect every
+		# agent on a fixed cycle, and the agents would reconnect, and the
+		# fleet would look like it was flapping.
+		transport http {
+			read_timeout 0
+			write_timeout 0
+		}
+	}
+}
+
+# Plain HTTP exists only to redirect. Caddy does this automatically for a
+# site with automatic HTTPS; stated here so that it is also true for the
+# `tls internal` and mounted-certificate variants, where it is not.
