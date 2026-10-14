@@ -119,9 +119,7 @@ async def make_host(
 
 
 class TestStartingAnUpdate:
-    async def test_it_creates_a_queued_job_with_an_expiry(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_it_creates_a_queued_job_with_an_expiry(self, db_session: AsyncSession) -> None:
         host = await make_host(db_session)
         now = datetime(2026, 10, 14, 12, 0, tzinfo=UTC)
 
@@ -453,9 +451,7 @@ class TestAgentReports:
         assert job.started_at is not None
         assert job.started_at >= job.created_at
 
-    async def test_the_job_state_is_always_the_last_event(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_the_job_state_is_always_the_last_event(self, db_session: AsyncSession) -> None:
         host = await make_host(db_session)
         updates = service()
         job = await updates.start_update(
@@ -536,9 +532,7 @@ class TestAgentReports:
 
         assert job.state == UpdateState.QUEUED
 
-    async def test_an_unknown_instruction_is_refused(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_an_unknown_instruction_is_refused(self, db_session: AsyncSession) -> None:
         host = await make_host(db_session)
 
         with pytest.raises(UpdateNotFoundError):
@@ -654,9 +648,7 @@ class TestCancellation:
         events = await updates.events_for(db_session, job.id)
         assert events[-1].detail == "changed my mind"
 
-    async def test_an_installing_job_cannot_be_cancelled(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_an_installing_job_cannot_be_cancelled(self, db_session: AsyncSession) -> None:
         # "Cancel" from here would be a promise the controller cannot keep:
         # the binary is being replaced on a machine it cannot reach into.
         # Offering a button that does nothing is worse than offering none.
@@ -687,9 +679,7 @@ class TestCancellation:
 
         assert job.state == UpdateState.INSTALLING
 
-    async def test_a_finished_job_cannot_be_cancelled(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_a_finished_job_cannot_be_cancelled(self, db_session: AsyncSession) -> None:
         host = await make_host(db_session)
         updates = service()
         job = await updates.start_update(
@@ -704,9 +694,7 @@ class TestCancellation:
         with pytest.raises(UpdateNotCancellableError, match="already finished"):
             await updates.cancel(db_session, job.id, context=context())
 
-    async def test_cancelling_an_unknown_job_is_refused(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_cancelling_an_unknown_job_is_refused(self, db_session: AsyncSession) -> None:
         with pytest.raises(UpdateNotFoundError):
             await service().cancel(db_session, uuid.uuid4(), context=context())
 
@@ -738,9 +726,7 @@ class TestExpiry:
         assert "expired" in job.error
         assert "offline" in job.error
 
-    async def test_expiry_leaves_a_live_instruction_alone(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_expiry_leaves_a_live_instruction_alone(self, db_session: AsyncSession) -> None:
         host = await make_host(db_session)
         updates = service()
         job = await updates.start_update(
@@ -753,16 +739,12 @@ class TestExpiry:
         )
 
         assert (
-            await updates.expire_stale(
-                db_session, now=datetime(2026, 10, 14, 12, 30, tzinfo=UTC)
-            )
+            await updates.expire_stale(db_session, now=datetime(2026, 10, 14, 12, 30, tzinfo=UTC))
             == []
         )
         assert job.state == UpdateState.QUEUED
 
-    async def test_expiry_frees_the_slot_for_a_new_attempt(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_expiry_frees_the_slot_for_a_new_attempt(self, db_session: AsyncSession) -> None:
         host = await make_host(db_session)
         updates = service()
         manifest = manifest_with("0.1.0", "0.1.1")
@@ -774,9 +756,7 @@ class TestExpiry:
             context=context(),
             now=datetime(2026, 10, 14, 12, 0, tzinfo=UTC),
         )
-        await updates.expire_stale(
-            db_session, now=datetime(2026, 10, 20, 12, 0, tzinfo=UTC)
-        )
+        await updates.expire_stale(db_session, now=datetime(2026, 10, 20, 12, 0, tzinfo=UTC))
         await db_session.flush()
 
         # The whole point: a host that was offline does not hold its slot
@@ -793,9 +773,7 @@ class TestExpiry:
 
 
 class TestPolicy:
-    async def test_a_host_with_no_row_is_manual_on_stable(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_a_host_with_no_row_is_manual_on_stable(self, db_session: AsyncSession) -> None:
         # The most important property in the feature: the safe behaviour is
         # the one that needs no row, so a migration creates nothing and no
         # existing host starts updating itself.
@@ -862,8 +840,12 @@ class TestPolicy:
         )
 
         await service().set_policy(
-            db_session, host.id, context=context(), policy=Policy.PATCH,
-            channel="stable", window=window,
+            db_session,
+            host.id,
+            context=context(),
+            policy=Policy.PATCH,
+            channel="stable",
+            window=window,
         )
         await db_session.flush()
         status = await service().host_status(db_session, host.id, manifest=None)
@@ -875,7 +857,10 @@ class TestPolicy:
 
         with pytest.raises(UpdateServiceError, match="pinned policy needs a version"):
             await service().set_policy(
-                db_session, host.id, context=context(), policy=Policy.PINNED,
+                db_session,
+                host.id,
+                context=context(),
+                policy=Policy.PINNED,
                 channel="stable",
             )
 
@@ -886,8 +871,12 @@ class TestPolicy:
 
         with pytest.raises(UpdateServiceError):
             await service().set_policy(
-                db_session, host.id, context=context(), policy=Policy.PATCH,
-                channel="stable", pinned_version="0.1.0",
+                db_session,
+                host.id,
+                context=context(),
+                policy=Policy.PATCH,
+                channel="stable",
+                pinned_version="0.1.0",
             )
 
     async def test_the_check_constraint_also_refuses_a_half_configured_window(
@@ -898,9 +887,7 @@ class TestPolicy:
         from sqlalchemy.exc import IntegrityError
 
         host = await make_host(db_session)
-        db_session.add(
-            HostUpdatePolicy(host_id=host.id, window_timezone="Europe/Berlin")
-        )
+        db_session.add(HostUpdatePolicy(host_id=host.id, window_timezone="Europe/Berlin"))
 
         with pytest.raises(IntegrityError):
             await db_session.flush()
@@ -980,14 +967,15 @@ class TestTheFleetOverview:
         assert overview.metadata_detail is not None
         assert overview.update_available == 0
 
-    async def test_it_counts_hosts_with_automatic_updates(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_it_counts_hosts_with_automatic_updates(self, db_session: AsyncSession) -> None:
         updates = service()
         automatic = await make_host(db_session, name="auto")
         await make_host(db_session, name="manual")
         await updates.set_policy(
-            db_session, automatic.id, context=context(), policy=Policy.PATCH,
+            db_session,
+            automatic.id,
+            context=context(),
+            policy=Policy.PATCH,
             channel="stable",
         )
         await db_session.flush()
@@ -996,28 +984,36 @@ class TestTheFleetOverview:
 
         assert overview.hosts_with_automatic_updates == 1
 
-    async def test_it_counts_open_and_recently_failed_jobs(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_it_counts_open_and_recently_failed_jobs(self, db_session: AsyncSession) -> None:
         updates = service()
         manifest = manifest_with("0.1.0", "0.1.1")
         open_host = await make_host(db_session, name="updating")
         failed_host = await make_host(db_session, name="broken")
         await updates.start_update(
-            db_session, open_host.id, manifest=manifest,
-            trigger=UpdateTrigger.MANUAL, context=context(),
+            db_session,
+            open_host.id,
+            manifest=manifest,
+            trigger=UpdateTrigger.MANUAL,
+            context=context(),
         )
         failed = await updates.start_update(
-            db_session, failed_host.id, manifest=manifest,
-            trigger=UpdateTrigger.MANUAL, context=context(),
+            db_session,
+            failed_host.id,
+            manifest=manifest,
+            trigger=UpdateTrigger.MANUAL,
+            context=context(),
         )
         await updates.record_progress(
-            db_session, host_id=failed_host.id,
-            instruction_id=failed.instruction_id, state=UpdateState.DOWNLOADING,
+            db_session,
+            host_id=failed_host.id,
+            instruction_id=failed.instruction_id,
+            state=UpdateState.DOWNLOADING,
         )
         await updates.record_result(
-            db_session, host_id=failed_host.id,
-            instruction_id=failed.instruction_id, state=UpdateState.FAILED,
+            db_session,
+            host_id=failed_host.id,
+            instruction_id=failed.instruction_id,
+            state=UpdateState.FAILED,
             error="nope",
         )
         await db_session.flush()
@@ -1058,9 +1054,7 @@ class TestHistory:
 
         assert await service().history(db_session, host_id=host.id, limit=10**9) == []
 
-    async def test_history_without_a_host_covers_the_fleet(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_history_without_a_host_covers_the_fleet(self, db_session: AsyncSession) -> None:
         first = await make_host(db_session, name="one")
         second = await make_host(db_session, name="two")
         for host in (first, second):
@@ -1094,21 +1088,21 @@ class TestEventsAreNeverRewritten:
             context=context(),
         )
         await updates.record_progress(
-            db_session, host_id=host.id, instruction_id=job.instruction_id,
+            db_session,
+            host_id=host.id,
+            instruction_id=job.instruction_id,
             state=UpdateState.DOWNLOADING,
         )
         await updates.record_progress(
-            db_session, host_id=host.id, instruction_id=job.instruction_id,
+            db_session,
+            host_id=host.id,
+            instruction_id=job.instruction_id,
             state=UpdateState.VERIFYING,
         )
         await db_session.flush()
 
         count = len(
-            (
-                await db_session.execute(
-                    select(UpdateEvent).where(UpdateEvent.job_id == job.id)
-                )
-            )
+            (await db_session.execute(select(UpdateEvent).where(UpdateEvent.job_id == job.id)))
             .scalars()
             .all()
         )

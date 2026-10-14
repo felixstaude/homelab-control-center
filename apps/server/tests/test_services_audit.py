@@ -203,4 +203,18 @@ class TestAuditEventModel:
             "monitoring.host_override_changed",
             "monitoring.host_override_reset",
             "monitoring.config_rejected",
+            # Operation Evergreen. Every one of these is a decision about
+            # running different code on somebody's machine, which makes them
+            # the highest-consequence actions in the product. Note what is
+            # absent: there is no `update.progress` or `update.state_changed`.
+            # A fleet updating would write a row per host per transition and
+            # bury every administrative event — the same reasoning that keeps
+            # `host.agent_connected` out. Those live in `update_events`, which
+            # is the right table for them.
+            "update.policy_changed",
+            "update.started",
+            "update.cancelled",
+            "update.downgrade_authorized",
+            "update.rollout_created",
+            "update.rollout_controlled",
         }
