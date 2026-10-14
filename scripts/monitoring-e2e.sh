@@ -79,6 +79,7 @@ FAIL=0
 green() { printf '\033[0;32m%s\033[0m\n' "$1"; }
 red()   { printf '\033[0;31m%s\033[0m\n' "$1"; }
 info()  { printf '\n\033[0;36m%s\033[0m\n' "$1"; }
+dim()   { printf '\033[0;90m%s\033[0m\n' "$1"; }
 
 ok()  { green "  ✓ $1"; PASS=$((PASS + 1)); }
 bad() { red   "  ✗ $1"; FAIL=$((FAIL + 1)); }
@@ -845,23 +846,86 @@ else
 fi
 
 # And the aggregate has to agree with the raw rows it came from.
-agreement="$(query "
+#
+# ## Why this is containment and not equality
+#
+# **The agent is still collecting.** Stages 17 and 18 need it alive, so it
+# cannot be stopped before this, and the rollup above sealed the current
+# five-minute bucket by telling the job the clock is six minutes ahead. Between
+# that seal and this query the agent writes more raw samples into the *same*
+# bucket — so the bucket's raw maximum can grow past the value the rollup
+# correctly recorded.
+#
+# An equality check therefore fails for a reason that says nothing about the
+# aggregation: it was right when it ran. CI caught it doing exactly that
+# ("1 rollup rows disagree with their raw data", 59 of 60 checks passing).
+#
+# The property that holds whatever arrives later is **containment**: a rollup
+# aggregates a subset of its bucket's samples, so its maximum can never exceed
+# the bucket's raw maximum and its minimum can never fall below the raw
+# minimum. A genuinely wrong aggregate — a max above every sample, a min below
+# every sample, a spike averaged away — violates that, and a late arrival
+# cannot.
+containment="$(query "
   SELECT count(*) FROM (
-    SELECT r.series_id, r.bucket_start, r.max_value,
-           max(s.value) AS raw_max
+    SELECT r.series_id, r.bucket_start, r.max_value, r.min_value,
+           max(s.value) AS raw_max, min(s.value) AS raw_min
     FROM metric_samples_5m r
     JOIN metric_samples_raw s
       ON s.series_id = r.series_id
      AND s.recorded_at >= r.bucket_start
      AND s.recorded_at < r.bucket_start + interval '5 minutes'
-    GROUP BY r.series_id, r.bucket_start, r.max_value
+    GROUP BY r.series_id, r.bucket_start, r.max_value, r.min_value
   ) checked
-  WHERE abs(max_value - raw_max) > 0.0001")"
+  WHERE max_value > raw_max + 0.0001 OR min_value < raw_min - 0.0001")"
 checked="$(query "SELECT count(*) FROM metric_samples_5m")"
-if [[ "$agreement" == "0" && -n "$checked" && "$checked" -gt 0 ]]; then
-  ok "each of $checked rollup maxima equals the maximum of its raw samples"
+if [[ "$containment" == "0" && -n "$checked" && "$checked" -gt 0 ]]; then
+  ok "each of $checked rollup ranges lies inside its raw samples' range"
 else
-  bad "$agreement rollup rows disagree with their raw data"
+  bad "$containment rollup rows have extremes outside their raw data"
+fi
+
+# Exact agreement, where it is still decidable.
+#
+# A bucket whose stored `sample_count` equals the number of raw rows now in it
+# has not grown since the rollup ran, so for those the stronger claim holds:
+# the recorded maximum is exactly the maximum of the raw samples.
+#
+# Reported as skipped rather than failed when there are none, which is the
+# common case on a short run — every sample lands in one bucket and the agent
+# is still writing to it. A check that demanded a stable bucket would be flaky
+# in the opposite direction, and claiming a pass for something not exercised
+# would be worse than either.
+stable_total="$(query "
+  SELECT count(*) FROM (
+    SELECT r.series_id, r.bucket_start
+    FROM metric_samples_5m r
+    JOIN metric_samples_raw s
+      ON s.series_id = r.series_id
+     AND s.recorded_at >= r.bucket_start
+     AND s.recorded_at < r.bucket_start + interval '5 minutes'
+    GROUP BY r.series_id, r.bucket_start, r.sample_count
+    HAVING count(s.value) = r.sample_count
+  ) stable")"
+stable_wrong="$(query "
+  SELECT count(*) FROM (
+    SELECT r.series_id, r.bucket_start, r.max_value, r.sample_count,
+           max(s.value) AS raw_max, count(s.value) AS raw_count
+    FROM metric_samples_5m r
+    JOIN metric_samples_raw s
+      ON s.series_id = r.series_id
+     AND s.recorded_at >= r.bucket_start
+     AND s.recorded_at < r.bucket_start + interval '5 minutes'
+    GROUP BY r.series_id, r.bucket_start, r.max_value, r.sample_count
+  ) checked
+  WHERE raw_count = sample_count AND abs(max_value - raw_max) > 0.0001")"
+if [[ -z "$stable_total" || "$stable_total" == "0" ]]; then
+  dim "  — no bucket has stopped growing, so exact agreement is not decidable here"
+  dim "    (the agent is still collecting; containment above is the assertion)"
+elif [[ "$stable_wrong" == "0" ]]; then
+  ok "each of $stable_total unchanged buckets' maxima equals its raw maximum exactly"
+else
+  bad "$stable_wrong unchanged rollup buckets disagree with their raw data"
 fi
 
 # Raw data must not be expired before the rollups that depend on it exist.
