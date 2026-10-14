@@ -287,7 +287,46 @@ measured, so this document does not quote any.
 
 ---
 
-## 6. What has not been measured
+## 6. One command to a working controller: **51 seconds, and a 354 MB image**
+
+Measured by `deployment-e2e.sh` on a GitHub-hosted runner, which reports the
+figures on every run. They are **reported and never asserted**: a runner's
+speed varies by a factor of several between runs, so a threshold would fail for
+the one reason that says nothing about the deployment. The ceiling that *is*
+enforced is `wait_for`'s deadline — the scenario fails if the controller never
+answers at all.
+
+| Step | Measured |
+| --- | --- |
+| Build the image and start the stack | 48 s |
+| From `compose up` returning to `/healthz` answering | 3 s |
+| **One command to a ready controller, total** | **51 s** |
+| Restart the controller and answer again | 4 s |
+| The controller image | 354 MB |
+
+The 3 seconds is the part that is the deployment's own: PostgreSQL starting, the
+migrations applying, and the application coming up. The 48 seconds is the image
+build, which an operator pays only on the build-from-source path — and that is
+currently the documented default, because no image has been published.
+
+The 4-second restart is the upgrade wait: what somebody sits through after
+`up -d` on a new image, with the database already running and the migrations
+already applied.
+
+354 MB is a Python runtime, the dependency set, and a built SPA. Recorded
+because "a Python image with a web client in it" is not a size, and a number
+nobody checks is how an image quietly reaches two gigabytes.
+
+### What this does not show
+
+A cold registry pull, because there is nothing to pull. A slower machine: these
+are a CI runner's figures and the build in particular is dominated by its CPU
+and its network. And nothing about a second version — the restart figure is a
+restart of the same image, not an upgrade across one.
+
+---
+
+## 7. What has not been measured
 
 Listed because a performance document that only contains good news is one
 nobody should trust.
@@ -303,12 +342,11 @@ nobody should trust.
 | Fleet-scale ingestion | §4's samples are written by one process in a loop, so it measures the storage path and not the socket, the scheduler, or a hundred real agents. | Before claiming a host count for collection |
 | Two controller processes | ADR-046 states the degradation rather than measuring it. | When configuration distribution needs a real channel |
 | Browser-side timing | §5 counts bytes. Time to first contentful paint, parse cost and render cost are all unmeasured, so no load-time claim appears anywhere. | Before any claim about how fast the interface feels |
-| Container cold start | How long `compose up` takes to reach a usable sign-in page, migrations included. The deployment scenario asserts that it *does*, not how quickly. | Before the installation documentation quotes a wait |
 | Compression CPU | §5 measures the bytes saved, not the microseconds spent. Assets are cached for a year, so the cost is paid about once per browser per release — argued rather than measured. | If a controller ever serves enough cache misses for it to show |
 
 ---
 
-## 7. The machine these figures came from
+## 8. The machine these figures came from
 
 Figures are comparative, not absolute, and they are worth nothing without
 this:
