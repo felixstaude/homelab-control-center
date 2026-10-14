@@ -461,7 +461,12 @@ func updateApplier(cfg config.Config, logger *slog.Logger) (agent.UpdateApplier,
 		InstalledVersion: buildinfo.Get().Version,
 		Paths:            paths,
 		StagingDir:       updater.StagingDirFor(paths),
-		Logger:           logger,
+		// The same CA the control connection trusts. An operator running an
+		// internal CA mirrors the archives behind it too, and a downloader
+		// that only trusted public roots would make internal mirrors
+		// impossible.
+		CAFile: cfg.CAFile,
+		Logger: logger,
 	})
 	logger.Info("controller-driven updates are enabled",
 		"channel", channelOrStable(cfg.UpdateChannel),

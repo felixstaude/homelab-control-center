@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/felixstaude/homelab-control-center/agents/linux/internal/buildinfo"
 	"github.com/felixstaude/homelab-control-center/agents/linux/internal/protocol"
 )
 
@@ -39,10 +40,22 @@ func isRefusal(err error) bool {
 // anything about what to install. Exactly the shape configuration
 // synchronisation already uses, and for the same reason.
 //
-// Nothing is asked for when no applier is configured: an agent whose operator
-// has not enabled update management should not be fetching instructions it
-// would then decline, and the silence keeps a controller from recording
-// refusals nobody asked for.
+// # When this host has not enabled updates
+//
+// The instruction is **not** fetched, and the refusal is reported anyway.
+//
+// This used to be silent, on the reasoning that an agent with updates off
+// should not have a controller recording refusals nobody asked for. That
+// reasoning was wrong, and the end-to-end update scenario is what showed it:
+// the controller only mentions an instruction when a job exists, and a job
+// only exists because an administrator or a policy authorized one. So there
+// is no "refusal nobody asked for" — there is somebody who pressed a button
+// and, in the silent version, watched a job sit in `queued` for two minutes
+// with no explanation until the stale sweeper took it.
+//
+// Reported without fetching, because the reason does not depend on the
+// instruction's contents: this host will decline whatever is in it. Fetching
+// first would move a few kilobytes of signed metadata for nothing.
 func (a *Agent) reconcileUpdate(
 	ctx context.Context, connection Connection, ack *protocol.HeartbeatAck,
 ) error {
@@ -50,11 +63,7 @@ func (a *Agent) reconcileUpdate(
 		return nil
 	}
 	if a.applyUpdate == nil {
-		a.logger.Debug(
-			"the controller has an update instruction and this agent has no updater configured",
-			"instruction", ack.UpdateInstructionID,
-		)
-		return nil
+		return a.declineUpdate(ctx, connection, ack.UpdateInstructionID)
 	}
 	if a.updating.Load() {
 		// Already working on one. Asking again would get the same instruction
@@ -65,6 +74,41 @@ func (a *Agent) reconcileUpdate(
 		"instruction", ack.UpdateInstructionID,
 	)
 	return connection.Send(ctx, protocol.NewUpdateRequest())
+}
+
+// DeclinedReason is what a host with updates disabled reports.
+//
+// A sentence rather than a code, because it is rendered verbatim in the update
+// history and in the dialog an administrator is looking at — and because the
+// remedy is the useful half. "Automatic updates are disabled" without the
+// variable name sends somebody to the documentation for something they could
+// have fixed in one line.
+const DeclinedReason = "automatic updates are not enabled on this host " +
+	"(HCC_AGENT_AUTO_UPDATE is false in /etc/hcc-agent/agent.env)"
+
+// declineUpdate tells the controller this host will not act on an instruction.
+//
+// Sent at most once per instruction per session. The job moves to `failed` on
+// the first report and the controller then stops mentioning it, so the guard
+// is belt and braces — but a controller that for any reason kept mentioning it
+// would otherwise get one refusal every thirty seconds for ever.
+func (a *Agent) declineUpdate(
+	ctx context.Context, connection Connection, instructionID string,
+) error {
+	if previous := a.declinedInstruction.Load(); previous != nil && *previous == instructionID {
+		return nil
+	}
+	a.declinedInstruction.Store(&instructionID)
+	a.logger.Info("declining an update instruction; this host has not enabled updates",
+		"instruction", instructionID,
+		"enable_with", "HCC_AGENT_AUTO_UPDATE=true",
+	)
+	return connection.Send(ctx, protocol.NewUpdateResult(
+		instructionID,
+		protocol.StateFailed,
+		buildinfo.Get().Version,
+		DeclinedReason,
+	))
 }
 
 // startUpdate applies an instruction in its own goroutine.

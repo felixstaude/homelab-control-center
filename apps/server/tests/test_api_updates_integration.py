@@ -49,6 +49,44 @@ def csrf(token: str) -> dict[str, str]:
     return {"X-CSRF-Token": token}
 
 
+def signed_manifest(tmp_path: Any, *versions: str) -> tuple[Any, tuple[str, ...]]:
+    """Write a manifest with a valid signature, and the key that verifies it.
+
+    Most of these tests are about the API and not about who signed the
+    release — but the planner refuses to offer an update it cannot
+    authenticate, so a manifest with no signature produces a blocked plan and
+    every "an administrator starts an update" test becomes a 422.
+
+
+    That refusal is correct and is tested on its own. This helper is what lets
+    the rest of the suite be about the thing it is named after, and it has the
+    side benefit of putting the real Ed25519 verification on the path of forty
+    API tests rather than only the two that mention signatures.
+    """
+    return sign_document(tmp_path, manifest_document(*versions))
+
+
+def sign_document(tmp_path: Any, document: dict[str, Any]) -> tuple[Any, tuple[str, ...]]:
+    """The same, for a manifest a test has modified.
+
+    Takes the document rather than a version list, so a test that sets
+    `protocol_versions` to something incompatible gets a *protocol* blocker
+    rather than a signature one — which is what it is named after.
+    """
+    from hcc.updates.signing import encode_public_key, generate_keypair, sign_manifest
+
+    serialised = json.dumps(document)
+    path = tmp_path / "releases.json"
+    path.write_text(serialised)
+    private, public = generate_keypair()
+    # Over the exact bytes that were written. Re-serialising here would be the
+    # mistake the detached signature exists to make impossible.
+    (tmp_path / "releases.json.sig").write_text(
+        json.dumps(sign_manifest(serialised.encode(), private))
+    )
+    return path, (encode_public_key(public),)
+
+
 def manifest_document(*versions: str) -> dict[str, Any]:
     return {
         "schema_version": 2,
@@ -179,10 +217,9 @@ class TestTheReadSideIsOpenToEveryRole:
     async def test_a_hosts_status_names_its_plan_and_policy(
         self, api_factory: ApiFactory, seed_user: SeedUser, sign_in: SignIn, tmp_path: Any
     ) -> None:
-        path = tmp_path / "releases.json"
-        path.write_text(json.dumps(manifest_document("0.1.0", "0.1.1")))
+        path, keys = signed_manifest(tmp_path, "0.1.0", "0.1.1")
 
-        async with api_factory(agent_release_manifest=path) as client:
+        async with api_factory(agent_release_manifest=path, release_signing_keys=keys) as client:
             await seed_user(client, username="admin", role=UserRole.ADMIN)
             token = await sign_in(client, "admin")
             host_id = await a_host(client, token)
@@ -205,10 +242,9 @@ class TestTheReadSideIsOpenToEveryRole:
         # host that is stuck, which makes a stuck fleet look current.
         document = manifest_document("0.1.0", "0.2.0")
         document["releases"]["0.2.0"]["protocol_versions"] = [99]
-        path = tmp_path / "releases.json"
-        path.write_text(json.dumps(document))
+        path, keys = sign_document(tmp_path, document)
 
-        async with api_factory(agent_release_manifest=path) as client:
+        async with api_factory(agent_release_manifest=path, release_signing_keys=keys) as client:
             await seed_user(client, username="admin", role=UserRole.ADMIN)
             token = await sign_in(client, "admin")
             host_id = await a_host(client, token)
@@ -569,10 +605,9 @@ class TestStartingAndCancelling:
     async def test_an_administrator_starts_an_update(
         self, api_factory: ApiFactory, seed_user: SeedUser, sign_in: SignIn, tmp_path: Any
     ) -> None:
-        path = tmp_path / "releases.json"
-        path.write_text(json.dumps(manifest_document("0.1.0", "0.1.1")))
+        path, keys = signed_manifest(tmp_path, "0.1.0", "0.1.1")
 
-        async with api_factory(agent_release_manifest=path) as client:
+        async with api_factory(agent_release_manifest=path, release_signing_keys=keys) as client:
             await seed_user(client, username="admin", role=UserRole.ADMIN)
             token = await sign_in(client, "admin")
             host_id = await a_host(client, token)
@@ -590,10 +625,9 @@ class TestStartingAndCancelling:
     async def test_a_second_start_is_a_409_naming_the_open_update(
         self, api_factory: ApiFactory, seed_user: SeedUser, sign_in: SignIn, tmp_path: Any
     ) -> None:
-        path = tmp_path / "releases.json"
-        path.write_text(json.dumps(manifest_document("0.1.0", "0.1.1")))
+        path, keys = signed_manifest(tmp_path, "0.1.0", "0.1.1")
 
-        async with api_factory(agent_release_manifest=path) as client:
+        async with api_factory(agent_release_manifest=path, release_signing_keys=keys) as client:
             await seed_user(client, username="admin", role=UserRole.ADMIN)
             token = await sign_in(client, "admin")
             host_id = await a_host(client, token)
@@ -610,10 +644,9 @@ class TestStartingAndCancelling:
     async def test_starting_with_nothing_to_install_is_a_422_that_says_why(
         self, api_factory: ApiFactory, seed_user: SeedUser, sign_in: SignIn, tmp_path: Any
     ) -> None:
-        path = tmp_path / "releases.json"
-        path.write_text(json.dumps(manifest_document("0.1.0")))
+        path, keys = signed_manifest(tmp_path, "0.1.0")
 
-        async with api_factory(agent_release_manifest=path) as client:
+        async with api_factory(agent_release_manifest=path, release_signing_keys=keys) as client:
             await seed_user(client, username="admin", role=UserRole.ADMIN)
             token = await sign_in(client, "admin")
             host_id = await a_host(client, token)
@@ -630,10 +663,9 @@ class TestStartingAndCancelling:
         document = manifest_document("0.1.0", "0.2.0")
         document["releases"]["0.2.0"]["protocol_versions"] = [99]
         document["releases"]["0.2.0"]["min_controller"] = "9.9.9"
-        path = tmp_path / "releases.json"
-        path.write_text(json.dumps(document))
+        path, keys = sign_document(tmp_path, document)
 
-        async with api_factory(agent_release_manifest=path) as client:
+        async with api_factory(agent_release_manifest=path, release_signing_keys=keys) as client:
             await seed_user(client, username="admin", role=UserRole.ADMIN)
             token = await sign_in(client, "admin")
             host_id = await a_host(client, token)
@@ -648,10 +680,9 @@ class TestStartingAndCancelling:
     async def test_an_administrator_cancels_a_queued_update(
         self, api_factory: ApiFactory, seed_user: SeedUser, sign_in: SignIn, tmp_path: Any
     ) -> None:
-        path = tmp_path / "releases.json"
-        path.write_text(json.dumps(manifest_document("0.1.0", "0.1.1")))
+        path, keys = signed_manifest(tmp_path, "0.1.0", "0.1.1")
 
-        async with api_factory(agent_release_manifest=path) as client:
+        async with api_factory(agent_release_manifest=path, release_signing_keys=keys) as client:
             await seed_user(client, username="admin", role=UserRole.ADMIN)
             token = await sign_in(client, "admin")
             host_id = await a_host(client, token)
@@ -688,10 +719,9 @@ class TestStartingAndCancelling:
     async def test_the_history_records_the_attempt_with_its_events(
         self, api_factory: ApiFactory, seed_user: SeedUser, sign_in: SignIn, tmp_path: Any
     ) -> None:
-        path = tmp_path / "releases.json"
-        path.write_text(json.dumps(manifest_document("0.1.0", "0.1.1")))
+        path, keys = signed_manifest(tmp_path, "0.1.0", "0.1.1")
 
-        async with api_factory(agent_release_manifest=path) as client:
+        async with api_factory(agent_release_manifest=path, release_signing_keys=keys) as client:
             await seed_user(client, username="admin", role=UserRole.ADMIN)
             token = await sign_in(client, "admin")
             host_id = await a_host(client, token)
@@ -737,11 +767,10 @@ class TestNoResponseCarriesASecret:
         """
         import re
 
-        path = tmp_path / "releases.json"
-        path.write_text(json.dumps(manifest_document("0.1.0", "0.1.1")))
+        path, keys = signed_manifest(tmp_path, "0.1.0", "0.1.1")
         forbidden = re.compile(r"credential|secret|private|password|token", re.IGNORECASE)
 
-        async with api_factory(agent_release_manifest=path) as client:
+        async with api_factory(agent_release_manifest=path, release_signing_keys=keys) as client:
             await seed_user(client, username="admin", role=UserRole.ADMIN)
             token = await sign_in(client, "admin")
             host_id = await a_host(client, token)

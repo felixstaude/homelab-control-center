@@ -93,6 +93,9 @@ def plan(installed: str | None, releases: dict[str, Any], **kwargs: Any) -> Any:
         "controller_version": CONTROLLER,
         "supported_protocol_versions": PROTOCOLS,
         "applied_schema_revisions": SCHEMA,
+        # The ordinary case. Authenticity has its own tests below; stating it
+        # here keeps every other test about the thing it is named after.
+        "metadata_authentic": True,
     }
     manifest_kwargs = {
         key: kwargs.pop(key)
@@ -356,6 +359,7 @@ class TestCompatibilityBlocksWithoutHiding:
             applied_schema_revisions=frozenset(),
             host_platform=AMD64,
             automatic=False,
+            metadata_authentic=True,
         )
 
         assert compatibility.ok
@@ -375,8 +379,8 @@ class TestCompatibilityBlocksWithoutHiding:
             "host_platform": AMD64,
         }
 
-        assert evaluate_compatibility(entry, automatic=False, **shared).ok
-        automatic = evaluate_compatibility(entry, automatic=True, **shared)
+        assert evaluate_compatibility(entry, automatic=False, metadata_authentic=True, **shared).ok
+        automatic = evaluate_compatibility(entry, automatic=True, metadata_authentic=True, **shared)
         assert not automatic.ok
         assert automatic.codes == (BlockerCode.PROTOCOL_UNDECLARED.value,)
 
@@ -519,3 +523,112 @@ class TestTheOutcomeEnumIsClosed:
         expected = outcome in {Outcome.UPDATE_AVAILABLE, Outcome.DOWNGRADE}
 
         assert outcome.is_actionable is expected
+
+
+def codes_of(result: Any) -> tuple[str, ...]:
+    """The blocker codes on a plan, in order.
+
+    `Compatibility` has this as a property and `UpdatePlan` deliberately does
+    not — a plan is read by the API, which renders each blocker's detail
+    alongside its code, so a codes-only view would be a shortcut that exists
+    for tests. Here it is, in the tests.
+    """
+    return tuple(blocker.code.value for blocker in result.blockers)
+
+
+class TestMetadataNobodyCanVouchForIsNotOffered:
+    """The clause the end-to-end scenario added.
+
+    Before it, a controller holding a manifest signed by a key it did not
+    trust reported ``untrusted_key`` on its overview *and* offered the update
+    anyway. The agent then declined it, because the agent's signature gate is
+    unconditional — so the administrator pressed "install", waited, and got a
+    failure about signatures on a page about versions.
+    """
+
+    def test_an_unauthenticated_manifest_blocks_the_update(self) -> None:
+        result = plan(
+            "0.1.0",
+            {"0.1.0": release(), "0.2.0": release()},
+            metadata_authentic=False,
+        )
+
+        assert result.outcome is Outcome.UPDATE_AVAILABLE_INCOMPATIBLE
+        assert BlockerCode.METADATA_UNAUTHENTICATED.value in codes_of(result)
+
+    def test_the_update_is_still_reported_as_existing(self) -> None:
+        # Blocked, not hidden. A host held back by a missing signing key is a
+        # host somebody has to do something about, and an interface that
+        # showed it as up to date would hide the thing that needs fixing.
+        result = plan(
+            "0.1.0",
+            {"0.1.0": release(), "0.2.0": release()},
+            metadata_authentic=False,
+        )
+
+        assert result.has_update
+        assert result.target is not None
+        assert str(result.target) == "0.2.0"
+
+    def test_it_is_not_actionable_even_for_a_manual_start(self) -> None:
+        # The important half. `automatic=False` means a human is in the loop,
+        # which relaxes the undeclared-protocol rule — and must not relax this
+        # one, because the agent will refuse whatever the human intended.
+        result = plan(
+            "0.1.0",
+            {"0.1.0": release(), "0.2.0": release()},
+            metadata_authentic=False,
+            automatic=False,
+        )
+
+        assert not result.outcome.is_actionable
+
+    def test_the_blocker_names_the_setting_that_fixes_it(self) -> None:
+        result = plan(
+            "0.1.0",
+            {"0.1.0": release(), "0.2.0": release()},
+            metadata_authentic=False,
+        )
+
+        detail = next(
+            blocker.detail
+            for blocker in result.blockers
+            if blocker.code is BlockerCode.METADATA_UNAUTHENTICATED
+        )
+        assert "HCC_RELEASE_SIGNING_KEYS" in detail
+
+    def test_a_pinned_host_is_blocked_too(self) -> None:
+        # A pin is the strongest statement an administrator can make and it
+        # still does not establish who built the bytes.
+        result = plan(
+            "0.1.0",
+            {"0.1.0": release(), "0.2.0": release()},
+            pinned_version="0.2.0",
+            metadata_authentic=False,
+        )
+
+        assert BlockerCode.METADATA_UNAUTHENTICATED.value in codes_of(result)
+        assert not result.outcome.is_actionable
+
+    def test_authenticity_is_not_assumed_by_default(self) -> None:
+        # `plan_update`'s default. A caller that has not verified a signature
+        # has not verified one, and the other default would mean every caller
+        # who forgot the argument silently offered unverifiable updates.
+        result = plan_update(
+            manifest({"0.1.0": release(), "0.2.0": release()}),
+            installed_version="0.1.0",
+            host_platform=AMD64,
+            controller_version=CONTROLLER,
+            supported_protocol_versions=PROTOCOLS,
+            applied_schema_revisions=SCHEMA,
+        )
+
+        assert BlockerCode.METADATA_UNAUTHENTICATED.value in codes_of(result)
+
+    def test_a_host_already_on_the_newest_release_is_still_up_to_date(self) -> None:
+        # Nothing to install, so nothing to authenticate. Reporting a host
+        # that needs no update as "blocked" would be alarming and wrong.
+        result = plan("0.2.0", {"0.1.0": release(), "0.2.0": release()}, metadata_authentic=False)
+
+        assert result.outcome is Outcome.UP_TO_DATE
+        assert codes_of(result) == ()

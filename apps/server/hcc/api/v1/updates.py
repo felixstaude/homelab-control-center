@@ -34,6 +34,7 @@ is not a secret.
 
 from __future__ import annotations
 
+import dataclasses
 import uuid
 from datetime import UTC, datetime, time
 from typing import TYPE_CHECKING, Annotated, Literal
@@ -68,6 +69,7 @@ from hcc.updates.policy import MaintenanceWindow, Policy, WindowError
 from hcc.updates.schema import applied_revisions, current_revision
 
 if TYPE_CHECKING:
+    from hcc.agents.releases import ReleaseManifest
     from hcc.models.updates import UpdateEvent, UpdateJob
     from hcc.services.updates import FleetUpdateOverview, HostUpdateStatus
 
@@ -474,13 +476,32 @@ class UpdateNotCancellableConflictError(AppError):
 # ---------------------------------------------------------------------------
 
 
-async def _manifest_and_signature(settings: SettingsDep) -> tuple[object | None, str, str | None]:
+@dataclasses.dataclass(frozen=True, slots=True)
+class _ManifestState:
+    """The manifest, and what is known about who vouched for it.
+
+    One object rather than a tuple because ``authentic`` is the fourth value
+    and the thing most easily dropped — it was a tuple for exactly one
+    revision, four of the five call sites unpacked it as ``manifest, _, _``,
+    and the result was a controller that offered updates it had not verified.
+    """
+
+    manifest: ReleaseManifest | None
+    signature_status: str
+    signature_detail: str | None
+    #: Whether the signature verified against a key this controller trusts.
+    #: **Only** a valid signature. Absence, an untrusted key and a broken
+    #: signature are all "not authentic", because none of them establishes
+    #: who made the release.
+    authentic: bool
+
+
+async def _manifest_and_signature(settings: SettingsDep) -> _ManifestState:
     """Load the manifest and report its signature status.
 
-    Returns ``(manifest, signature_status, signature_detail)``. A manifest that
-    will not load is reported rather than raised: the overview is the page
-    somebody opens *because* something is wrong, and a 500 there would hide
-    the reason behind a stack trace in a log.
+    A manifest that will not load is reported rather than raised: the overview
+    is the page somebody opens *because* something is wrong, and a 500 there
+    would hide the reason behind a stack trace in a log.
     """
     from hcc.updates.signing import (
         SignatureStatus,
@@ -492,21 +513,41 @@ async def _manifest_and_signature(settings: SettingsDep) -> tuple[object | None,
 
     path = settings.agent_release_manifest
     if path is None:
-        return (None, SignatureStatus.ABSENT.value, "no release metadata is configured")
+        return _ManifestState(
+            manifest=None,
+            signature_status=SignatureStatus.ABSENT.value,
+            signature_detail="no release metadata is configured",
+            authentic=False,
+        )
     try:
         manifest = load_release_manifest(path)
     except ManifestError as error:
         logger.warning("update_manifest_unusable", detail=str(error))
-        return (None, SignatureStatus.MALFORMED.value, str(error))
+        return _ManifestState(
+            manifest=None,
+            signature_status=SignatureStatus.MALFORMED.value,
+            signature_detail=str(error),
+            authentic=False,
+        )
 
     try:
         signature = read_signature(path)
     except SigningError as error:
-        return (manifest, SignatureStatus.MALFORMED.value, str(error))
+        return _ManifestState(
+            manifest=manifest,
+            signature_status=SignatureStatus.MALFORMED.value,
+            signature_detail=str(error),
+            authentic=False,
+        )
 
     store = TrustStore(settings.release_signing_keys)
     verification = verify_manifest(path.read_bytes(), signature, store)
-    return (manifest, verification.status.value, verification.detail)
+    return _ManifestState(
+        manifest=manifest,
+        signature_status=verification.status.value,
+        signature_detail=verification.detail,
+        authentic=verification.is_authentic,
+    )
 
 
 @read_router.get(
@@ -524,16 +565,19 @@ async def fleet_overview(
     Available to every authenticated role: a viewer who cannot see that the
     fleet is two versions behind cannot do their job.
     """
-    manifest, signature_status, signature_detail = await _manifest_and_signature(settings)
+    metadata = await _manifest_and_signature(settings)
     async with database.session_factory() as db:
         revisions = await applied_revisions(db)
         revision = await current_revision(db)
         overview = await updates.fleet_overview(
             db,
-            manifest=manifest,  # type: ignore[arg-type]
+            manifest=metadata.manifest,
+            metadata_authentic=metadata.authentic,
             applied_schema_revisions=revisions,
         )
-    return _overview_response(overview, revision, signature_status, signature_detail)
+    return _overview_response(
+        overview, revision, metadata.signature_status, metadata.signature_detail
+    )
 
 
 def _overview_response(
@@ -586,7 +630,7 @@ async def host_update_statuses(
 
     from hcc.models.host import Host
 
-    manifest, _, _ = await _manifest_and_signature(settings)
+    metadata = await _manifest_and_signature(settings)
     statuses: list[HostUpdateStatusResponse] = []
     async with database.session_factory() as db:
         revisions = await applied_revisions(db)
@@ -599,7 +643,8 @@ async def host_update_statuses(
             status_ = await updates.host_status(
                 db,
                 host_id,
-                manifest=manifest,  # type: ignore[arg-type]
+                manifest=metadata.manifest,
+                metadata_authentic=metadata.authentic,
                 applied_schema_revisions=revisions,
             )
             statuses.append(HostUpdateStatusResponse.of(status_))
@@ -617,14 +662,15 @@ async def host_update_status(
     updates: UpdateServiceDep,
     database: DatabaseDep,
 ) -> HostUpdateStatusResponse:
-    manifest, _, _ = await _manifest_and_signature(settings)
+    metadata = await _manifest_and_signature(settings)
     async with database.session_factory() as db:
         revisions = await applied_revisions(db)
         try:
             status_ = await updates.host_status(
                 db,
                 host_id,
-                manifest=manifest,  # type: ignore[arg-type]
+                manifest=metadata.manifest,
+                metadata_authentic=metadata.authentic,
                 applied_schema_revisions=revisions,
             )
         except HostNotFoundError as error:
@@ -744,7 +790,7 @@ async def set_update_policy(
         except WindowError as error:
             raise ValidationFailedError(str(error)) from error
 
-    manifest, _, _ = await _manifest_and_signature(settings)
+    metadata = await _manifest_and_signature(settings)
     async with database.session_factory() as db:
         try:
             await updates.set_policy(
@@ -768,7 +814,8 @@ async def set_update_policy(
         status_ = await updates.host_status(
             db,
             host_id,
-            manifest=manifest,  # type: ignore[arg-type]
+            manifest=metadata.manifest,
+            metadata_authentic=metadata.authentic,
             applied_schema_revisions=revisions,
         )
     return HostUpdateStatusResponse.of(status_)
@@ -793,14 +840,15 @@ async def start_update(
     The host is notified on its next heartbeat and asks for the instruction;
     nothing is pushed to a host that cannot receive it.
     """
-    manifest, _, _ = await _manifest_and_signature(settings)
+    metadata = await _manifest_and_signature(settings)
     async with database.session_factory() as db:
         revisions = await applied_revisions(db)
         try:
             job = await updates.start_update(
                 db,
                 host_id,
-                manifest=manifest,  # type: ignore[arg-type]
+                manifest=metadata.manifest,
+                metadata_authentic=metadata.authentic,
                 applied_schema_revisions=revisions,
                 trigger=UpdateTrigger.MANUAL,
                 context=audit,

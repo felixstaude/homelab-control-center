@@ -111,6 +111,10 @@ async def queue_an_update(client: Any, host_id: str, manifest: Any) -> UpdateJob
             db,
             uuid.UUID(host_id),
             manifest=manifest,
+            # These tests are about the protocol, not about who signed the
+            # release. Authenticity has its own tests, and the planner's
+            # default is to refuse — see hcc.updates.compat.
+            metadata_authentic=True,
             trigger=UpdateTrigger.MANUAL,
             context=AuditContext(actor_user_id=None, request_id="test"),
         )

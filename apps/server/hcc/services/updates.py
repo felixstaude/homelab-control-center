@@ -315,8 +315,15 @@ class UpdateService:
         *,
         manifest: ReleaseManifest | None,
         applied_schema_revisions: frozenset[str] = frozenset(),
+        metadata_authentic: bool = False,
     ) -> HostUpdateStatus:
-        """Everything the interface shows for one host."""
+        """Everything the interface shows for one host.
+
+        ``metadata_authentic`` defaults to False and so fails closed: a caller
+        that has not verified the manifest's signature has not verified it,
+        and an unverifiable release is reported as blocked rather than as
+        available. See :func:`hcc.updates.compat.evaluate_compatibility`.
+        """
         host = (await db.execute(select(Host).where(Host.id == host_id))).scalar_one_or_none()
         if host is None:
             raise HostNotFoundError(host_id)
@@ -333,6 +340,7 @@ class UpdateService:
             supported_protocol_versions=self._supported_protocol_versions,
             applied_schema_revisions=applied_schema_revisions,
             automatic=policy.is_automatic,
+            metadata_authentic=metadata_authentic,
         )
         return HostUpdateStatus(
             host_id=host.id,
@@ -353,6 +361,7 @@ class UpdateService:
         *,
         manifest: ReleaseManifest | None,
         applied_schema_revisions: frozenset[str] = frozenset(),
+        metadata_authentic: bool = False,
         failure_window: timedelta = timedelta(days=7),
         now: datetime | None = None,
     ) -> FleetUpdateOverview:
@@ -398,6 +407,7 @@ class UpdateService:
                 supported_protocol_versions=self._supported_protocol_versions,
                 applied_schema_revisions=applied_schema_revisions,
                 automatic=policy.is_automatic,
+                metadata_authentic=metadata_authentic,
             )
             if plan.outcome is Outcome.UPDATE_AVAILABLE:
                 counts["update_available"] += 1
@@ -559,6 +569,7 @@ class UpdateService:
         *,
         manifest: ReleaseManifest | None,
         applied_schema_revisions: frozenset[str] = frozenset(),
+        metadata_authentic: bool = False,
         trigger: UpdateTrigger,
         context: AuditContext | None = None,
         target_version: str | None = None,
@@ -610,6 +621,7 @@ class UpdateService:
             applied_schema_revisions=applied_schema_revisions,
             allow_downgrade=allow_downgrade,
             automatic=trigger is not UpdateTrigger.MANUAL,
+            metadata_authentic=metadata_authentic,
         )
 
         if plan.blockers:

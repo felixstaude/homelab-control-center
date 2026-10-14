@@ -127,6 +127,7 @@ class TestStartingAnUpdate:
             db_session,
             host.id,
             manifest=manifest_with("0.1.0", "0.1.1"),
+            metadata_authentic=True,
             trigger=UpdateTrigger.MANUAL,
             context=context(),
             now=now,
@@ -149,6 +150,7 @@ class TestStartingAnUpdate:
             db_session,
             host.id,
             manifest=manifest_with("0.1.0", "0.1.1"),
+            metadata_authentic=True,
             trigger=UpdateTrigger.MANUAL,
             context=context(),
         )
@@ -175,6 +177,7 @@ class TestStartingAnUpdate:
                 db_session,
                 host.id,
                 manifest=manifest_with("0.1.0", "0.1.1"),
+                metadata_authentic=True,
                 trigger=UpdateTrigger.MANUAL,
                 context=context(),
             )
@@ -214,6 +217,7 @@ class TestStartingAnUpdate:
                 db_session,
                 host.id,
                 manifest=blocked,
+                metadata_authentic=True,
                 trigger=UpdateTrigger.MANUAL,
                 context=context(),
             )
@@ -232,6 +236,7 @@ class TestStartingAnUpdate:
             db_session,
             host.id,
             manifest=manifest,
+            metadata_authentic=True,
             trigger=UpdateTrigger.MANUAL,
             context=context(),
         )
@@ -241,6 +246,7 @@ class TestStartingAnUpdate:
                 db_session,
                 host.id,
                 manifest=manifest,
+                metadata_authentic=True,
                 trigger=UpdateTrigger.MANUAL,
                 context=context(),
             )
@@ -258,6 +264,7 @@ class TestStartingAnUpdate:
             db_session,
             host.id,
             manifest=manifest,
+            metadata_authentic=True,
             trigger=UpdateTrigger.MANUAL,
             context=context(),
         )
@@ -268,6 +275,7 @@ class TestStartingAnUpdate:
             db_session,
             host.id,
             manifest=manifest,
+            metadata_authentic=True,
             trigger=UpdateTrigger.MANUAL,
             context=context(),
         )
@@ -285,6 +293,7 @@ class TestStartingAnUpdate:
                 db_session,
                 uuid.uuid4(),
                 manifest=manifest_with("0.1.0", "0.1.1"),
+                metadata_authentic=True,
                 trigger=UpdateTrigger.MANUAL,
                 context=context(),
             )
@@ -321,6 +330,7 @@ class TestTheDatabaseEnforcesOneOpenJob:
                 first,
                 host_id,
                 manifest=manifest,
+                metadata_authentic=True,
                 trigger=UpdateTrigger.MANUAL,
                 context=context(),
             )
@@ -332,6 +342,7 @@ class TestTheDatabaseEnforcesOneOpenJob:
                     second,
                     host_id,
                     manifest=manifest,
+                    metadata_authentic=True,
                     trigger=UpdateTrigger.MANUAL,
                     context=context(),
                 )
@@ -415,6 +426,7 @@ class TestAgentReports:
             db_session,
             host.id,
             manifest=manifest_with("0.1.0", "0.1.1"),
+            metadata_authentic=True,
             trigger=UpdateTrigger.MANUAL,
             context=context(),
         )
@@ -458,6 +470,7 @@ class TestAgentReports:
             db_session,
             host.id,
             manifest=manifest_with("0.1.0", "0.1.1"),
+            metadata_authentic=True,
             trigger=UpdateTrigger.MANUAL,
             context=context(),
         )
@@ -486,6 +499,7 @@ class TestAgentReports:
             db_session,
             host.id,
             manifest=manifest_with("0.1.0", "0.1.1"),
+            metadata_authentic=True,
             trigger=UpdateTrigger.MANUAL,
             context=context(),
         )
@@ -518,6 +532,7 @@ class TestAgentReports:
             db_session,
             victim.id,
             manifest=manifest_with("0.1.0", "0.1.1"),
+            metadata_authentic=True,
             trigger=UpdateTrigger.MANUAL,
             context=context(),
         )
@@ -552,6 +567,7 @@ class TestAgentReports:
             db_session,
             host.id,
             manifest=manifest_with("0.1.0", "0.1.1"),
+            metadata_authentic=True,
             trigger=UpdateTrigger.MANUAL,
             context=context(),
         )
@@ -573,6 +589,7 @@ class TestAgentReports:
             db_session,
             host.id,
             manifest=manifest_with("0.1.0", "0.1.1"),
+            metadata_authentic=True,
             trigger=UpdateTrigger.MANUAL,
             context=context(),
         )
@@ -606,6 +623,7 @@ class TestAgentReports:
             db_session,
             host.id,
             manifest=manifest_with("0.1.0", "0.1.1"),
+            metadata_authentic=True,
             trigger=UpdateTrigger.MANUAL,
             context=context(),
         )
@@ -638,6 +656,7 @@ class TestCancellation:
             db_session,
             host.id,
             manifest=manifest_with("0.1.0", "0.1.1"),
+            metadata_authentic=True,
             trigger=UpdateTrigger.MANUAL,
             context=context(),
         )
@@ -658,6 +677,7 @@ class TestCancellation:
             db_session,
             host.id,
             manifest=manifest_with("0.1.0", "0.1.1"),
+            metadata_authentic=True,
             trigger=UpdateTrigger.MANUAL,
             context=context(),
         )
@@ -686,6 +706,7 @@ class TestCancellation:
             db_session,
             host.id,
             manifest=manifest_with("0.1.0", "0.1.1"),
+            metadata_authentic=True,
             trigger=UpdateTrigger.MANUAL,
             context=context(),
         )
@@ -709,6 +730,7 @@ class TestExpiry:
             db_session,
             host.id,
             manifest=manifest_with("0.1.0", "0.1.1"),
+            metadata_authentic=True,
             trigger=UpdateTrigger.MANUAL,
             context=context(),
             now=datetime(2026, 10, 14, 12, 0, tzinfo=UTC),
@@ -733,6 +755,7 @@ class TestExpiry:
             db_session,
             host.id,
             manifest=manifest_with("0.1.0", "0.1.1"),
+            metadata_authentic=True,
             trigger=UpdateTrigger.MANUAL,
             context=context(),
             now=datetime(2026, 10, 14, 12, 0, tzinfo=UTC),
@@ -752,6 +775,7 @@ class TestExpiry:
             db_session,
             host.id,
             manifest=manifest,
+            metadata_authentic=True,
             trigger=UpdateTrigger.MANUAL,
             context=context(),
             now=datetime(2026, 10, 14, 12, 0, tzinfo=UTC),
@@ -765,6 +789,7 @@ class TestExpiry:
             db_session,
             host.id,
             manifest=manifest,
+            metadata_authentic=True,
             trigger=UpdateTrigger.MANUAL,
             context=context(),
         )
@@ -779,7 +804,9 @@ class TestPolicy:
         # existing host starts updating itself.
         host = await make_host(db_session)
 
-        status = await service().host_status(db_session, host.id, manifest=None)
+        status = await service().host_status(
+            db_session, host.id, manifest=None, metadata_authentic=True
+        )
 
         assert status.policy is Policy.MANUAL
         assert status.channel == "stable"
@@ -848,7 +875,9 @@ class TestPolicy:
             window=window,
         )
         await db_session.flush()
-        status = await service().host_status(db_session, host.id, manifest=None)
+        status = await service().host_status(
+            db_session, host.id, manifest=None, metadata_authentic=True
+        )
 
         assert status.window == window
 
@@ -933,7 +962,9 @@ class TestTheFleetOverview:
         await make_host(db_session, name="mystery", version="hand-built")
         await db_session.flush()
 
-        overview = await updates.fleet_overview(db_session, manifest=manifest)
+        overview = await updates.fleet_overview(
+            db_session, manifest=manifest, metadata_authentic=True
+        )
 
         assert overview.total_hosts == 3
         assert overview.up_to_date == 1
@@ -949,7 +980,7 @@ class TestTheFleetOverview:
         await db_session.flush()
 
         overview = await service().fleet_overview(
-            db_session, manifest=manifest_with("0.9.0", "0.10.0")
+            db_session, manifest=manifest_with("0.9.0", "0.10.0"), metadata_authentic=True
         )
 
         # 0.10.0 first, which a string sort would get backwards.
@@ -961,7 +992,9 @@ class TestTheFleetOverview:
         await make_host(db_session)
         await db_session.flush()
 
-        overview = await service().fleet_overview(db_session, manifest=None)
+        overview = await service().fleet_overview(
+            db_session, manifest=None, metadata_authentic=True
+        )
 
         assert not overview.metadata_available
         assert overview.metadata_detail is not None
@@ -980,7 +1013,7 @@ class TestTheFleetOverview:
         )
         await db_session.flush()
 
-        overview = await updates.fleet_overview(db_session, manifest=None)
+        overview = await updates.fleet_overview(db_session, manifest=None, metadata_authentic=True)
 
         assert overview.hosts_with_automatic_updates == 1
 
@@ -993,6 +1026,7 @@ class TestTheFleetOverview:
             db_session,
             open_host.id,
             manifest=manifest,
+            metadata_authentic=True,
             trigger=UpdateTrigger.MANUAL,
             context=context(),
         )
@@ -1000,6 +1034,7 @@ class TestTheFleetOverview:
             db_session,
             failed_host.id,
             manifest=manifest,
+            metadata_authentic=True,
             trigger=UpdateTrigger.MANUAL,
             context=context(),
         )
@@ -1018,7 +1053,9 @@ class TestTheFleetOverview:
         )
         await db_session.flush()
 
-        overview = await updates.fleet_overview(db_session, manifest=manifest)
+        overview = await updates.fleet_overview(
+            db_session, manifest=manifest, metadata_authentic=True
+        )
 
         assert overview.open_jobs == 1
         assert overview.failed_recently == 1
@@ -1084,6 +1121,7 @@ class TestEventsAreNeverRewritten:
             db_session,
             host.id,
             manifest=manifest_with("0.1.0", "0.1.1"),
+            metadata_authentic=True,
             trigger=UpdateTrigger.MANUAL,
             context=context(),
         )

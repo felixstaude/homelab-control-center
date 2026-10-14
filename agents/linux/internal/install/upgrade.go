@@ -284,12 +284,33 @@ func (u *Upgrader) Run(ctx context.Context) error {
 	}
 	configModifiedBefore := modificationTime(u.Paths.Configuration())
 
+	// Reported **before** the restart, not after, and that ordering is
+	// load-bearing rather than tidy.
+	//
+	// In the controller-driven path the upgrade runs inside the service
+	// process, so `systemctl restart` terminates the thing that is executing
+	// this function: the call does not return, and a report placed after it
+	// would never be sent. The controller would then hold a job in
+	// `installing` for ever, because that is not a state it can conclude from
+	// a reconnection — the transition table deliberately allows
+	// `restarting → succeeded` and not `installing → succeeded`, since an
+	// agent that never said it was restarting might have died for an
+	// unrelated reason.
+	//
+	// Reporting it first means the worst case is a job that says "restarting"
+	// about a restart that failed to start — and that is recoverable: the
+	// rollback below reports the failure if this process survives, and if it
+	// does not, the agent comes back on the old binary and the controller
+	// records a rollback. A stuck `installing` is recoverable by nothing.
+	//
+	// The operator-driven path is unaffected: `hcc-agent upgrade` is a
+	// separate short-lived process, so it survives the restart either way.
+	u.report(StepRestarting, "restarting the service")
 	if _, err := u.System.Systemctl(ctx, "restart", ServiceName); err != nil {
 		u.printf("  ✗ %v\n", err)
 		return u.rollback(ctx, fmt.Sprintf("the service would not restart: %v", err))
 	}
 	u.step("service", "restarted")
-	u.report(StepRestarting, "service restarted")
 
 	// --- 5. Wait for it to come back --------------------------------------
 	u.report(StepVerifyingHealth, "waiting for the new binary to connect")

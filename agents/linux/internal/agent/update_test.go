@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -144,10 +145,16 @@ func TestNoNotificationProducesNothing(t *testing.T) {
 	}
 }
 
-func TestAnAgentWithNoUpdaterAsksForNothing(t *testing.T) {
-	// The default. An agent whose operator has not enabled update management
-	// should not fetch instructions it would then decline — the silence keeps
-	// the controller from recording refusals nobody asked for.
+func TestAnAgentWithNoUpdaterDeclinesWithoutFetching(t *testing.T) {
+	// The default, and a behaviour that changed once the end-to-end scenario
+	// ran. It used to be silence, which left an administrator who pressed
+	// "install" watching a job sit in `queued` until the stale sweeper took
+	// it. The controller only mentions an instruction when a job exists, and a
+	// job only exists because somebody authorized one — so the refusal is
+	// owed to them.
+	//
+	// Not fetched first: the reason does not depend on what is in the
+	// instruction, because this host will decline whatever it is.
 	agent := testAgent(nil)
 	connection := &captureConnection{}
 
@@ -157,8 +164,59 @@ func TestAnAgentWithNoUpdaterAsksForNothing(t *testing.T) {
 		t.Fatalf("reconcile: %v", err)
 	}
 
-	if frames := connection.frames(); len(frames) != 0 {
-		t.Errorf("an agent with no updater asked for an instruction: %v", frames)
+	frames := connection.frames()
+	if len(frames) != 1 {
+		t.Fatalf("sent %d frames, want one refusal: %v", len(frames), frames)
+	}
+	result, ok := frames[0].(protocol.UpdateResult)
+	if !ok {
+		t.Fatalf("sent %T, want an UpdateResult", frames[0])
+	}
+	if result.State != protocol.StateFailed {
+		t.Errorf("state = %q, want %q", result.State, protocol.StateFailed)
+	}
+	if result.InstructionID != "abc" {
+		t.Errorf("instruction = %q, want %q", result.InstructionID, "abc")
+	}
+	// The remedy, verbatim. It is rendered in the history an administrator
+	// reads, and the variable name is the useful half.
+	if !strings.Contains(result.Error, "HCC_AGENT_AUTO_UPDATE") {
+		t.Errorf("the reason does not name the setting: %q", result.Error)
+	}
+	// No request for the instruction itself.
+	for _, frame := range frames {
+		if _, asked := frame.(protocol.UpdateRequest); asked {
+			t.Error("the agent fetched an instruction it was always going to decline")
+		}
+	}
+}
+
+func TestARefusalIsReportedOncePerInstruction(t *testing.T) {
+	// The job moves to `failed` on the first report and the controller stops
+	// mentioning it, so this is belt and braces — but a controller that kept
+	// mentioning it would otherwise get a refusal every thirty seconds for
+	// ever.
+	agent := testAgent(nil)
+	connection := &captureConnection{}
+	ack := &protocol.HeartbeatAck{UpdateInstructionID: "abc"}
+
+	for range 3 {
+		if err := agent.reconcileUpdate(context.Background(), connection, ack); err != nil {
+			t.Fatalf("reconcile: %v", err)
+		}
+	}
+	if frames := connection.frames(); len(frames) != 1 {
+		t.Fatalf("sent %d refusals for one instruction, want one", len(frames))
+	}
+
+	// A different instruction is a different decision, and is reported.
+	if err := agent.reconcileUpdate(
+		context.Background(), connection, &protocol.HeartbeatAck{UpdateInstructionID: "def"},
+	); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if frames := connection.frames(); len(frames) != 2 {
+		t.Fatalf("sent %d refusals for two instructions, want two", len(frames))
 	}
 }
 

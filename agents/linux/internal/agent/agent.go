@@ -142,6 +142,15 @@ type Agent struct {
 	// connection could stall an install.
 	outbound chan any
 
+	// declinedInstruction remembers the last instruction this agent refused
+	// for want of being allowed to update itself.
+	//
+	// So that a host with updates disabled reports the refusal once rather
+	// than once every heartbeat. Per session, deliberately: an agent that has
+	// reconnected may be a newly configured one, and re-reporting is cheap
+	// next to never reporting.
+	declinedInstruction atomic.Pointer[string]
+
 	// updating guards against two concurrent updates for one agent.
 	//
 	// The controller already enforces one open job per host in its schema,

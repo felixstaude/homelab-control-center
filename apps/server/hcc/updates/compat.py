@@ -137,6 +137,8 @@ class BlockerCode(enum.Enum):
     CHANNEL_NOT_PERMITTED = "channel_not_permitted"
     #: Going backwards, without authorization to.
     DOWNGRADE_NOT_AUTHORIZED = "downgrade_not_authorized"
+    #: The release metadata carries no signature this controller can verify.
+    METADATA_UNAUTHENTICATED = "metadata_unauthenticated"
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,6 +188,7 @@ def evaluate_compatibility(
     applied_schema_revisions: frozenset[str],
     host_platform: str,
     automatic: bool,
+    metadata_authentic: bool,
 ) -> Compatibility:
     """Check every compatibility clause for one release on one host.
 
@@ -203,12 +206,51 @@ def evaluate_compatibility(
         automatic: whether this is an automatic update. Only affects the
             treatment of an undeclared protocol version; see
             :data:`PROTOCOL_UNKNOWN_BLOCKS_AUTOMATIC`.
+        metadata_authentic: whether the manifest this release came from
+            carries a signature this controller verified. A property of the
+            *manifest* rather than of this entry, passed in because the
+            outcome depends on both and a caller holding only one of them
+            cannot decide.
 
     Every clause is evaluated even after one fails. An administrator fixing one
     blocker wants to know about the second one now.
     """
     blockers: list[Blocker] = []
     supported = tuple(supported_protocol_versions)
+
+    # 0. Authenticity, before anything about the release itself.
+    #
+    # ## Why this blocks a manual start too, not only an automatic one
+    #
+    # Because the agent refuses unsigned metadata unconditionally. Its
+    # signature gate is not conditioned on policy — it cannot be, since the
+    # digest it checks comes *out of* the signed metadata, so without a
+    # signature there is nothing establishing what the bytes should be.
+    #
+    # So a plan that offered a manual update here would offer an action that
+    # always fails on the host. That is the "button that 422s" failure in its
+    # worst form: the administrator presses it, the job goes to `failed` a
+    # minute later, and the reason is a sentence about signatures on a page
+    # about versions.
+    #
+    # The install command for a *fresh* host is deliberately different and is
+    # unaffected: there the digest travels inside the administrator's own
+    # authenticated session with this controller, and a human verifies it with
+    # `sha256sum -c`. See hcc.agents.releases. An unattended agent has no such
+    # session and no such human.
+    if not metadata_authentic:
+        blockers.append(
+            Blocker(
+                code=BlockerCode.METADATA_UNAUTHENTICATED,
+                detail=(
+                    "the release metadata carries no signature this controller "
+                    "can verify, so nothing establishes which bytes this release "
+                    "consists of. Agents refuse an update on that basis, so it is "
+                    "not offered. Configure HCC_RELEASE_SIGNING_KEYS with the "
+                    "publisher's key, or check who signed the metadata."
+                ),
+            )
+        )
 
     # 1. Protocol.
     if entry.protocol_versions:
@@ -367,6 +409,7 @@ def plan_update(
     applied_schema_revisions: frozenset[str] = frozenset(),
     allow_downgrade: bool = False,
     automatic: bool = False,
+    metadata_authentic: bool = False,
 ) -> UpdatePlan:
     """Decide what update one host should be offered.
 
@@ -385,6 +428,12 @@ def plan_update(
         applied_schema_revisions: every applied Alembic revision.
         allow_downgrade: authorize going backwards.
         automatic: whether this decision is being made without a human.
+        metadata_authentic: whether the manifest's signature verified against a
+            key this controller trusts. **Defaults to False**, which fails
+            closed: a caller that has not established authenticity has not
+            established it, and defaulting the other way would mean every
+            caller who forgot the argument silently offered unverifiable
+            updates.
     """
     if manifest is None:
         return UpdatePlan(
@@ -415,6 +464,7 @@ def plan_update(
             applied_schema_revisions=applied_schema_revisions,
             allow_downgrade=allow_downgrade,
             automatic=automatic,
+            metadata_authentic=metadata_authentic,
         )
 
     newest = _newest_in_channels(manifest, channels)
@@ -480,6 +530,7 @@ def plan_update(
         applied_schema_revisions=applied_schema_revisions,
         host_platform=host_platform,
         automatic=automatic,
+        metadata_authentic=metadata_authentic,
     )
     return UpdatePlan(
         outcome=(
@@ -506,6 +557,7 @@ def _plan_pinned(
     applied_schema_revisions: frozenset[str],
     allow_downgrade: bool,
     automatic: bool,
+    metadata_authentic: bool,
 ) -> UpdatePlan:
     """Resolve a host held at an exact version."""
     pinned = try_parse(pinned_version)
@@ -539,6 +591,7 @@ def _plan_pinned(
         applied_schema_revisions=applied_schema_revisions,
         host_platform=host_platform,
         automatic=automatic,
+        metadata_authentic=metadata_authentic,
     )
 
     if installed is not None and installed > pinned:

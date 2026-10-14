@@ -51,6 +51,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/felixstaude/homelab-control-center/agents/linux/internal/controller"
 	"github.com/felixstaude/homelab-control-center/agents/linux/internal/install"
 	"github.com/felixstaude/homelab-control-center/agents/linux/internal/protocol"
 	"github.com/felixstaude/homelab-control-center/agents/linux/internal/release"
@@ -147,6 +148,17 @@ type Options struct {
 	Paths install.Paths
 	// System is the privileged-operation surface, injected for testing.
 	System install.System
+	// CAFile optionally points at a PEM bundle to trust for the download, in
+	// addition to the system roots.
+	//
+	// The same file the agent trusts for the controller, and for the same
+	// reason: an operator running an internal CA mirrors the archives behind
+	// it too. Without this an internal mirror is unreachable — which is what
+	// the end-to-end update scenario found, with "certificate signed by
+	// unknown authority" after everything else had worked.
+	//
+	// Ignored when Fetch is injected.
+	CAFile string
 	// Fetch retrieves a URL. Injected so a test needs no network.
 	Fetch func(ctx context.Context, url string) (io.ReadCloser, error)
 	// Upgrade installs a verified archive. Injected so a test can assert the
@@ -169,7 +181,7 @@ type Updater struct {
 // caller did not inject.
 func New(options Options) *Updater {
 	if options.Fetch == nil {
-		options.Fetch = httpFetch
+		options.Fetch = fetcherFor(options.CAFile)
 	}
 	if options.Upgrade == nil {
 		options.Upgrade = runUpgrade
@@ -531,8 +543,35 @@ func channelPermitted(accepted, releaseChannel string) bool {
 	return level <= limit
 }
 
+// fetcherFor builds the real downloader, trusting caFile as well as the
+// system roots.
+//
+// A failure to read the CA file is deferred to the first download rather than
+// returned here, because [New] has no error to return and a constructor that
+// could fail on a configuration problem would have to be checked at every
+// call site for a case that cannot happen on a working installation. The
+// deferred error is specific and names the file.
+func fetcherFor(caFile string) func(context.Context, string) (io.ReadCloser, error) {
+	client := http.DefaultClient
+	var buildErr error
+	if caFile != "" {
+		transport, err := controller.NewTransport(caFile)
+		if err != nil {
+			buildErr = err
+		} else {
+			client = &http.Client{Transport: transport}
+		}
+	}
+	return func(ctx context.Context, url string) (io.ReadCloser, error) {
+		if buildErr != nil {
+			return nil, fmt.Errorf("cannot build the download trust store: %w", buildErr)
+		}
+		return httpFetch(ctx, client, url)
+	}
+}
+
 // httpFetch is the real download.
-func httpFetch(ctx context.Context, url string) (io.ReadCloser, error) {
+func httpFetch(ctx context.Context, client *http.Client, url string) (io.ReadCloser, error) {
 	// https only, with the same loopback exception the rest of the agent
 	// makes for a local mirror. Not because the transport protects the bytes —
 	// the signed digest does that — but because an agent that would fetch over
@@ -548,7 +587,7 @@ func httpFetch(ctx context.Context, url string) (io.ReadCloser, error) {
 	if err != nil {
 		return nil, err
 	}
-	response, err := http.DefaultClient.Do(request)
+	response, err := client.Do(request)
 	if err != nil {
 		return nil, err
 	}
