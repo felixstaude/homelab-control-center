@@ -161,11 +161,29 @@ verifies and publishes nothing.
 [`docs/security/2026-10-14-installation-platform-review.md`](../security/2026-10-14-installation-platform-review.md).
 Six findings: four fixed, two accepted with stated reasoning.
 
+### Phase J — documentation — complete (`fcc0fa8`, `6142d25`, `47cf70d`)
+
+Six ADRs (053–058), the design document marked implemented with its two
+amendments, `README.md` restructured around what somebody arriving actually
+wants (install it / develop on it / connect a host), `docs/DEPLOYMENT.md`,
+`docs/RELEASING.md`, and the agent README's third copy of the systemd unit
+removed — see defect 14.
+
+### Phase I — performance — not started, deliberately
+
+The brief puts it after the core work is stable and says to measure before
+optimizing. The core work reached stable late; there is no measurement, so
+there is no optimization. Nothing here was made slower on purpose and nothing
+was made faster on a guess. The one load-bearing performance fact this run
+established is in the table below: the installation matrix completes 61
+assertions against three distributions in CI, which bounds how long the
+install path takes on a cold container.
+
 ---
 
 ## Defects found, and how
 
-Eleven, listed because the *how* is the useful part.
+Fourteen, listed because the *how* is the useful part.
 
 ### Found by reading, before any test existed
 
@@ -235,9 +253,23 @@ Eleven, listed because the *how* is the useful part.
     Nothing to do with this run's changes; it would have kept failing
     intermittently.
 
+### Found by writing the documentation
+
+14. **`agents/linux/README.md` carried a third copy of the systemd unit**, and
+    that copy had three defects: `ProtectSystem=strict` with no
+    `ReadWritePaths` (the agent cannot write its own config),
+    `Restart=always` with no start limit, and `After=network-online.target`
+    with no matching `Wants=`, which does nothing. Its own text called it a
+    "short reference" and named another file as authoritative — which is how a
+    stale copy survives review, because nobody reads a reference for
+    correctness. Removed, and
+    `TestNoDocumentCarriesASecondCopyOfTheUnit` makes the next one a test
+    failure. The same README documented only `run`, while the binary had grown
+    four more subcommands.
+
 ### Fixed in passing
 
-13. **`make help` hid four targets.** Its grep pattern excluded digits, so
+15. **`make help` hid four targets.** Its grep pattern excluded digits, so
     `e2e`, `monitoring-e2e`, `reliability-e2e` and `deployment-e2e` all had
     descriptions and were invisible.
 
@@ -252,7 +284,7 @@ Each command, and what it reported. Re-run rather than trust.
 | `make check` | ✓ all gates |
 | `make test-integration` | 1029 passed |
 | `go test -race ./...` (agents/linux) | ✓ 14 packages |
-| `E2E_REQUIRE_AGENT=1 make e2e` | 151 passed |
+| `E2E_REQUIRE_AGENT=1 make e2e` | 154 passed |
 | `./scripts/reliability-e2e.sh` | 24 passed |
 | `make check-artifacts` | 33 checks + 19/19 self-test refusals |
 | `make check-reproducible` | byte-identical |
@@ -261,8 +293,7 @@ Each command, and what it reported. Re-run rather than trust.
 | `./scripts/deployment-e2e.sh` (CI, Docker) | 44 passed, 0 failed |
 | `systemd-analyze verify` on the embedded unit | ✓ |
 
-CI at `8d46e07`: every job green except `Deployment (Compose)`, which passed
-all 44 assertions and then failed in its own cleanup (defect 5 above).
+CI at `fcc0fa8`: completed success, every job green.
 
 ---
 
