@@ -81,6 +81,7 @@ from hcc.updates.policy import (
     Policy,
     WindowError,
 )
+from hcc.updates.version import try_parse
 
 if TYPE_CHECKING:
     import uuid
@@ -823,6 +824,94 @@ class UpdateService:
         if error is not None:
             job.error = error[:ERROR_MAX_LENGTH]
         await self._transition(db, job, state, source="agent", detail=error)
+        return job
+
+    async def reconcile_on_connect(
+        self,
+        db: AsyncSession,
+        host_id: uuid.UUID,
+        *,
+        reported_version: str | None,
+    ) -> UpdateJob | None:
+        """Finish a job whose agent has come back.
+
+        ## Why the controller has to do this
+
+        **No process can report its own successful replacement.** The install
+        ends with ``systemctl restart``, which terminates the agent that was
+        performing it — so the states an agent can report stop at
+        ``restarting``. Everything after that is the controller observing a
+        reconnection.
+
+        So: a job in ``restarting`` or ``verifying_health`` whose host
+        reconnects reporting the target version **succeeded**. One reporting
+        the old version has rolled back — the agent's own recovery put the
+        previous binary in service, which is the designed outcome of a failed
+        health check and is why ``rolled_back`` exists as a distinct state.
+
+        Returns the job it concluded, or ``None`` when there was nothing to
+        conclude — which is the common case, since most connections are not
+        the far side of an update.
+        """
+        job = await self.open_job(db, host_id)
+        if job is None or job.state not in {
+            UpdateState.RESTARTING.value,
+            UpdateState.VERIFYING_HEALTH.value,
+        }:
+            return None
+
+        await self._lock_host(db, host_id)
+        installed = try_parse(reported_version)
+        target = try_parse(job.to_version)
+
+        if installed is not None and target is not None and installed == target:
+            job.resulting_version = reported_version
+            await self._transition(
+                db,
+                job,
+                UpdateState.SUCCEEDED,
+                source="controller",
+                detail=f"the agent reconnected reporting {reported_version}",
+            )
+            logger.info(
+                "update_reconciled_succeeded",
+                job_id=str(job.id),
+                host_id=str(host_id),
+                version=reported_version,
+            )
+            return job
+
+        # It came back as something else. Rolled back if that something is
+        # what it was running before, and failed if it is neither — a third
+        # version means something happened that this system did not plan, and
+        # saying "rolled back" would be a guess.
+        job.resulting_version = reported_version
+        if reported_version is not None and reported_version == job.from_version:
+            job.error = (
+                f"the agent reconnected still running {reported_version} rather than "
+                f"{job.to_version}, so the update was rolled back. The agent's own "
+                "health check is what restores the previous binary; its journal says "
+                "why the new one did not come up."
+            )
+            state = UpdateState.ROLLED_BACK
+        else:
+            job.error = (
+                f"the agent reconnected reporting {reported_version!r}, which is "
+                f"neither the target {job.to_version} nor the version it was running "
+                f"({job.from_version}). Something changed this host outside the "
+                "update system."
+            )
+            state = UpdateState.FAILED
+        await self._transition(
+            db, job, state, source="controller", detail="reconciled on reconnection"
+        )
+        logger.warning(
+            "update_reconciled_unsuccessful",
+            job_id=str(job.id),
+            host_id=str(host_id),
+            state=state.value,
+            reported=reported_version,
+        )
         return job
 
     # --- Housekeeping -----------------------------------------------------

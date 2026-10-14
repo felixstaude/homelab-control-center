@@ -209,8 +209,26 @@ ALLOWED_TRANSITIONS: Final[dict[UpdateState, frozenset[UpdateState]]] = {
     UpdateState.INSTALLING: frozenset(
         {UpdateState.RESTARTING, UpdateState.FAILED, UpdateState.ROLLED_BACK}
     ),
+    # RESTARTING may go straight to SUCCEEDED, and that is not a shortcut.
+    #
+    # In the controller-driven path the updater runs *inside the service
+    # process*, so `systemctl restart` terminates the thing performing the
+    # install. The agent therefore reports `restarting` and then dies; it
+    # cannot report `verifying_health`, because there is no process left to
+    # report it. The controller concludes the job when the replacement
+    # connects — and that reconnection, with the target version, **is** the
+    # health evidence. See UpdateService.reconcile_on_connect.
+    #
+    # VERIFYING_HEALTH is still reachable, from the operator-driven path:
+    # `hcc-agent upgrade` runs in a separate process from the service, so it
+    # survives the restart and waits for the agent to come back itself.
     UpdateState.RESTARTING: frozenset(
-        {UpdateState.VERIFYING_HEALTH, UpdateState.FAILED, UpdateState.ROLLED_BACK}
+        {
+            UpdateState.VERIFYING_HEALTH,
+            UpdateState.SUCCEEDED,
+            UpdateState.FAILED,
+            UpdateState.ROLLED_BACK,
+        }
     ),
     UpdateState.VERIFYING_HEALTH: frozenset(
         {UpdateState.SUCCEEDED, UpdateState.FAILED, UpdateState.ROLLED_BACK}

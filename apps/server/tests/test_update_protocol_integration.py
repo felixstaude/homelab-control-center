@@ -653,3 +653,196 @@ class TestTheHandshakeStillReportsTheVersion:
         # version 1 dials this exact path, and changing it would strand the
         # fleet more thoroughly than a frame type ever could.
         assert CONNECT == "/api/v1/agents/connect"
+
+
+class TestReconciliationOnReconnection:
+    """The half of the state machine no agent can report.
+
+    The install ends with `systemctl restart`, which terminates the process
+    performing it — so the states an agent reports stop at `restarting`.
+    Everything after that is the controller observing a reconnection, and
+    these are the tests for it.
+    """
+
+    async def test_an_agent_returning_with_the_new_version_succeeds(
+        self, api_factory: ApiFactory, seed_user: SeedUser, sign_in: SignIn, tmp_path: Any
+    ) -> None:
+        path = tmp_path / "releases.json"
+        path.write_text(json.dumps(manifest_document("0.1.0", "0.1.1")))
+
+        async with api_factory(agent_release_manifest=path) as client:
+            host_id, credential = await enrolled_agent(client, seed_user, sign_in)
+            await set_host_version(client, host_id, "0.1.0")
+            from hcc.agents.releases import load_release_manifest
+
+            job = await queue_an_update(client, host_id, load_release_manifest(path))
+
+            # Driven to `restarting`, which is as far as the agent gets.
+            await drive_socket(
+                client,
+                headers={**bearer(credential), "X-HCC-Protocol-Version": "2"},
+                frames=[
+                    frame(2, "update_progress", instruction_id=str(job.instruction_id), state=state)
+                    for state in ("downloading", "verifying", "staged", "installing", "restarting")
+                ],
+            )
+
+            # The replacement connects and reports the new version.
+            await drive_socket(
+                client,
+                headers={**bearer(credential), "X-HCC-Protocol-Version": "2"},
+                frames=[heartbeat(2, agent_version="0.1.1", platform=AMD64)],
+            )
+
+            async with client.app_state.database.session_factory() as db:  # type: ignore[attr-defined]
+                stored = (
+                    await db.execute(select(UpdateJob).where(UpdateJob.id == job.id))
+                ).scalar_one()
+
+            assert stored.state == UpdateState.SUCCEEDED
+            assert stored.resulting_version == "0.1.1"
+            assert stored.finished_at is not None
+
+    async def test_an_agent_returning_with_the_old_version_rolled_back(
+        self, api_factory: ApiFactory, seed_user: SeedUser, sign_in: SignIn, tmp_path: Any
+    ) -> None:
+        # The designed outcome of a failed health check: the agent's own
+        # recovery put the previous binary back in service. Distinguished from
+        # `failed`, because the service is running and that changes what an
+        # operator does next.
+        path = tmp_path / "releases.json"
+        path.write_text(json.dumps(manifest_document("0.1.0", "0.1.1")))
+
+        async with api_factory(agent_release_manifest=path) as client:
+            host_id, credential = await enrolled_agent(client, seed_user, sign_in)
+            await set_host_version(client, host_id, "0.1.0")
+            from hcc.agents.releases import load_release_manifest
+
+            job = await queue_an_update(client, host_id, load_release_manifest(path))
+            await drive_socket(
+                client,
+                headers={**bearer(credential), "X-HCC-Protocol-Version": "2"},
+                frames=[
+                    frame(2, "update_progress", instruction_id=str(job.instruction_id), state=state)
+                    for state in ("downloading", "verifying", "staged", "installing", "restarting")
+                ],
+            )
+
+            await drive_socket(
+                client,
+                headers={**bearer(credential), "X-HCC-Protocol-Version": "2"},
+                frames=[heartbeat(2, agent_version="0.1.0", platform=AMD64)],
+            )
+
+            async with client.app_state.database.session_factory() as db:  # type: ignore[attr-defined]
+                stored = (
+                    await db.execute(select(UpdateJob).where(UpdateJob.id == job.id))
+                ).scalar_one()
+
+            assert stored.state == UpdateState.ROLLED_BACK
+            assert stored.error is not None
+            assert "rolled back" in stored.error
+
+    async def test_a_third_version_is_a_failure_not_a_guess(
+        self, api_factory: ApiFactory, seed_user: SeedUser, sign_in: SignIn, tmp_path: Any
+    ) -> None:
+        # Neither the target nor what it was running. Something changed the
+        # host outside the update system, and saying "rolled back" would be a
+        # guess about what.
+        path = tmp_path / "releases.json"
+        path.write_text(json.dumps(manifest_document("0.1.0", "0.1.1")))
+
+        async with api_factory(agent_release_manifest=path) as client:
+            host_id, credential = await enrolled_agent(client, seed_user, sign_in)
+            await set_host_version(client, host_id, "0.1.0")
+            from hcc.agents.releases import load_release_manifest
+
+            job = await queue_an_update(client, host_id, load_release_manifest(path))
+            await drive_socket(
+                client,
+                headers={**bearer(credential), "X-HCC-Protocol-Version": "2"},
+                frames=[
+                    frame(2, "update_progress", instruction_id=str(job.instruction_id), state=state)
+                    for state in ("downloading", "verifying", "staged", "installing", "restarting")
+                ],
+            )
+
+            await drive_socket(
+                client,
+                headers={**bearer(credential), "X-HCC-Protocol-Version": "2"},
+                frames=[heartbeat(2, agent_version="0.9.9", platform=AMD64)],
+            )
+
+            async with client.app_state.database.session_factory() as db:  # type: ignore[attr-defined]
+                stored = (
+                    await db.execute(select(UpdateJob).where(UpdateJob.id == job.id))
+                ).scalar_one()
+
+            assert stored.state == UpdateState.FAILED
+            assert stored.error is not None
+            assert "outside the update system" in stored.error
+
+    async def test_an_ordinary_connection_concludes_nothing(
+        self, api_factory: ApiFactory, seed_user: SeedUser, sign_in: SignIn, tmp_path: Any
+    ) -> None:
+        # Most connections are not the far side of an update. Reconciliation
+        # must not touch a job that is merely queued, or an administrator's
+        # pending update would complete itself the moment the agent
+        # heartbeated.
+        path = tmp_path / "releases.json"
+        path.write_text(json.dumps(manifest_document("0.1.0", "0.1.1")))
+
+        async with api_factory(agent_release_manifest=path) as client:
+            host_id, credential = await enrolled_agent(client, seed_user, sign_in)
+            await set_host_version(client, host_id, "0.1.0")
+            from hcc.agents.releases import load_release_manifest
+
+            job = await queue_an_update(client, host_id, load_release_manifest(path))
+
+            await drive_socket(
+                client,
+                headers={**bearer(credential), "X-HCC-Protocol-Version": "2"},
+                frames=[heartbeat(2, agent_version="0.1.1", platform=AMD64)],
+            )
+
+            async with client.app_state.database.session_factory() as db:  # type: ignore[attr-defined]
+                stored = (
+                    await db.execute(select(UpdateJob).where(UpdateJob.id == job.id))
+                ).scalar_one()
+
+            assert stored.state == UpdateState.QUEUED
+
+    async def test_a_version_one_agent_does_not_trigger_reconciliation(
+        self, api_factory: ApiFactory, seed_user: SeedUser, sign_in: SignIn, tmp_path: Any
+    ) -> None:
+        # It could not have been sent the instruction in the first place, so
+        # there is nothing to conclude — and the gate covers reconciliation as
+        # well as the notification.
+        path = tmp_path / "releases.json"
+        path.write_text(json.dumps(manifest_document("0.1.0", "0.1.1")))
+
+        async with api_factory(agent_release_manifest=path) as client:
+            host_id, credential = await enrolled_agent(client, seed_user, sign_in)
+            await set_host_version(client, host_id, "0.1.0")
+            from hcc.agents.releases import load_release_manifest
+
+            job = await queue_an_update(client, host_id, load_release_manifest(path))
+            async with client.app_state.database.session_factory() as db:  # type: ignore[attr-defined]
+                stored = (
+                    await db.execute(select(UpdateJob).where(UpdateJob.id == job.id))
+                ).scalar_one()
+                stored.state = UpdateState.RESTARTING.value
+                await db.commit()
+
+            await drive_socket(
+                client,
+                headers={**bearer(credential), "X-HCC-Protocol-Version": "1"},
+                frames=[heartbeat(1, agent_version="0.1.1", platform=AMD64)],
+            )
+
+            async with client.app_state.database.session_factory() as db:  # type: ignore[attr-defined]
+                after = (
+                    await db.execute(select(UpdateJob).where(UpdateJob.id == job.id))
+                ).scalar_one()
+
+            assert after.state == UpdateState.RESTARTING

@@ -41,6 +41,7 @@ import (
 	"math/rand/v2"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/felixstaude/homelab-control-center/agents/linux/internal/buildinfo"
@@ -115,6 +116,58 @@ type Agent struct {
 	// §8) — so it is started by Run and stopped when Run returns, not per
 	// session.
 	collector *scheduler.Scheduler
+
+	// --- Update management, protocol 2 ----------------------------------
+
+	// applyUpdate applies an authorized instruction. Nil when update
+	// management is not configured, which is the normal state of an agent
+	// whose operator has not enabled it — and the reason the field is checked
+	// rather than assumed.
+	applyUpdate UpdateApplier
+
+	// outbound carries frames from the update goroutine to the session loop.
+	//
+	// **The loop is the only writer to the socket**, and this channel is what
+	// keeps that true once an update runs concurrently. An update takes
+	// minutes — a download, an extraction, a service restart — and doing it
+	// inline would stop the heartbeats, so the controller would time the
+	// connection out mid-install. So it runs in its own goroutine and reports
+	// through here.
+	//
+	// Buffered, so a reporter is not blocked by a loop that is momentarily
+	// busy; small, because a backlog of stale progress is worth dropping
+	// rather than queueing. A send that would block is dropped with a log
+	// line: losing a progress report costs the interface a stale bar for one
+	// heartbeat, and blocking the updater on the socket would mean a slow
+	// connection could stall an install.
+	outbound chan any
+
+	// updating guards against two concurrent updates for one agent.
+	//
+	// The controller already enforces one open job per host in its schema,
+	// and this is the agent's own half of the same invariant: a duplicate
+	// instruction — a replayed frame, a controller that asked twice — must
+	// not start a second download over the first.
+	updating atomic.Bool
+
+	// cancelUpdate stops the running update. Nil when none is running.
+	cancelUpdate atomic.Pointer[context.CancelFunc]
+}
+
+// UpdateApplier applies one authorized update instruction.
+//
+// An interface rather than a concrete updater so that internal/agent keeps no
+// dependency on internal/updater — which depends on internal/install, which
+// is the privileged half of the binary. The agent's session loop should not
+// be able to reach the installer except through this.
+type UpdateApplier interface {
+	Apply(ctx context.Context, instruction protocol.UpdateInstruction, reporter UpdateReporter) error
+}
+
+// UpdateReporter is how an update tells the controller where it has got to.
+type UpdateReporter interface {
+	Progress(ctx context.Context, state, detail string) error
+	Result(ctx context.Context, state, resultingVersion, failure string) error
 }
 
 // Configuration returns the configuration in force, or nil.
@@ -222,6 +275,13 @@ func New(cfg config.Config, logger *slog.Logger, opts ...Option) (*Agent, error)
 	if a.queue == nil {
 		a.queue = telemetry.New(cfg.QueueCapacity)
 	}
+	if a.outbound == nil {
+		// Small on purpose. An update emits six progress reports over
+		// minutes, so this is never close to full in normal operation — and
+		// when it is, dropping a stale progress line is the right loss. See
+		// the field's comment.
+		a.outbound = make(chan any, 8)
+	}
 	if a.collector == nil {
 		// The /proc root is the real one. Per-core CPU is off unless the
 		// configuration turns it on — it multiplies the cpu module's
@@ -307,6 +367,17 @@ func WithQueue(queue *telemetry.Queue) Option {
 }
 
 // WithScheduler replaces the collection scheduler. Intended for tests.
+// WithUpdateApplier enables controller-driven updates.
+//
+// Absent, the agent takes no instruction: it logs that the controller has one
+// and asks for nothing. That is the right default for a binary that installs
+// itself as root — update management is wired in by `hcc-agent run` when the
+// installation supports it, and an agent built or embedded without it cannot
+// be made to install anything over the socket at all.
+func WithUpdateApplier(applier UpdateApplier) Option {
+	return func(a *Agent) { a.applyUpdate = applier }
+}
+
 func WithScheduler(collector *scheduler.Scheduler) Option {
 	return func(a *Agent) { a.collector = collector }
 }
@@ -535,6 +606,13 @@ func (a *Agent) session(ctx context.Context) (productive bool, err error) {
 			// retroactively shortening this one.
 			timer = a.clock.After(interval)
 
+		case frame := <-a.outbound:
+			// The update goroutine's reports, written by the loop so the
+			// socket keeps exactly one writer.
+			if err := connection.Send(ctx, frame); err != nil {
+				return productive, err
+			}
+
 		case result := <-frames:
 			if result.err != nil {
 				return productive, result.err
@@ -547,6 +625,9 @@ func (a *Agent) session(ctx context.Context) (productive bool, err error) {
 				productive = true
 				interval = a.acceptInterval(result.frame.Ack, interval)
 				if err := a.reconcileConfig(ctx, connection, result.frame.Ack); err != nil {
+					return productive, err
+				}
+				if err := a.reconcileUpdate(ctx, connection, result.frame.Ack); err != nil {
 					return productive, err
 				}
 			case protocol.TypeConfigAvailable:
@@ -568,6 +649,12 @@ func (a *Agent) session(ctx context.Context) (productive bool, err error) {
 
 			case protocol.TypeTelemetryAck:
 				a.handleTelemetryAck(result.frame.TelemetryAck)
+
+			case protocol.TypeUpdateInstruction:
+				a.startUpdate(ctx, result.frame.Instruction)
+
+			case protocol.TypeUpdateCancel:
+				a.cancelRunningUpdate(result.frame.Cancel)
 
 			case protocol.TypeClose:
 				return productive, a.handleClose(result.frame.Close)

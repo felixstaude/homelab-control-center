@@ -1003,6 +1003,28 @@ async def connect(
                         closing_detail = "a newer connection for this host was accepted"
                     break
 
+                # An update that was restarting this agent has, by definition,
+                # no agent left to report its own success — the install ends
+                # with `systemctl restart`, which terminates the process doing
+                # it. So the controller concludes it here, from the version
+                # the replacement reports.
+                #
+                # On the heartbeat rather than on accept, because the heartbeat
+                # is where the agent's self-reported version arrives.
+                if protocol_version >= UPDATE_PROTOCOL_VERSION:
+                    async with database.session_factory() as db:
+                        concluded = await updates.reconcile_on_connect(
+                            db, agent.host_id, reported_version=message.agent_version
+                        )
+                        await db.commit()
+                    if concluded is not None:
+                        logger.info(
+                            "update_concluded_on_reconnection",
+                            host_id=str(agent.host_id),
+                            job_id=str(concluded.id),
+                            state=concluded.state,
+                        )
+
                 # An update instruction waiting for this host, if the agent
                 # speaks a version that can receive one.
                 #
