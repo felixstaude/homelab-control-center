@@ -58,10 +58,12 @@ from datetime import datetime
 from typing import Final
 
 from sqlalchemy import (
+    BigInteger,
     CheckConstraint,
     DateTime,
     FetchedValue,
     ForeignKey,
+    Identity,
     Index,
     Integer,
     SmallInteger,
@@ -541,7 +543,23 @@ class UpdateEvent(Base):
 
     __tablename__ = "update_events"
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    #: A database-assigned sequence, and the ordering of this log.
+    #:
+    #: Not a UUID, and it is the one non-obvious choice in this table. An
+    #: append-only log has to be *orderable*, and ``created_at`` cannot do it:
+    #: PostgreSQL's ``now()`` is the **transaction** timestamp, so every event
+    #: written in one transaction shares it — and ``start_update`` writes two.
+    #: Ordering by ``(created_at, uuid)`` is then ordering by a random number,
+    #: which showed a job's history backwards about half the time.
+    #:
+    #: The audit log keeps a UUID and documents the transaction timestamp as
+    #: correct *there*, which it is: one audit event per mutation, so there is
+    #: nothing to tie-break. This table is the other shape.
+    #:
+    #: ``Identity(always=True)``, so the sequence is the database's and the
+    #: application cannot supply one — an event log whose order a caller could
+    #: choose is not a log.
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
 
     job_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),

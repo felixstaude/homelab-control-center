@@ -44,6 +44,7 @@ EXPECTED_REVISIONS = (
     "0007_monitoring_config",
     "0008_metric_storage",
     "0009_agent_queue_health",
+    "0010_update_management",
 )
 
 # Every table the chain creates, excluding Alembic's own bookkeeping. Pinned so
@@ -58,6 +59,7 @@ EXPECTED_TABLES = frozenset(
         "host_config_revisions",
         "host_enrollments",
         "host_module_overrides",
+        "host_update_policies",
         "hosts",
         "metric_partitions",
         "metric_samples_1h",
@@ -66,6 +68,10 @@ EXPECTED_TABLES = frozenset(
         "metric_series",
         "installation",
         "sessions",
+        "update_events",
+        "update_jobs",
+        "update_rollout_members",
+        "update_rollouts",
         "users",
     }
 )

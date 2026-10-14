@@ -198,6 +198,15 @@ async def agent_releases(settings: SettingsDep) -> AgentReleasesResponse:
         # knows about. Reported as unavailable rather than as an empty
         # dropdown, which would be an interface offering nothing with no
         # explanation.
+        #
+        # **Defence in depth as of schema v2.** `ReleaseEntry` now refuses an
+        # empty platform map and refuses a platform name outside
+        # SUPPORTED_PLATFORMS, and `ReleaseManifest` refuses a `recommended`
+        # with no entry — so a manifest that reached here cannot produce an
+        # empty list, and this branch is unreachable through the parser. It is
+        # kept because it costs one comparison and the invariant it relies on
+        # lives in another module: if that validation is ever relaxed, the
+        # failure here should be a clear message rather than a blank dropdown.
         logger.error(
             "agent_release_manifest_has_no_usable_platform",
             recommended=manifest.recommended,

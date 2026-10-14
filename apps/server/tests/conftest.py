@@ -87,6 +87,16 @@ _TRUNCATED_TABLES = (
     "metric_series",
     "installation",
     "sessions",
+    # Update management. `update_jobs` cascades to `update_events` and
+    # `update_rollout_members` through their foreign keys, and `hosts` above
+    # would cascade to all of them — but they are named explicitly because a
+    # table whose emptying depends on another table's CASCADE is a table that
+    # stops being emptied the moment that relationship changes.
+    "host_update_policies",
+    "update_events",
+    "update_jobs",
+    "update_rollout_members",
+    "update_rollouts",
     "users",
 )
 

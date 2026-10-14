@@ -138,16 +138,25 @@ class TestWithAManifest:
             assert amd64["tier"] == "supported"
             assert body["platforms"][1]["tier"] == "best-effort"
 
-    async def test_a_recommended_version_with_no_platforms_reports_unavailable(
+    async def test_a_recommended_version_with_no_release_entry_is_unusable(
         self,
         api_factory: ApiFactory,
         seed_user: SeedUser,
         sign_in: SignIn,
         tmp_path: Path,
     ) -> None:
-        # A manifest whose `recommended` names a version it does not list.
-        # Reported as unavailable rather than as an empty dropdown, which
-        # would be an interface offering nothing with no explanation.
+        # **Changed in the Evergreen milestone.** This used to reach the
+        # endpoint's "no architecture this build recognises" branch, because a
+        # dangling `recommended` parsed and then rendered no platforms. Schema
+        # v2 refuses it at parse time instead, so the same manifest now
+        # arrives as a `ManifestError`.
+        #
+        # Still reported as unavailable, which is the property that matters —
+        # the interface shows the build-from-source path either way. The
+        # difference is where the reason is: the response says to read the
+        # log, and the log names the parse failure. That is the existing
+        # decision about not putting parser detail in a response, and it is
+        # not changed here.
         path = tmp_path / "agent-releases.json"
         path.write_bytes(manifest_bytes(recommended="9.9.9"))
 
@@ -158,7 +167,8 @@ class TestWithAManifest:
             body = (await client.get(RELEASES)).json()
 
             assert body["available"] is False
-            assert "no architecture" in body["unavailable_reason"].lower()
+            assert "cannot be read" in body["unavailable_reason"].lower()
+            assert body["platforms"] == []
 
     async def test_an_unusable_manifest_is_reported_rather_than_crashing(
         self,

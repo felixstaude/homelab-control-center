@@ -19,6 +19,14 @@ inserts nothing, so every existing host continues to update only when an
 administrator says so. A migration that had to write a policy per host would
 be one whose failure mode is "some hosts now update themselves".
 
+## `update_events.id` is a sequence, not a UUID
+
+An append-only log has to be orderable. `created_at` cannot do it, because
+PostgreSQL's `now()` is the *transaction* timestamp and several transitions
+are written in one transaction — ordering by `(created_at, uuid)` is ordering
+by a random number. `GENERATED ALWAYS AS IDENTITY`, so the application cannot
+supply one.
+
 ## The `updated_at` triggers
 
 `host_update_policies`, `update_jobs` and `update_rollouts` get one each,
@@ -263,7 +271,7 @@ def upgrade() -> None:
     op.create_index(op.f("ix_update_jobs_rollout_id"), "update_jobs", ["rollout_id"], unique=False)
     op.create_table(
         "update_events",
-        sa.Column("id", sa.Uuid(), nullable=False),
+        sa.Column("id", sa.BigInteger(), sa.Identity(always=True), nullable=False),
         sa.Column("job_id", sa.Uuid(), nullable=False),
         sa.Column("host_id", sa.Uuid(), nullable=False),
         sa.Column("state", sa.String(length=24), nullable=False),
