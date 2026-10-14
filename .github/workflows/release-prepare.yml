@@ -64,7 +64,7 @@ jobs:
       version: ${{ steps.version.outputs.version }}
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           # The build stamps the commit's own date as SOURCE_DATE_EPOCH, so
           # the tag's commit has to be fetched with its metadata. A shallow
@@ -73,7 +73,7 @@ jobs:
           fetch-depth: 1
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: agents/linux/go.sum
@@ -143,7 +143,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: hcc-agent-${{ steps.version.outputs.version }}
           path: dist/agent
@@ -173,7 +173,7 @@ jobs:
 
     steps:
       - name: Download the artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           name: hcc-agent-${{ needs.agent.outputs.version }}
           path: dist/agent
@@ -184,7 +184,7 @@ jobs:
         # transparency log. Keyless: there is no private key for a
         # one-maintainer project to store, rotate or lose, which was the
         # deciding property in the design.
-        uses: actions/attest-build-provenance@v3
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: 'dist/agent/hcc-agent_*.tar.gz'
 
