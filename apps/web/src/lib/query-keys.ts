@@ -125,6 +125,33 @@ export const queryKeys = {
      */
     agentReleases: () => ['session', 'agent-releases'] as const,
 
+    /* --- Update management (Operation Evergreen) --- */
+
+    /**
+     * The root for every update query.
+     *
+     * Invalidated by every update mutation, and the breadth matters here more
+     * than elsewhere: starting an update on one host changes that host's
+     * status, the fleet counts, the history and the open-job count — four
+     * views a mutation cannot enumerate. Invalidating the root lets the cache
+     * refresh whichever of them is on screen.
+     */
+    updates: () => ['session', 'updates'] as const,
+    updateOverview: () => ['session', 'updates', 'overview'] as const,
+    hostUpdateStatuses: () => ['session', 'updates', 'hosts'] as const,
+    hostUpdateStatus: (hostId: string) =>
+      ['session', 'updates', 'host', hostId] as const,
+    /**
+     * One page of history.
+     *
+     * The cursor is in the key, so paging forward is a new entry rather than
+     * one that thrashes — and going back shows the previous page from cache
+     * instead of refetching it.
+     */
+    updateHistory: (params: UpdateHistoryKeyParams) =>
+      ['session', 'updates', 'history', params] as const,
+    updateEvents: (jobId: string) => ['session', 'updates', 'events', jobId] as const,
+
     /* --- Metrics (phase 3) --- */
 
     /**
@@ -204,6 +231,12 @@ export type HostListKeyParams = {
  * fresh entry and leaving the previous one to be garbage collected — the chart
  * would unmount and flash empty on every poll instead of updating in place.
  */
+export type UpdateHistoryKeyParams = {
+  hostId: string;
+  before: string;
+  limit: number;
+};
+
 export type MetricRangeKeyParams = {
   hostId: string;
   seriesId: number;

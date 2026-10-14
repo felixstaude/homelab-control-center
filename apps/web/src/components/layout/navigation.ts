@@ -3,6 +3,7 @@ import {
   Boxes,
   LayoutDashboard,
   Network,
+  RefreshCw,
   ScrollText,
   Server,
   Settings,
@@ -64,6 +65,12 @@ export const NAV_ITEMS: readonly NavItem[] = [
     label: 'Alerts',
     icon: Bell,
     description: 'Notification rules and history',
+  },
+  {
+    to: '/updates',
+    label: 'Updates',
+    icon: RefreshCw,
+    description: 'Agent versions, policies and rollouts',
   },
   {
     to: '/settings',

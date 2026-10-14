@@ -505,6 +505,12 @@ describe('GET /audit/events contract', () => {
       outcome: 'string',
       actor: 'object',
       target: 'object',
+      // Operation Evergreen. A host target, separate from `target`, which is
+      // an account: an event can have one, the other or neither, and
+      // collapsing them would mean rendering a host id in a field labelled
+      // as a username. Update actions are host-targeted, and "which host"
+      // is the field somebody reading the trail most needs.
+      target_host_id: 'string',
       request_id: 'string',
       details: 'object',
     };
@@ -699,11 +705,24 @@ describe('public surface', () => {
       '/api/v1/hosts/{host_id}/monitoring',
       '/api/v1/hosts/{host_id}/monitoring/modules/{module_id}',
       '/api/v1/hosts/{host_id}/monitoring/revisions',
+      // Operation Evergreen. Reads are open to every role — a viewer who
+      // cannot see that the fleet is behind cannot do their job — and every
+      // write is administrator-only, because each is a decision about running
+      // different code on somebody's machine. Asserted behaviourally in the
+      // backend suite, not inferable from here.
+      '/api/v1/hosts/{host_id}/update-policy',
+      '/api/v1/hosts/{host_id}/updates',
       '/api/v1/info',
       '/api/v1/monitoring/defaults',
       '/api/v1/monitoring/defaults/{module_id}',
       '/api/v1/monitoring/modules',
       '/api/v1/setup/status',
+      '/api/v1/updates/expire',
+      '/api/v1/updates/history',
+      '/api/v1/updates/hosts',
+      '/api/v1/updates/jobs/{job_id}/cancel',
+      '/api/v1/updates/jobs/{job_id}/events',
+      '/api/v1/updates/overview',
       '/api/v1/users',
       '/api/v1/users/{user_id}',
       '/api/v1/users/{user_id}/deactivate',

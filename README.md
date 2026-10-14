@@ -368,7 +368,7 @@ Conventions, troubleshooting and the full setup guide:
 
 | Document | Contents |
 | --- | --- |
-| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | The hub: system design, trust boundaries, 52 ADRs, open questions |
+| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | The hub: system design, trust boundaries, 62 ADRs, open questions |
 | [PRODUCT_VISION.md](docs/PRODUCT_VISION.md) | What this is, who it is for, what it will never do |
 | [ROADMAP.md](docs/ROADMAP.md) | Phases 0–11 as small, independently testable milestones |
 | [SECURITY.md](docs/SECURITY.md) | Threat model, capability risks, secrets handling, known gaps |
@@ -377,6 +377,7 @@ Conventions, troubleshooting and the full setup guide:
 | [AGENT_ARCHITECTURE.md](docs/AGENT_ARCHITECTURE.md) | Transport, enrollment, credential rotation, config sync, offline behaviour |
 | [MONITORING_MODULES.md](docs/MONITORING_MODULES.md) | Module catalogue, collection methods, hardware caveats |
 | [SCHEDULING.md](docs/SCHEDULING.md) | Shared scheduling model, DST, missed runs, drift |
+| [UPDATES.md](docs/UPDATES.md) | Agent updates: signing, policies, channels, maintenance windows, troubleshooting |
 | [DATA_RETENTION.md](docs/DATA_RETENTION.md) | Retention, downsampling, storage limits, volume figures |
 | [REMOTE_MANAGEMENT.md](docs/REMOTE_MANAGEMENT.md) | Capability model, authorization chain, remote terminal |
 | [PLUGINS.md](docs/PLUGINS.md) | Future extension points; why no plugin system now |

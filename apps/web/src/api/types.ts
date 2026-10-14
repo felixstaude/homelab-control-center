@@ -264,6 +264,15 @@ export type AuditEvent = {
   outcome: string;
   actor: AuditActor | null;
   target: AuditActor | null;
+  /**
+   * The host the action was about, or `null`.
+   *
+   * Separate from `target`, which is an *account*: an event can have one, the
+   * other or neither. Collapsing them would mean rendering a host id in a
+   * field labelled as a username — and update actions are host-targeted,
+   * which makes this the field somebody reading the trail most needs.
+   */
+  target_host_id: string | null;
   request_id: string | null;
   details: Record<string, unknown> | null;
 };
@@ -820,4 +829,180 @@ export type AgentReleases = {
   protocol_version: number;
   supported_protocol_versions: number[];
   server_version: string;
+};
+
+/* ---------------------------------------------------------------------------
+ * Update management (Operation Evergreen)
+ * ------------------------------------------------------------------------ */
+
+/**
+ * Why a release cannot be installed on a host.
+ *
+ * `code` is for grouping and `detail` is the sentence to show. The detail is
+ * written by the server because the useful part — which version, which
+ * architecture, which migration — is only known there, and a client that
+ * composed its own message would have to duplicate the compatibility rules.
+ */
+export type UpdateBlocker = {
+  code: string;
+  detail: string;
+};
+
+/**
+ * What should happen to one host.
+ *
+ * `outcome` is a closed set the interface renders differently, not a boolean:
+ * a host two minor versions behind on a controller too old to drive the newer
+ * release is in a different situation from one that is current, and showing
+ * both as "no update" would lie about which needs attention.
+ */
+export type UpdatePlan = {
+  outcome:
+    | 'up_to_date'
+    | 'update_available'
+    | 'update_available_incompatible'
+    | 'downgrade'
+    | 'pinned'
+    | 'unknown_version'
+    | 'unsupported'
+    | 'metadata_unavailable';
+  installed_version: string | null;
+  target_version: string | null;
+  target_channel: string | null;
+  step: 'major' | 'minor' | 'patch' | 'prerelease' | 'none';
+  /** Every blocker, not the first: fixing one should not hide the next. */
+  blockers: UpdateBlocker[];
+  detail: string | null;
+  download_url: string | null;
+  expected_sha256: string | null;
+};
+
+/** When a host is willing to be interrupted. */
+export type MaintenanceWindow = {
+  timezone: string;
+  /** 0 = Sunday … 6 = Saturday. Empty means every day. */
+  weekdays: number[];
+  start: string;
+  end: string;
+  /** One line for display. Always names the zone. */
+  description: string;
+};
+
+/** One update attempt. */
+export type UpdateJob = {
+  job_id: string;
+  host_id: string;
+  state: string;
+  trigger: 'manual' | 'policy' | 'rollout';
+  from_version: string | null;
+  to_version: string;
+  resulting_version: string | null;
+  error: string | null;
+  attempt: number;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  requested_by_user_id: string | null;
+};
+
+/** One state transition of an update. */
+export type UpdateEvent = {
+  /**
+   * The log's own ordering.
+   *
+   * Not a timestamp: several transitions can share one, because PostgreSQL's
+   * `now()` is the transaction time. Sort on this.
+   */
+  sequence: number;
+  state: string;
+  detail: string | null;
+  source: 'controller' | 'agent';
+  created_at: string;
+};
+
+/** One host's whole update situation. */
+export type HostUpdateStatus = {
+  host_id: string;
+  host_name: string;
+  installed_version: string | null;
+  plan: UpdatePlan;
+  policy: 'manual' | 'notify' | 'patch' | 'minor' | 'pinned';
+  /** Whether this host installs anything by itself. */
+  automatic: boolean;
+  channel: string;
+  pinned_version: string | null;
+  maintenance_window: MaintenanceWindow | null;
+  open_job: UpdateJob | null;
+  last_job: UpdateJob | null;
+};
+
+/** How many hosts report one version. */
+export type VersionCount = {
+  version: string;
+  hosts: number;
+};
+
+/** `GET /api/v1/updates/overview`. */
+export type FleetUpdateOverview = {
+  total_hosts: number;
+  up_to_date: number;
+  update_available: number;
+  /** A newer release exists and something stops it. Still an update. */
+  blocked: number;
+  /** Unsupported or unreadable versions — hosts somebody has to look at. */
+  needs_attention: number;
+  /** Newest first. Unparseable versions last and visible. */
+  version_distribution: VersionCount[];
+  hosts_with_automatic_updates: number;
+  open_jobs: number;
+  failed_recently: number;
+  controller_version: string;
+  controller_schema_revision: string | null;
+  /** Whether release metadata is configured. Not the same as "no updates". */
+  metadata_available: boolean;
+  metadata_detail: string | null;
+  /**
+   * The publisher signature's status.
+   *
+   * `valid` is the only value that establishes authenticity. `absent` means
+   * nothing was signed — the state of an unpublished project — and
+   * `untrusted_key` means something was, by a key this controller does not
+   * hold. The interface must not render the last two as "signed".
+   */
+  metadata_signature:
+    | 'valid'
+    | 'absent'
+    | 'untrusted_key'
+    | 'invalid'
+    | 'malformed'
+    | 'unsupported_algorithm';
+  metadata_signature_detail: string | null;
+  /** The channels this controller understands, so the client hardcodes none. */
+  channels: string[];
+};
+
+/** `GET /api/v1/updates/history`. */
+export type UpdateHistory = {
+  jobs: UpdateJob[];
+  /** Pass as `before` for the next page, or `null` at the end. */
+  next_before: string | null;
+};
+
+/** `PUT /api/v1/hosts/{host_id}/update-policy`. */
+export type UpdatePolicyRequest = {
+  policy: 'manual' | 'notify' | 'patch' | 'minor' | 'pinned';
+  channel: string;
+  pinned_version?: string | null;
+  maintenance_window?: {
+    timezone: string;
+    weekdays: number[];
+    start: string;
+    end: string;
+  } | null;
+};
+
+/** `POST /api/v1/hosts/{host_id}/updates`. */
+export type StartUpdateRequest = {
+  target_version?: string | null;
+  allow_downgrade?: boolean;
 };

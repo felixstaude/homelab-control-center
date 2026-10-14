@@ -32,7 +32,36 @@ type UpgradeOptions struct {
 	ConnectTimeout time.Duration
 	// Out receives the output.
 	Out io.Writer
+	// OnStep is called as the upgrade progresses, with the update state the
+	// step corresponds to and a short detail.
+	//
+	// Optional, and nil for an operator running `hcc-agent upgrade` by hand:
+	// they are reading the output. It exists for the controller-driven path,
+	// where the interface shows a progress bar and the only honest source for
+	// it is the agent saying where it has got to. Simulated progress — a bar
+	// that advances on a timer — is worse than none, because somebody will
+	// believe it.
+	//
+	// Called synchronously, so a slow reporter slows the upgrade. That is the
+	// right trade: an update whose state the controller does not know about is
+	// an update nobody can see has stalled.
+	OnStep func(state, detail string)
 }
+
+// Update states reported through [UpgradeOptions.OnStep].
+//
+// The strings match hcc.models.updates.UpdateState and
+// internal/protocol's State* constants. Declared here rather than imported
+// from protocol so this package keeps no dependency on the wire format — it is
+// the installer, and it runs for an operator at a terminal as well as for the
+// controller.
+const (
+	StepVerifying       = "verifying"
+	StepStaged          = "staged"
+	StepInstalling      = "installing"
+	StepRestarting      = "restarting"
+	StepVerifyingHealth = "verifying_health"
+)
 
 // Upgrader replaces the installed binary with a verified one.
 type Upgrader struct {
@@ -64,6 +93,17 @@ func (u *Upgrader) printf(format string, arguments ...any) {
 
 func (u *Upgrader) step(label, detail string) {
 	u.printf("  ✓ %-22s %s\n", label, detail)
+}
+
+// report tells the caller which update state the upgrade has reached.
+//
+// Separate from [Upgrader.step], which writes human output: the two do not
+// map one-to-one, because an operator wants "previous binary kept at …" and
+// the controller wants "installing".
+func (u *Upgrader) report(state, detail string) {
+	if u.Options.OnStep != nil {
+		u.Options.OnStep(state, detail)
+	}
 }
 
 // MaxArchiveBytes bounds what the upgrader will read from an archive.
@@ -155,6 +195,7 @@ func (u *Upgrader) Run(ctx context.Context) error {
 	}
 	u.step("archive", fmt.Sprintf("%s (%d bytes)", u.Options.ArchivePath, size))
 	u.step("digest", "matches the one the control plane gave")
+	u.report(StepVerifying, fmt.Sprintf("digest verified over %d bytes", size))
 
 	// --- 2. Extract and inspect -------------------------------------------
 	staged := u.Paths.Binary() + ".new"
@@ -205,6 +246,7 @@ func (u *Upgrader) Run(ctx context.Context) error {
 	}
 	currentVersion, _ := reportedVersion(ctx, u.Paths.Binary())
 	u.step("new binary", fmt.Sprintf("version %s (replacing %s)", newVersion, orUnknown(currentVersion)))
+	u.report(StepStaged, fmt.Sprintf("%s extracted and checked", newVersion))
 
 	if newVersion == currentVersion {
 		u.printf("\n  ! %-22s %s\n", "same version",
@@ -219,6 +261,7 @@ func (u *Upgrader) Run(ctx context.Context) error {
 	if err := os.Rename(u.Paths.Binary(), u.Paths.PreviousBinary()); err != nil {
 		return fmt.Errorf("cannot move the running binary aside: %w", err)
 	}
+	u.report(StepInstalling, "replacing the binary")
 	u.step("previous binary", u.Paths.PreviousBinary())
 
 	if err := os.Rename(staged, u.Paths.Binary()); err != nil {
@@ -241,6 +284,28 @@ func (u *Upgrader) Run(ctx context.Context) error {
 	}
 	configModifiedBefore := modificationTime(u.Paths.Configuration())
 
+	// Reported **before** the restart, not after, and that ordering is
+	// load-bearing rather than tidy.
+	//
+	// In the controller-driven path the upgrade runs inside the service
+	// process, so `systemctl restart` terminates the thing that is executing
+	// this function: the call does not return, and a report placed after it
+	// would never be sent. The controller would then hold a job in
+	// `installing` for ever, because that is not a state it can conclude from
+	// a reconnection — the transition table deliberately allows
+	// `restarting → succeeded` and not `installing → succeeded`, since an
+	// agent that never said it was restarting might have died for an
+	// unrelated reason.
+	//
+	// Reporting it first means the worst case is a job that says "restarting"
+	// about a restart that failed to start — and that is recoverable: the
+	// rollback below reports the failure if this process survives, and if it
+	// does not, the agent comes back on the old binary and the controller
+	// records a rollback. A stuck `installing` is recoverable by nothing.
+	//
+	// The operator-driven path is unaffected: `hcc-agent upgrade` is a
+	// separate short-lived process, so it survives the restart either way.
+	u.report(StepRestarting, "restarting the service")
 	if _, err := u.System.Systemctl(ctx, "restart", ServiceName); err != nil {
 		u.printf("  ✗ %v\n", err)
 		return u.rollback(ctx, fmt.Sprintf("the service would not restart: %v", err))
@@ -248,6 +313,7 @@ func (u *Upgrader) Run(ctx context.Context) error {
 	u.step("service", "restarted")
 
 	// --- 5. Wait for it to come back --------------------------------------
+	u.report(StepVerifyingHealth, "waiting for the new binary to connect")
 	if err := u.waitForReconnect(ctx, previousConfigVersion, configModifiedBefore); err != nil {
 		return u.rollback(ctx, err.Error())
 	}

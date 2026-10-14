@@ -432,3 +432,163 @@ func stringify(value any) string {
 // A compile-time reminder that the duration bounds are exported and meant to
 // be referenced rather than duplicated.
 var _ = []time.Duration{config.MinReconnectWait, config.MaxReconnectWait}
+
+// --- Automatic updates ------------------------------------------------------
+//
+// The default is the behaviour under test here, not an implementation detail:
+// an agent that has not been told it may replace its own root-owned binary
+// must not.
+
+func TestAutomaticUpdatesAreOffUnlessTheHostSaysOtherwise(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := loadAndValidate(t, validEnv())
+	if err != nil {
+		t.Fatalf("expected a valid configuration, got: %v", err)
+	}
+
+	if cfg.AutoUpdate {
+		t.Error("automatic updates are enabled by default")
+	}
+	if cfg.UpdateChannel != "" {
+		t.Errorf("update channel = %q, want empty (meaning stable)", cfg.UpdateChannel)
+	}
+	if cfg.PinnedVersion != "" {
+		t.Errorf("pinned version = %q, want empty", cfg.PinnedVersion)
+	}
+	if len(cfg.ReleaseKeys) != 0 {
+		t.Errorf("release keys = %v, want none", cfg.ReleaseKeys)
+	}
+}
+
+func TestAutomaticUpdatesCanBeEnabled(t *testing.T) {
+	t.Parallel()
+
+	values := validEnv()
+	values[config.EnvAutoUpdate] = "true"
+	values[config.EnvUpdateChannel] = "BETA"
+
+	cfg, err := loadAndValidate(t, values)
+	if err != nil {
+		t.Fatalf("expected a valid configuration, got: %v", err)
+	}
+
+	if !cfg.AutoUpdate {
+		t.Error("automatic updates are off after being enabled")
+	}
+	// Lowercased, so an operator who writes BETA gets beta rather than a
+	// channel no release is in.
+	if cfg.UpdateChannel != "beta" {
+		t.Errorf("update channel = %q, want %q", cfg.UpdateChannel, "beta")
+	}
+}
+
+func TestAnUnparseableAutoUpdateValueIsRefusedRatherThanReadAsFalse(t *testing.T) {
+	t.Parallel()
+
+	// "yes" is what an operator writes, and silently reading it as "do not
+	// update" would leave a host an administrator believes is updating itself
+	// and is not — which nothing surfaces until somebody checks by hand.
+	values := validEnv()
+	values[config.EnvAutoUpdate] = "yes please"
+
+	_, err := config.Load(envMap(values))
+	if err == nil {
+		t.Fatal("an unparseable boolean was accepted")
+	}
+	if !strings.Contains(err.Error(), config.EnvAutoUpdate) {
+		t.Errorf("the error does not name the variable: %v", err)
+	}
+}
+
+func TestAnUnknownChannelIsRefused(t *testing.T) {
+	t.Parallel()
+
+	values := validEnv()
+	values[config.EnvUpdateChannel] = "stabl"
+
+	_, err := config.Load(envMap(values))
+	if err == nil {
+		t.Fatal("a misspelled channel was accepted")
+	}
+	for _, want := range []string{"stabl", "stable, beta, alpha"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error does not mention %q: %v", want, err)
+		}
+	}
+}
+
+func TestAnUnparseablePinIsRefused(t *testing.T) {
+	t.Parallel()
+
+	// A pin nobody can parse matches no release, so the host holds at its
+	// installed version for ever with nothing saying why — indistinguishable
+	// from a pin that is working.
+	values := validEnv()
+	values[config.EnvPinnedVersion] = "latest"
+
+	_, err := config.Load(envMap(values))
+	if err == nil {
+		t.Fatal("a non-semantic pin was accepted")
+	}
+	if !strings.Contains(err.Error(), "semantic version") {
+		t.Errorf("the error does not say what is wrong: %v", err)
+	}
+}
+
+func TestAValidPinIsKept(t *testing.T) {
+	t.Parallel()
+
+	values := validEnv()
+	values[config.EnvPinnedVersion] = "0.1.0-test"
+
+	cfg, err := loadAndValidate(t, values)
+	if err != nil {
+		t.Fatalf("expected a valid configuration, got: %v", err)
+	}
+	if cfg.PinnedVersion != "0.1.0-test" {
+		t.Errorf("pinned version = %q, want %q", cfg.PinnedVersion, "0.1.0-test")
+	}
+}
+
+func TestAReleaseKeyThatIsNotAKeyIsRefused(t *testing.T) {
+	t.Parallel()
+
+	// Refused at startup rather than at the first instruction: a key that
+	// cannot be decoded trusts nothing, and the host would decline every
+	// update with a message about signatures rather than about its own
+	// configuration.
+	values := validEnv()
+	values[config.EnvReleaseKeys] = "not-base64-at-all!!"
+
+	_, err := config.Load(envMap(values))
+	if err == nil {
+		t.Fatal("a malformed public key was accepted")
+	}
+	if !strings.Contains(err.Error(), config.EnvReleaseKeys) {
+		t.Errorf("the error does not name the variable: %v", err)
+	}
+}
+
+func TestSeveralReleaseKeysAreAccepted(t *testing.T) {
+	t.Parallel()
+
+	// Two real Ed25519 public keys, base64. An operator rotating a key has
+	// both trusted for the overlap, which is the whole reason this is a list.
+	values := validEnv()
+	values[config.EnvReleaseKeys] = strings.Join([]string{
+		"BMJvLkLsgw+qZiwSa9mZq97XL7G5n/l6rKd2Pa0fWT4=",
+		" pxLcf+PcRwHDIzkPzt96wFh8QucylNzhc+Dt2LO7ttM=",
+	}, ",")
+
+	cfg, err := config.Load(envMap(values))
+	if err != nil {
+		t.Fatalf("expected a valid configuration, got: %v", err)
+	}
+	if len(cfg.ReleaseKeys) != 2 {
+		t.Fatalf("release keys = %v, want two", cfg.ReleaseKeys)
+	}
+	if strings.HasPrefix(cfg.ReleaseKeys[1], " ") {
+		t.Error("the second key kept its leading whitespace")
+	}
+}

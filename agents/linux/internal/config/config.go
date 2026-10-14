@@ -42,16 +42,19 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
-	// Imported for the bounds they own, rather than restating them here.
-	// Neither package imports this one, so there is no cycle — and a
-	// duplicated constant is exactly the drift this project spends effort
-	// avoiding elsewhere.
+	// Imported for the bounds and the parsers they own, rather than restating
+	// them here. None of these packages imports this one, so there is no
+	// cycle — and a duplicated constant is exactly the drift this project
+	// spends effort avoiding elsewhere.
 	"github.com/felixstaude/homelab-control-center/agents/linux/internal/collect"
+	"github.com/felixstaude/homelab-control-center/agents/linux/internal/release"
 	"github.com/felixstaude/homelab-control-center/agents/linux/internal/telemetry"
+	"github.com/felixstaude/homelab-control-center/agents/linux/internal/version"
 )
 
 // Environment variable names. All agent configuration is prefixed HCC_AGENT_.
@@ -70,7 +73,19 @@ const (
 	EnvShutdownTimeout  = "HCC_AGENT_SHUTDOWN_TIMEOUT"
 	EnvReconnectMinWait = "HCC_AGENT_RECONNECT_MIN_WAIT"
 	EnvReconnectMaxWait = "HCC_AGENT_RECONNECT_MAX_WAIT"
+	EnvAutoUpdate       = "HCC_AGENT_AUTO_UPDATE"
+	EnvUpdateChannel    = "HCC_AGENT_UPDATE_CHANNEL"
+	EnvPinnedVersion    = "HCC_AGENT_PINNED_VERSION"
+	EnvReleaseKeys      = "HCC_AGENT_RELEASE_KEYS"
 )
+
+// UpdateChannels is every channel an agent will accept, most stable first.
+//
+// Must match CHANNELS in hcc/agents/releases.py. Validated here rather than
+// only at the point of use so a typo is a startup failure with a readable
+// message, instead of a host that silently accepts nothing because "stabl" is
+// not a channel any release is in.
+var UpdateChannels = []string{"stable", "beta", "alpha"}
 
 // DefaultCredentialFile is where enrollment installs the agent credential.
 //
@@ -175,6 +190,40 @@ type Config struct {
 	ReconnectMinWait time.Duration
 	ReconnectMaxWait time.Duration
 
+	// AutoUpdate is whether this host will install an update the controller
+	// authorizes.
+	//
+	// **False by default, and that is the most important default here.** An
+	// agent runs as root to install a binary; one that has not been told it
+	// may replace itself does not, however the controller's own policy is
+	// set. The two policies are deliberately separate: the controller's
+	// decides whether an instruction is sent, this decides whether it is
+	// acted on, and a compromised controller cannot change this one because
+	// it cannot write this host's environment file.
+	AutoUpdate bool
+
+	// UpdateChannel is the most instability this host accepts. Empty means
+	// stable. A host on beta still receives newer stable releases.
+	UpdateChannel string
+
+	// PinnedVersion holds this host at exactly one version. Empty means
+	// unpinned. An agent-side pin, which an operator sets on the host — the
+	// controller has its own, and either one refusing is enough.
+	PinnedVersion string
+
+	// ReleaseKeys are additional publisher keys this agent trusts, base64
+	// Ed25519, comma-separated in the environment.
+	//
+	// *Additional*: a release build has the publisher's key stamped in at
+	// link time, and these are added to it rather than replacing it. The case
+	// they exist for is an operator who builds their own agents and signs
+	// them with their own key — without them, such an operator would have to
+	// choose between no automatic updates and patching the source.
+	//
+	// Setting one needs write access to the environment file, which needs
+	// root on the host. An attacker who has that does not need this.
+	ReleaseKeys []string
+
 	LogLevel  string
 	LogFormat LogFormat
 }
@@ -251,6 +300,61 @@ func Load(lookupEnv func(string) (string, bool)) (Config, error) {
 			))
 		} else {
 			cfg.CollectPerCore = parsed
+		}
+	}
+	if value, ok := lookupEnv(EnvAutoUpdate); ok && strings.TrimSpace(value) != "" {
+		parsed, err := strconv.ParseBool(strings.TrimSpace(value))
+		if err != nil {
+			// Refused rather than treated as false. "yes" and "on" are what
+			// an operator writes, and silently reading either as "do not
+			// update" would leave a host that an administrator believes is
+			// updating itself and is not — a failure nothing surfaces until
+			// somebody checks a version by hand.
+			problems = append(problems, fmt.Sprintf(
+				"%s: %q is not a boolean (use true or false)", EnvAutoUpdate, value,
+			))
+		} else {
+			cfg.AutoUpdate = parsed
+		}
+	}
+	if value, ok := lookupEnv(EnvUpdateChannel); ok && strings.TrimSpace(value) != "" {
+		channel := strings.ToLower(strings.TrimSpace(value))
+		if !slices.Contains(UpdateChannels, channel) {
+			problems = append(problems, fmt.Sprintf(
+				"%s: %q is not a channel (expected one of %s)",
+				EnvUpdateChannel, value, strings.Join(UpdateChannels, ", "),
+			))
+		} else {
+			cfg.UpdateChannel = channel
+		}
+	}
+	if value, ok := lookupEnv(EnvPinnedVersion); ok && strings.TrimSpace(value) != "" {
+		pinned := strings.TrimSpace(value)
+		if _, err := version.Parse(pinned); err != nil {
+			// A pin nobody can parse would never match any release, so the
+			// host would hold at its installed version for ever with nothing
+			// saying why. That is the same outcome as a correct pin and so
+			// indistinguishable from working.
+			problems = append(problems, fmt.Sprintf(
+				"%s: %q is not a semantic version: %v", EnvPinnedVersion, value, err,
+			))
+		} else {
+			cfg.PinnedVersion = pinned
+		}
+	}
+	if value, ok := lookupEnv(EnvReleaseKeys); ok && strings.TrimSpace(value) != "" {
+		for _, key := range strings.Split(value, ",") {
+			trimmed := strings.TrimSpace(key)
+			if trimmed == "" {
+				continue
+			}
+			if _, err := release.DecodePublicKey(trimmed); err != nil {
+				problems = append(problems, fmt.Sprintf(
+					"%s: %v", EnvReleaseKeys, err,
+				))
+				continue
+			}
+			cfg.ReleaseKeys = append(cfg.ReleaseKeys, trimmed)
 		}
 	}
 	if value, ok := lookupEnv(EnvCAFile); ok {

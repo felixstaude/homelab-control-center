@@ -79,6 +79,7 @@ from __future__ import annotations
 
 import enum
 import json
+import uuid
 
 # Imported at runtime, not under TYPE_CHECKING: Pydantic resolves field
 # annotations when the model class is defined, so a type that exists only for
@@ -95,12 +96,38 @@ from hcc.monitoring.modules import MAX_MODULE_ID_LENGTH
 
 #: The protocol version this controller speaks. Bumped for a breaking change
 #: to the frame format or to the meaning of a field.
-PROTOCOL_VERSION: Final = 1
+#:
+#: **2 adds update management.** The update frames are the first
+#: controller→agent messages added since the protocol existed, and they could
+#: not simply be sent: :func:`hcc.agents.protocol` has a closed type table and
+#: so does the agent's ``ParseServerFrame``, which *errors* on an unrecognised
+#: type rather than ignoring it. Pushing an ``update_instruction`` to the
+#: existing fleet would make every agent report a protocol error and
+#: disconnect.
+#:
+#: So the version is negotiated and the new frames are sent only to a host
+#: that handshook at 2 or above. See :data:`UPDATE_PROTOCOL_VERSION`.
+PROTOCOL_VERSION: Final = 2
 
 #: Every version this controller will accept a handshake for. A tuple rather
 #: than a comparison, so support for an old version is dropped by deleting an
 #: entry — a visible, reviewable change — instead of by moving a floor.
-SUPPORTED_PROTOCOL_VERSIONS: Final = (1,)
+#:
+#: 1 stays supported, and that is the whole backward-compatibility story: an
+#: agent built before update management existed keeps heartbeating, keeps
+#: receiving configuration and keeps sending telemetry. It is simply never
+#: offered an update over the socket, and the interface says so rather than
+#: showing it as stuck.
+SUPPORTED_PROTOCOL_VERSIONS: Final = (1, 2)
+
+#: The lowest version that can be sent an update instruction.
+#:
+#: Checked before any update frame is written to a connection. A constant
+#: rather than a literal ``>= 2`` at the call site, because there is exactly
+#: one rule here and it has to be impossible to apply inconsistently: a single
+#: place that sends an update frame without consulting this is a place that
+#: disconnects part of the fleet.
+UPDATE_PROTOCOL_VERSION: Final = 2
 
 #: Largest frame the controller will read. 64 KiB is two orders of magnitude
 #: more than any message defined here needs, and small enough that a thousand
@@ -114,6 +141,26 @@ SUPPORTED_PROTOCOL_VERSIONS: Final = (1,)
 #: not governed by this at all; it is the controller's own document, and its
 #: size is bounded by the registry being closed.
 MAX_MESSAGE_BYTES: Final = 64 * 1024
+
+#: Largest signed release metadata an instruction may carry.
+#:
+#: The same bound `hcc.agents.releases.MAX_MANIFEST_BYTES` puts on the file,
+#: because this *is* that file's bytes. Stated separately rather than imported
+#: so that the frame's limit is visible beside the frame — and asserted equal
+#: to the manifest's in the tests, so the two cannot drift into a frame that
+#: carries a manifest the parser would refuse.
+MAX_UPDATE_METADATA_BYTES: Final = 256 * 1024
+
+#: Largest signature document. A few hundred bytes in practice.
+MAX_UPDATE_SIGNATURE_BYTES: Final = 8 * 1024
+
+#: Longest detail an agent may attach to a progress or result frame.
+#:
+#: Bounded by the *sender* as well as here, for the same reason ConfigNack's
+#: problems are: an agent that sent a megabyte of error would have its frame
+#: refused for size and lose the report entirely, which is the one thing the
+#: report exists to prevent.
+MAX_UPDATE_DETAIL_LENGTH: Final = 1024
 
 #: Sustained frame rate one agent may use, and the burst it may spend at once.
 #: A heartbeat every 30 seconds is 0.033/s, so a well-behaved agent never
@@ -232,6 +279,38 @@ class MessageType(enum.StrEnum):
     #: queue space only on this, which is what makes delivery at-least-once
     #: across a reconnection rather than best-effort.
     TELEMETRY_ACK = "telemetry_ack"
+
+    # --- Update management, protocol 2 --------------------------------------
+    #
+    # Five frames, and **none of them carries anything executable**. There is
+    # no command, no script, no path to run and no shell. An
+    # `update_instruction` is data describing *which published release to
+    # install*; the agent decides whether to, verifies the publisher's
+    # signature itself, and can refuse. An agent that ran what the controller
+    # told it would have turned a control-plane compromise into root on every
+    # monitored machine — see docs/AGENT_ARCHITECTURE.md §3, and
+    # `TestNoMessageTypeCarriesAnythingExecutable`, which covers these too.
+    #
+    # Sent only to a connection that handshook at UPDATE_PROTOCOL_VERSION or
+    # above. A version-1 agent never sees one.
+
+    #: Controller → agent. "You are authorized to install this release."
+    #: Carries the signed release metadata and its signature, so the agent
+    #: verifies the publisher rather than trusting the controller.
+    UPDATE_INSTRUCTION = "update_instruction"
+    #: Agent → controller. "Send me the instruction you mentioned." The
+    #: notification itself rides on `heartbeat_ack`, which a version-1 agent
+    #: ignores as an unknown key — that asymmetry is what makes this
+    #: deployable at all.
+    UPDATE_REQUEST = "update_request"
+    #: Agent → controller. A state transition, as it happens.
+    UPDATE_PROGRESS = "update_progress"
+    #: Agent → controller. A terminal outcome, and the version now running.
+    UPDATE_RESULT = "update_result"
+    #: Controller → agent. "Stop; that instruction is withdrawn." Advisory
+    #: past the point the binary is being replaced, which is why the state
+    #: machine stops offering cancellation there.
+    UPDATE_CANCEL = "update_cancel"
 
 
 class CloseReason(enum.StrEnum):
@@ -429,6 +508,113 @@ class HeartbeatAck(BaseModel):
             "null when it has none. An agent running something else should "
             "send a config_request."
         ),
+    )
+    update_instruction_id: str | None = Field(
+        default=None,
+        max_length=36,
+        description=(
+            "An update instruction waiting for this host, or null. The agent "
+            "answers with an update_request; it does not act on the "
+            "identifier, because a notification is not evidence of anything."
+        ),
+    )
+
+    @field_validator("update_instruction_id")
+    @classmethod
+    def _validate_instruction_id(cls, value: str | None) -> str | None:
+        """A UUID, or nothing.
+
+        Validated on the way *out* as well as in, because this field is
+        rendered into a frame the agent parses: a malformed identifier here
+        would be a frame the agent refuses, and a controller that can emit a
+        frame its own agents reject is worse than one that fails early.
+        """
+        if value is None:
+            return None
+        try:
+            uuid.UUID(value)
+        except ValueError as error:
+            raise ValueError("update_instruction_id must be a UUID") from error
+        return value
+
+
+class UpdateInstruction(BaseModel):
+    """Controller → agent. "You are authorized to install this release."
+
+    **There is nothing executable here.** No command, no script, no path to
+    run. Every field is data describing a published release, and the agent
+    decides whether to install it — against its own local policy, its own
+    architecture, and the publisher's signature, which it verifies itself.
+
+    ``metadata`` and ``signature`` are the reason this is safe to act on
+    automatically. The controller cannot forge them: the digest the agent
+    checks comes out of ``metadata``, whose signature is made by a key the
+    controller does not hold. A compromised control plane can withhold updates
+    or offer an old one — availability and version choice are its job — but it
+    cannot produce metadata the agent accepts for a binary the publisher did
+    not build.
+
+    ``metadata`` travels as a **string** for the same reason the configuration
+    snapshot's document does: the signature covers exact bytes, and two JSON
+    libraries do not agree on key order, integer rendering or non-ASCII
+    escaping. Re-serialising to verify would turn a formatting difference into
+    something indistinguishable from tampering.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    v: int = PROTOCOL_VERSION
+    type: Literal[MessageType.UPDATE_INSTRUCTION] = MessageType.UPDATE_INSTRUCTION
+    instruction_id: str = Field(description="This authorization, once. A UUID.")
+    to_version: str = Field(
+        max_length=MAX_AGENT_VERSION_LENGTH, description="The version to install."
+    )
+    platform: str = Field(
+        max_length=MAX_PLATFORM_LENGTH,
+        description="GOOS/GOARCH this instruction was planned for.",
+    )
+    expires_at: str = Field(
+        description=(
+            "ISO-8601. After this the agent must refuse it — so a host that "
+            "was offline for a day does not wake up and install last week's "
+            "decision. Enforced on both sides, and the agent's side is the "
+            "one that matters: the controller cannot reach a disconnected "
+            "host to withdraw anything."
+        )
+    )
+    metadata: str = Field(
+        max_length=MAX_UPDATE_METADATA_BYTES,
+        description="The signed release metadata, as the exact bytes that were signed.",
+    )
+    signature: str = Field(
+        max_length=MAX_UPDATE_SIGNATURE_BYTES,
+        description="The detached signature document over `metadata`.",
+    )
+    allow_downgrade: bool = Field(
+        default=False,
+        description=(
+            "Whether an administrator authorized going backwards. False by "
+            "default, and the agent refuses a downgrade without it."
+        ),
+    )
+
+
+class UpdateCancel(BaseModel):
+    """Controller → agent. "That instruction is withdrawn."
+
+    Advisory once the binary is being replaced, which is why the state machine
+    stops offering cancellation at ``installing``: by then the agent's own
+    rollback is the recovery path and a cancel frame would be a promise
+    nobody can keep.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    v: int = PROTOCOL_VERSION
+    type: Literal[MessageType.UPDATE_CANCEL] = MessageType.UPDATE_CANCEL
+    instruction_id: str = Field(description="Which instruction. A UUID.")
+    reason: str | None = Field(
+        default=None, max_length=MAX_UPDATE_DETAIL_LENGTH, description="For the agent's log."
     )
 
 
@@ -742,9 +928,121 @@ class TelemetryAck(BaseModel):
     )
 
 
+class UpdateRequest(AgentMessage):
+    """Agent → controller. "Send me the instruction you mentioned."
+
+    No fields beyond the envelope, and the absence is deliberate in the same
+    way :class:`ConfigRequest`'s is: there is no instruction to ask for by
+    name and no host to ask about, so there is nothing here to abuse. The host
+    is decided by the credential that authenticated the connection, and the
+    controller sends whatever instruction is open for *that* host.
+    """
+
+    type: Literal[MessageType.UPDATE_REQUEST] = MessageType.UPDATE_REQUEST
+
+
+class UpdateProgress(AgentMessage):
+    """Agent → controller. A state transition, as it happens.
+
+    The ``instruction_id`` is what ties the report to a job, and the
+    controller matches it against the authenticated host as well — so an agent
+    cannot report progress for another host's update even knowing its
+    identifier.
+
+    ``state`` is validated against the transition table on arrival. An agent
+    cannot put a job into a state the machine does not allow, which rules out
+    the useful lie: skipping straight to ``succeeded``.
+    """
+
+    type: Literal[MessageType.UPDATE_PROGRESS] = MessageType.UPDATE_PROGRESS
+    instruction_id: str = Field(max_length=36, description="Which instruction. A UUID.")
+    state: str = Field(
+        max_length=24,
+        description=(
+            "downloading | verifying | staged | installing | restarting | "
+            "verifying_health. Validated against the update state machine."
+        ),
+    )
+    detail: str | None = Field(
+        default=None,
+        max_length=MAX_UPDATE_DETAIL_LENGTH,
+        description="What the agent is doing, for the operator's view.",
+    )
+
+    @field_validator("instruction_id")
+    @classmethod
+    def _validate_instruction_id(cls, value: str) -> str:
+        try:
+            uuid.UUID(value)
+        except ValueError as error:
+            raise ValueError("instruction_id must be a UUID") from error
+        return value
+
+
+class UpdateResult(AgentMessage):
+    """Agent → controller. A terminal outcome, and the version now running.
+
+    ``resulting_version`` is reported separately from the instruction's target
+    because they can differ, and the difference is the interesting case: a
+    result claiming ``succeeded`` while the host runs the old version is a
+    rollback nobody noticed.
+    """
+
+    type: Literal[MessageType.UPDATE_RESULT] = MessageType.UPDATE_RESULT
+    instruction_id: str = Field(max_length=36, description="Which instruction. A UUID.")
+    state: str = Field(
+        max_length=24,
+        description="succeeded | failed | rolled_back. Validated against the machine.",
+    )
+    resulting_version: str | None = Field(
+        default=None,
+        max_length=MAX_AGENT_VERSION_LENGTH,
+        description="What the agent is running now, after the attempt.",
+    )
+    error: str | None = Field(
+        default=None,
+        max_length=MAX_UPDATE_DETAIL_LENGTH,
+        description="Why it failed, for a human. Null unless it did.",
+    )
+
+    @field_validator("instruction_id")
+    @classmethod
+    def _validate_instruction_id(cls, value: str) -> str:
+        try:
+            uuid.UUID(value)
+        except ValueError as error:
+            raise ValueError("instruction_id must be a UUID") from error
+        return value
+
+
 #: Every frame an agent may send. A closed union, so an unrecognised ``type``
 #: is refused rather than ignored.
-IncomingMessage = Heartbeat | ConfigRequest | ConfigAck | ConfigNack | Telemetry
+IncomingMessage = (
+    Heartbeat
+    | ConfigRequest
+    | ConfigAck
+    | ConfigNack
+    | Telemetry
+    # Update management, protocol 2.
+    | UpdateRequest
+    | UpdateProgress
+    | UpdateResult
+)
+
+#: Every frame the controller may send.
+#:
+#: Not used for dispatch — the controller writes these rather than parsing
+#: them — and declared anyway, so that "which frames exist in each direction"
+#: is answerable from this module instead of by searching for `.send`.
+OutgoingMessage = (
+    HeartbeatAck
+    | Close
+    | ConfigAvailable
+    | ConfigSnapshot
+    | TelemetryAck
+    | UpdateInstruction
+    | UpdateCancel
+)
 
 
 class ProtocolError(Exception):
@@ -849,4 +1147,12 @@ _INCOMING_BY_TYPE: Final[dict[str, type[IncomingMessage]]] = {
     MessageType.CONFIG_ACK.value: ConfigAck,
     MessageType.CONFIG_NACK.value: ConfigNack,
     MessageType.TELEMETRY.value: Telemetry,
+    # Update management, protocol 2. Present unconditionally: a version-1
+    # agent will never send one, and refusing a frame an agent could not have
+    # sent would add a branch with no behaviour behind it. The *outbound*
+    # direction is where the version gate lives, because that is the direction
+    # that can break a fleet.
+    MessageType.UPDATE_REQUEST.value: UpdateRequest,
+    MessageType.UPDATE_PROGRESS.value: UpdateProgress,
+    MessageType.UPDATE_RESULT.value: UpdateResult,
 }

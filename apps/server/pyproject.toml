@@ -18,6 +18,17 @@ dependencies = [
   # Argon2 C implementation; actively maintained. Chosen over passlib, whose
   # last release was 2020. See ADR-025.
   "argon2-cffi~=25.1",
+  # Ed25519 verification for signed release metadata. The controller verifies
+  # the signature it serves so the interface can report whether the metadata
+  # is authentic; the *agent* is the party whose verification is load-bearing,
+  # and it uses Go's standard library. See hcc/updates/signing.py.
+  #
+  # A wider range than the others on purpose: this library's majors are
+  # frequent and almost always confined to backend and platform support, and
+  # the two calls used here — Ed25519 sign and verify — have been stable since
+  # 2.0. Pinning it to one major would mean a dependency bump every few months
+  # for an API that does not move.
+  "cryptography>=43,<47",
   "fastapi~=0.143",
   "uvicorn[standard]~=0.38",
   "pydantic~=2.14",

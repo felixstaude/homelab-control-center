@@ -78,9 +78,18 @@ ProtectSystem=strict
 ProtectHome=yes
 ReadWritePaths=/etc/hcc-agent
 PrivateTmp=yes
-; One writable path, named explicitly. If a future collector needs scratch
-; space it should be an explicit StateDirectory= rather than a widening of
-; this one.
+
+; /var/lib/hcc-agent, created owned by this service's account. The one
+; directory shared with hcc-agent-update.service, which is where the sharing
+; has to happen: an update archive the agent staged under PrivateTmp is in a
+; mount namespace root cannot see, and a staged archive root cannot see is an
+; update that cannot be installed.
+;
+; This is the "explicit StateDirectory=" the note below used to point at, and
+; it arrived for exactly that reason rather than as a widening of the path
+; above.
+StateDirectory=hcc-agent
+StateDirectoryMode=0750
 
 ; --- Privileges -------------------------------------------------------------
 ; The agent is never root and never needs a capability. Both are stated

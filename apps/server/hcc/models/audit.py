@@ -205,6 +205,36 @@ class AuditAction(enum.StrEnum):
     #: controller was told, and when.
     MONITORING_CONFIG_REJECTED = "monitoring.config_rejected"
 
+    # --- Update management ------------------------------------------------
+    #
+    # Every one of these is a decision about running different code on
+    # somebody's machine, which makes them the highest-consequence actions in
+    # the product. "Who turned on automatic updates" and "who sent 0.2.0 to
+    # forty hosts" are the two questions that get asked after a bad night, and
+    # neither is answerable from the update tables alone: those record what
+    # happened, and this records who asked for it.
+
+    #: An administrator changed a host's update policy, channel, pin or
+    #: maintenance window. One action rather than four, with the changed fields
+    #: in ``details``: they are set from one form and separating them would
+    #: make a single edit read as several unrelated events.
+    UPDATE_POLICY_CHANGED = "update.policy_changed"
+    #: An administrator started an update for one host.
+    UPDATE_STARTED = "update.started"
+    #: An administrator cancelled an update.
+    UPDATE_CANCELLED = "update.cancelled"
+    #: An administrator authorized a downgrade. Separate from
+    #: ``UPDATE_STARTED`` because going backwards is the case somebody will
+    #: want to find later, and a trail where it is indistinguishable from an
+    #: ordinary upgrade cannot answer "when did we last roll back".
+    UPDATE_DOWNGRADE_AUTHORIZED = "update.downgrade_authorized"
+    #: An administrator created a staged rollout.
+    UPDATE_ROLLOUT_CREATED = "update.rollout_created"
+    #: An administrator paused, resumed or cancelled a rollout. The action is
+    #: in ``details``, because all three are the same kind of intervention in
+    #: the same object and an operator reading the trail wants them together.
+    UPDATE_ROLLOUT_CONTROLLED = "update.rollout_controlled"
+
 
 class AuditOutcome(enum.StrEnum):
     """Whether the recorded attempt took effect.

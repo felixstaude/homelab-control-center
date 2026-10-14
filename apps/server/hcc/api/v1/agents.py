@@ -65,6 +65,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
+import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Annotated, Final
 
@@ -80,6 +81,7 @@ from hcc.agents.protocol import (
     MAX_FRAMES_PER_SECOND,
     PROTOCOL_VERSION,
     SUPPORTED_PROTOCOL_VERSIONS,
+    UPDATE_PROTOCOL_VERSION,
     Close,
     CloseReason,
     ConfigAck,
@@ -92,6 +94,10 @@ from hcc.agents.protocol import (
     ProtocolError,
     Telemetry,
     TelemetryAck,
+    UpdateInstruction,
+    UpdateProgress,
+    UpdateRequest,
+    UpdateResult,
     parse_agent_frame,
 )
 from hcc.agents.registry import (
@@ -99,7 +105,8 @@ from hcc.agents.registry import (
     ConnectionRegistry,
     LiveConnection,
 )
-from hcc.api.deps import SessionDep, get_database, request_id_of
+from hcc.api.deps import SessionDep, get_app_settings, get_database, request_id_of
+from hcc.config import Settings
 
 # Imported at runtime, not under TYPE_CHECKING: FastAPI resolves endpoint
 # annotations with `get_type_hints`, so a type that exists only for the type
@@ -111,6 +118,7 @@ from hcc.api.deps import SessionDep, get_database, request_id_of
 from hcc.db import Database
 from hcc.errors import AgentCredentialRejectedError, AppError, NotAuthenticatedError
 from hcc.logging import get_logger
+from hcc.models.updates import UpdateState
 from hcc.monitoring.document import ConfigurationRevision
 from hcc.security.audit import AuditContext
 from hcc.services.enrollment import (
@@ -123,6 +131,8 @@ from hcc.services.monitoring import (
     REVISION_REASON_FOR_CONNECT,
     MonitoringConfigService,
 )
+from hcc.services.updates import UpdateService, UpdateServiceError
+from hcc.updates.signing import SigningError, read_signature
 
 if TYPE_CHECKING:
     from hcc.services.enrollment import AuthenticatedAgent
@@ -218,6 +228,18 @@ def get_metrics_service(connection: HTTPConnection) -> MetricsService:
     into an upsert, which is the cost the cache exists to remove.
     """
     service: MetricsService = connection.app.state.metrics_service
+    return service
+
+
+def get_update_service(connection: HTTPConnection) -> UpdateService:
+    """Return the process-wide update service.
+
+    Declared here beside the router that uses it, for the same reason
+    `get_monitoring_service` is: the alias in ``deps`` is annotated for HTTP
+    routes, where FastAPI's annotation resolution has caught this module out
+    before.
+    """
+    service: UpdateService = connection.app.state.update_service
     return service
 
 
@@ -517,6 +539,129 @@ def _refuse_handshake(*, status_code: int, code: str, message: str) -> AppError:
     return AppError(message, code=code, status_code=status_code)
 
 
+async def _update_instruction_frame(
+    database: Database,
+    updates: UpdateService,
+    settings: Settings,
+    *,
+    host_id: uuid.UUID,
+) -> str | None:
+    """Build the ``update_instruction`` frame for a host's open job.
+
+    Returns ``None`` when there is nothing to send, which is a normal outcome:
+    an administrator may have cancelled the job between the acknowledgement
+    that mentioned it and the request that arrived.
+
+    ## The signed metadata is attached here, unmodified
+
+    The frame carries the manifest's **exact bytes** and the detached
+    signature, read from disk rather than rebuilt from the parsed model. That
+    is the whole trust model in one line: the agent verifies the publisher's
+    signature over those bytes and takes the digest from them, so a controller
+    that has been taken over cannot substitute a binary. Re-serialising the
+    parsed manifest here would break every signature, because two JSON
+    libraries do not agree on key order.
+
+    An unsigned manifest still produces a frame. The *agent* decides whether
+    absence of a signature is acceptable — it is not, for an automatic update —
+    and refusing to send the instruction here would replace a clear refusal on
+    the host with a silent nothing on the controller.
+    """
+    async with database.session_factory() as db:
+        job = await updates.open_job(db, host_id)
+    if job is None or job.state != UpdateState.QUEUED:
+        return None
+
+    path = settings.agent_release_manifest
+    if path is None:
+        logger.warning(
+            "update_instruction_without_metadata",
+            host_id=str(host_id),
+            job_id=str(job.id),
+        )
+        return None
+    try:
+        metadata = path.read_bytes()
+        signature = read_signature(path)
+    except (OSError, SigningError):
+        logger.exception("update_instruction_metadata_unreadable", path=str(path))
+        return None
+
+    return UpdateInstruction(
+        instruction_id=str(job.instruction_id),
+        to_version=job.to_version,
+        platform=job.platform,
+        expires_at=job.expires_at.isoformat(),
+        metadata=metadata.decode("utf-8", errors="strict"),
+        signature=(signature or b"").decode("utf-8", errors="strict"),
+    ).model_dump_json()
+
+
+async def _record_update_report(
+    database: Database,
+    updates: UpdateService,
+    host_id: uuid.UUID,
+    message: UpdateProgress | UpdateResult,
+    *,
+    request_id: str | None,
+) -> None:
+    """Record a progress or result frame an agent sent.
+
+    Every failure here is logged and swallowed, and that is deliberate: a
+    report the controller cannot accept must not close the connection. An
+    agent reporting a state the machine forbids is misbehaving or racing a
+    cancellation, and disconnecting it would stop the telemetry and
+    configuration that are still working — turning a bookkeeping disagreement
+    into an outage on that host.
+
+    The report is also not *trusted*: the state goes through the transition
+    table, so a frame claiming `succeeded` out of order is refused rather than
+    recorded.
+    """
+    try:
+        state = UpdateState(message.state)
+    except ValueError:
+        logger.warning(
+            "update_report_unknown_state",
+            host_id=str(host_id),
+            state=message.state[:32],
+            request_id=request_id,
+        )
+        return
+
+    try:
+        async with database.session_factory() as db:
+            if isinstance(message, UpdateProgress):
+                await updates.record_progress(
+                    db,
+                    host_id=host_id,
+                    instruction_id=uuid.UUID(message.instruction_id),
+                    state=state,
+                    detail=message.detail,
+                )
+            else:
+                await updates.record_result(
+                    db,
+                    host_id=host_id,
+                    instruction_id=uuid.UUID(message.instruction_id),
+                    state=state,
+                    resulting_version=message.resulting_version,
+                    error=message.error,
+                )
+            await db.commit()
+    except UpdateServiceError as error:
+        # Includes the instruction not being this host's, which is the
+        # impersonation attempt: the service matches on both and finds
+        # nothing. Logged rather than answered, so a probe learns nothing
+        # about whether the identifier exists.
+        logger.warning(
+            "update_report_refused",
+            host_id=str(host_id),
+            detail=str(error),
+            request_id=request_id,
+        )
+
+
 def _snapshot_frame(revision: ConfigurationRevision) -> str:
     """Serialise a revision into a ``config_snapshot`` frame.
 
@@ -604,6 +749,8 @@ async def connect(
     registry: Annotated[ConnectionRegistry, Depends(get_connection_registry)],
     monitoring: Annotated[MonitoringConfigService, Depends(get_monitoring_service)],
     metrics: Annotated[MetricsService, Depends(get_metrics_service)],
+    updates: Annotated[UpdateService, Depends(get_update_service)],
+    settings: Annotated[Settings, Depends(get_app_settings)],
 ) -> None:
     """The agent's outbound, authenticated, long-lived connection.
 
@@ -856,11 +1003,51 @@ async def connect(
                         closing_detail = "a newer connection for this host was accepted"
                     break
 
+                # An update that was restarting this agent has, by definition,
+                # no agent left to report its own success — the install ends
+                # with `systemctl restart`, which terminates the process doing
+                # it. So the controller concludes it here, from the version
+                # the replacement reports.
+                #
+                # On the heartbeat rather than on accept, because the heartbeat
+                # is where the agent's self-reported version arrives.
+                if protocol_version >= UPDATE_PROTOCOL_VERSION:
+                    async with database.session_factory() as db:
+                        concluded = await updates.reconcile_on_connect(
+                            db, agent.host_id, reported_version=message.agent_version
+                        )
+                        await db.commit()
+                    if concluded is not None:
+                        logger.info(
+                            "update_concluded_on_reconnection",
+                            host_id=str(agent.host_id),
+                            job_id=str(concluded.id),
+                            state=concluded.state,
+                        )
+
+                # An update instruction waiting for this host, if the agent
+                # speaks a version that can receive one.
+                #
+                # **The gate is the whole backward-compatibility story.** A
+                # version-1 agent is never told about an update, because its
+                # `ParseServerFrame` errors on an unrecognised frame type and
+                # would disconnect on the `update_instruction` that followed.
+                # The field itself is harmless to it — Go's encoding/json
+                # ignores unknown keys — but there would be no point telling
+                # an agent about something it cannot then be sent.
+                waiting: str | None = None
+                if protocol_version >= UPDATE_PROTOCOL_VERSION:
+                    async with database.session_factory() as db:
+                        open_job = await updates.open_job(db, agent.host_id)
+                    if open_job is not None and open_job.state == UpdateState.QUEUED:
+                        waiting = str(open_job.instruction_id)
+
                 await socket.send_text(
                     HeartbeatAck(
                         interval_seconds=HEARTBEAT_INTERVAL_SECONDS,
                         server_time=datetime.now(UTC).isoformat(),
                         config_version=desired,
+                        update_instruction_id=waiting,
                     ).model_dump_json()
                 )
 
@@ -926,6 +1113,48 @@ async def connect(
                         rejected=ingested.rejected,
                         detail=ingested.detail,
                     ).model_dump_json()
+                )
+
+            elif isinstance(message, UpdateRequest):
+                # "Send me the instruction you mentioned."
+                #
+                # Refused outright below protocol 2, rather than answered: an
+                # agent that sent this while handshaking at 1 is either
+                # confused or probing, and sending it an `update_instruction`
+                # would be sending a frame its own parser refuses.
+                if protocol_version < UPDATE_PROTOCOL_VERSION:
+                    closing_reason = CloseReason.PROTOCOL_ERROR
+                    closing_detail = (
+                        "update frames need protocol "
+                        f"{UPDATE_PROTOCOL_VERSION}; this connection negotiated "
+                        f"{protocol_version}"
+                    )
+                    break
+
+                frame = await _update_instruction_frame(
+                    database, updates, settings, host_id=agent.host_id
+                )
+                if frame is not None:
+                    await socket.send_text(frame)
+                # No frame and no error when there is nothing open: the agent
+                # asked because an acknowledgement mentioned an instruction,
+                # and between that heartbeat and this request an administrator
+                # may have cancelled it. Silence is the correct answer to "the
+                # thing you were told about is gone", and a close frame would
+                # turn an ordinary race into a reconnect.
+
+            elif isinstance(message, UpdateProgress | UpdateResult):
+                if protocol_version < UPDATE_PROTOCOL_VERSION:
+                    closing_reason = CloseReason.PROTOCOL_ERROR
+                    closing_detail = (
+                        "update frames need protocol "
+                        f"{UPDATE_PROTOCOL_VERSION}; this connection negotiated "
+                        f"{protocol_version}"
+                    )
+                    break
+
+                await _record_update_report(
+                    database, updates, agent.host_id, message, request_id=request_id
                 )
 
             elif isinstance(message, ConfigNack):

@@ -25,9 +25,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/felixstaude/homelab-control-center/agents/linux/internal/buildinfo"
 	"github.com/felixstaude/homelab-control-center/agents/linux/internal/config"
 	"github.com/felixstaude/homelab-control-center/agents/linux/internal/doctor"
 	"github.com/felixstaude/homelab-control-center/agents/linux/internal/install"
+	"github.com/felixstaude/homelab-control-center/agents/linux/internal/release"
 )
 
 // interruptible returns a context cancelled by SIGINT or SIGTERM.
@@ -247,4 +249,72 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		return exitRuntimeError
 	}
 	return exitOK
+}
+
+// runApplyUpdate is the privileged half of a controller-driven update.
+//
+// Not a command an operator runs. It is the ExecStart of
+// hcc-agent-update.service, triggered by hcc-agent-update.path when the
+// unprivileged agent leaves a request — see internal/install/handoff.go for
+// why that handoff exists and what it does and does not grant.
+//
+// Takes no arguments on purpose. Every input comes from the request file at a
+// fixed path, so there is no flag an attacker who could influence the unit's
+// invocation could use to redirect it, and the unit file has nothing in it
+// that needs reading carefully.
+//
+// Exits 0 when there was nothing to do. The path unit can fire for a request
+// another invocation already took, and a unit that reported failure for that
+// would fill the journal with alarming nothing.
+func runApplyUpdate(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("hcc-agent apply-update", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return exitOK
+		}
+		return exitBadConfig
+	}
+	if flags.NArg() > 0 {
+		fmt.Fprintf(stderr, "hcc-agent apply-update: unexpected argument %q\n", flags.Arg(0))
+		return exitBadConfig
+	}
+
+	// The trust store from the build stamp only. Deliberately **not** the
+	// operator's HCC_AGENT_RELEASE_KEYS: this runs as root, and the
+	// environment file it would read from is one the agent account cannot
+	// write but an operator can — which is fine — while the environment of
+	// *this* process is whatever systemd was given. Keeping it to the stamp
+	// means the privileged step trusts exactly what the binary was built to
+	// trust, and nothing a configuration change could add.
+	store, err := release.NewTrustStore(buildinfo.ReleaseKeys())
+	if err != nil {
+		fmt.Fprintf(stderr, "hcc-agent apply-update: %v\n", err)
+		return exitBadConfig
+	}
+	if store.Len() == 0 {
+		fmt.Fprint(stderr,
+			"hcc-agent apply-update: this build trusts no publisher key, so it cannot\n"+
+				"verify a release. Nothing was installed. A build that can perform\n"+
+				"automatic updates is one stamped with the publisher's key at build time.\n")
+		return exitRuntimeError
+	}
+
+	ctx, stop := interruptible()
+	defer stop()
+
+	err = install.ApplyUpdateRequest(ctx, install.ApplyOptions{
+		TrustStore: store,
+		Out:        stdout,
+	})
+	switch {
+	case err == nil:
+		return exitOK
+	case errors.Is(err, install.ErrNoUpdateRequest):
+		fmt.Fprintln(stdout, "No update request; nothing to do.")
+		return exitOK
+	default:
+		fmt.Fprintf(stderr, "\nhcc-agent apply-update: %v\n", err)
+		return exitRuntimeError
+	}
 }

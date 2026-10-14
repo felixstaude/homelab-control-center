@@ -94,6 +94,15 @@ class AuditEventResponse(BaseModel):
     target: AuditActorResponse | None = Field(
         description="Which account it acted on, or null where the action has no target."
     )
+    target_host_id: str | None = Field(
+        default=None,
+        description=(
+            "Which host it acted on, or null. Separate from `target`, which "
+            "is an account: an event can have one, the other or neither, and "
+            "collapsing them would mean rendering a host id in a field "
+            "labelled as a username."
+        ),
+    )
     request_id: str | None = Field(
         description="Correlates with the server log for the same request."
     )
@@ -200,6 +209,11 @@ async def list_audit_events(
                         display_name=record.target_display_name,
                     )
                     if record.event.target_user_id is not None
+                    else None
+                ),
+                target_host_id=(
+                    str(record.event.target_host_id)
+                    if record.event.target_host_id is not None
                     else None
                 ),
                 request_id=record.event.request_id,

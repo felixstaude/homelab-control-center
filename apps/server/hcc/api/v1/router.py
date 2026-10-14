@@ -53,6 +53,7 @@ from hcc.api.v1 import (
     metrics,
     monitoring,
     setup,
+    updates,
     users,
 )
 from hcc.models.user import UserRole
@@ -150,6 +151,12 @@ _protected.include_router(monitoring.read_router)
 # endpoint that accepted a measurement from a browser session would be a way to
 # fabricate history. See hcc/api/v1/metrics.py.
 _protected.include_router(metrics.read_router)
+# Phase 10. Every role may see update status — a viewer who cannot see that
+# the fleet is two versions behind cannot do their job — and only an
+# administrator may change a policy, start an update or cancel one. Each of
+# those is a decision about running different code on somebody's machine.
+# See hcc/api/v1/updates.py.
+_protected.include_router(updates.read_router)
 
 # Administrator-only, and deliberately not under /api/v1/agents: everything in
 # that prefix authenticates a per-host agent credential and refuses a browser
@@ -160,6 +167,7 @@ _admin.include_router(users.router)
 _admin.include_router(audit.router)
 _admin.include_router(hosts.router)
 _admin.include_router(monitoring.router)
+_admin.include_router(updates.router)
 
 _agents.include_router(agents.router)
 

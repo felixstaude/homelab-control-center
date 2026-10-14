@@ -1,0 +1,6028 @@
+{
+  "comparisons": [
+    {
+      "compare": 0,
+      "left": "0.1.0",
+      "right": "0.1.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0",
+      "right": "0.2.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0",
+      "right": "0.9.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0",
+      "right": "0.10.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0",
+      "right": "0.11.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0",
+      "right": "1.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0",
+      "right": "1.99.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0",
+      "right": "1.100.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0",
+      "right": "99.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0",
+      "right": "100.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0",
+      "right": "0.1.9"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0",
+      "right": "0.1.10"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0",
+      "right": "1.0.0-alpha"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0",
+      "right": "1.0.0-alpha.1"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0",
+      "right": "1.0.0-alpha.beta"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0",
+      "right": "1.0.0-beta"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0",
+      "right": "1.0.0-beta.2"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0",
+      "right": "1.0.0-beta.11"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0",
+      "right": "1.0.0-rc.1"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0",
+      "right": "1.0.0-1"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0",
+      "right": "1.0.0-1.alpha"
+    },
+    {
+      "compare": 0,
+      "left": "0.1.0",
+      "right": "0.1.0+abc123"
+    },
+    {
+      "compare": 0,
+      "left": "0.1.0",
+      "right": "0.1.0+def456"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0",
+      "right": "1.0.0-rc.1+build.9"
+    },
+    {
+      "compare": 1,
+      "left": "0.2.0",
+      "right": "0.1.0"
+    },
+    {
+      "compare": 0,
+      "left": "0.2.0",
+      "right": "0.2.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.2.0",
+      "right": "0.9.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.2.0",
+      "right": "0.10.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.2.0",
+      "right": "0.11.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.2.0",
+      "right": "1.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.2.0",
+      "right": "1.99.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.2.0",
+      "right": "1.100.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.2.0",
+      "right": "99.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.2.0",
+      "right": "100.0.0"
+    },
+    {
+      "compare": 1,
+      "left": "0.2.0",
+      "right": "0.1.9"
+    },
+    {
+      "compare": 1,
+      "left": "0.2.0",
+      "right": "0.1.10"
+    },
+    {
+      "compare": -1,
+      "left": "0.2.0",
+      "right": "1.0.0-alpha"
+    },
+    {
+      "compare": -1,
+      "left": "0.2.0",
+      "right": "1.0.0-alpha.1"
+    },
+    {
+      "compare": -1,
+      "left": "0.2.0",
+      "right": "1.0.0-alpha.beta"
+    },
+    {
+      "compare": -1,
+      "left": "0.2.0",
+      "right": "1.0.0-beta"
+    },
+    {
+      "compare": -1,
+      "left": "0.2.0",
+      "right": "1.0.0-beta.2"
+    },
+    {
+      "compare": -1,
+      "left": "0.2.0",
+      "right": "1.0.0-beta.11"
+    },
+    {
+      "compare": -1,
+      "left": "0.2.0",
+      "right": "1.0.0-rc.1"
+    },
+    {
+      "compare": -1,
+      "left": "0.2.0",
+      "right": "1.0.0-1"
+    },
+    {
+      "compare": -1,
+      "left": "0.2.0",
+      "right": "1.0.0-1.alpha"
+    },
+    {
+      "compare": 1,
+      "left": "0.2.0",
+      "right": "0.1.0+abc123"
+    },
+    {
+      "compare": 1,
+      "left": "0.2.0",
+      "right": "0.1.0+def456"
+    },
+    {
+      "compare": -1,
+      "left": "0.2.0",
+      "right": "1.0.0-rc.1+build.9"
+    },
+    {
+      "compare": 1,
+      "left": "0.9.0",
+      "right": "0.1.0"
+    },
+    {
+      "compare": 1,
+      "left": "0.9.0",
+      "right": "0.2.0"
+    },
+    {
+      "compare": 0,
+      "left": "0.9.0",
+      "right": "0.9.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.9.0",
+      "right": "0.10.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.9.0",
+      "right": "0.11.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.9.0",
+      "right": "1.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.9.0",
+      "right": "1.99.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.9.0",
+      "right": "1.100.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.9.0",
+      "right": "99.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.9.0",
+      "right": "100.0.0"
+    },
+    {
+      "compare": 1,
+      "left": "0.9.0",
+      "right": "0.1.9"
+    },
+    {
+      "compare": 1,
+      "left": "0.9.0",
+      "right": "0.1.10"
+    },
+    {
+      "compare": -1,
+      "left": "0.9.0",
+      "right": "1.0.0-alpha"
+    },
+    {
+      "compare": -1,
+      "left": "0.9.0",
+      "right": "1.0.0-alpha.1"
+    },
+    {
+      "compare": -1,
+      "left": "0.9.0",
+      "right": "1.0.0-alpha.beta"
+    },
+    {
+      "compare": -1,
+      "left": "0.9.0",
+      "right": "1.0.0-beta"
+    },
+    {
+      "compare": -1,
+      "left": "0.9.0",
+      "right": "1.0.0-beta.2"
+    },
+    {
+      "compare": -1,
+      "left": "0.9.0",
+      "right": "1.0.0-beta.11"
+    },
+    {
+      "compare": -1,
+      "left": "0.9.0",
+      "right": "1.0.0-rc.1"
+    },
+    {
+      "compare": -1,
+      "left": "0.9.0",
+      "right": "1.0.0-1"
+    },
+    {
+      "compare": -1,
+      "left": "0.9.0",
+      "right": "1.0.0-1.alpha"
+    },
+    {
+      "compare": 1,
+      "left": "0.9.0",
+      "right": "0.1.0+abc123"
+    },
+    {
+      "compare": 1,
+      "left": "0.9.0",
+      "right": "0.1.0+def456"
+    },
+    {
+      "compare": -1,
+      "left": "0.9.0",
+      "right": "1.0.0-rc.1+build.9"
+    },
+    {
+      "compare": 1,
+      "left": "0.10.0",
+      "right": "0.1.0"
+    },
+    {
+      "compare": 1,
+      "left": "0.10.0",
+      "right": "0.2.0"
+    },
+    {
+      "compare": 1,
+      "left": "0.10.0",
+      "right": "0.9.0"
+    },
+    {
+      "compare": 0,
+      "left": "0.10.0",
+      "right": "0.10.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.10.0",
+      "right": "0.11.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.10.0",
+      "right": "1.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.10.0",
+      "right": "1.99.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.10.0",
+      "right": "1.100.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.10.0",
+      "right": "99.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.10.0",
+      "right": "100.0.0"
+    },
+    {
+      "compare": 1,
+      "left": "0.10.0",
+      "right": "0.1.9"
+    },
+    {
+      "compare": 1,
+      "left": "0.10.0",
+      "right": "0.1.10"
+    },
+    {
+      "compare": -1,
+      "left": "0.10.0",
+      "right": "1.0.0-alpha"
+    },
+    {
+      "compare": -1,
+      "left": "0.10.0",
+      "right": "1.0.0-alpha.1"
+    },
+    {
+      "compare": -1,
+      "left": "0.10.0",
+      "right": "1.0.0-alpha.beta"
+    },
+    {
+      "compare": -1,
+      "left": "0.10.0",
+      "right": "1.0.0-beta"
+    },
+    {
+      "compare": -1,
+      "left": "0.10.0",
+      "right": "1.0.0-beta.2"
+    },
+    {
+      "compare": -1,
+      "left": "0.10.0",
+      "right": "1.0.0-beta.11"
+    },
+    {
+      "compare": -1,
+      "left": "0.10.0",
+      "right": "1.0.0-rc.1"
+    },
+    {
+      "compare": -1,
+      "left": "0.10.0",
+      "right": "1.0.0-1"
+    },
+    {
+      "compare": -1,
+      "left": "0.10.0",
+      "right": "1.0.0-1.alpha"
+    },
+    {
+      "compare": 1,
+      "left": "0.10.0",
+      "right": "0.1.0+abc123"
+    },
+    {
+      "compare": 1,
+      "left": "0.10.0",
+      "right": "0.1.0+def456"
+    },
+    {
+      "compare": -1,
+      "left": "0.10.0",
+      "right": "1.0.0-rc.1+build.9"
+    },
+    {
+      "compare": 1,
+      "left": "0.11.0",
+      "right": "0.1.0"
+    },
+    {
+      "compare": 1,
+      "left": "0.11.0",
+      "right": "0.2.0"
+    },
+    {
+      "compare": 1,
+      "left": "0.11.0",
+      "right": "0.9.0"
+    },
+    {
+      "compare": 1,
+      "left": "0.11.0",
+      "right": "0.10.0"
+    },
+    {
+      "compare": 0,
+      "left": "0.11.0",
+      "right": "0.11.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.11.0",
+      "right": "1.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.11.0",
+      "right": "1.99.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.11.0",
+      "right": "1.100.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.11.0",
+      "right": "99.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.11.0",
+      "right": "100.0.0"
+    },
+    {
+      "compare": 1,
+      "left": "0.11.0",
+      "right": "0.1.9"
+    },
+    {
+      "compare": 1,
+      "left": "0.11.0",
+      "right": "0.1.10"
+    },
+    {
+      "compare": -1,
+      "left": "0.11.0",
+      "right": "1.0.0-alpha"
+    },
+    {
+      "compare": -1,
+      "left": "0.11.0",
+      "right": "1.0.0-alpha.1"
+    },
+    {
+      "compare": -1,
+      "left": "0.11.0",
+      "right": "1.0.0-alpha.beta"
+    },
+    {
+      "compare": -1,
+      "left": "0.11.0",
+      "right": "1.0.0-beta"
+    },
+    {
+      "compare": -1,
+      "left": "0.11.0",
+      "right": "1.0.0-beta.2"
+    },
+    {
+      "compare": -1,
+      "left": "0.11.0",
+      "right": "1.0.0-beta.11"
+    },
+    {
+      "compare": -1,
+      "left": "0.11.0",
+      "right": "1.0.0-rc.1"
+    },
+    {
+      "compare": -1,
+      "left": "0.11.0",
+      "right": "1.0.0-1"
+    },
+    {
+      "compare": -1,
+      "left": "0.11.0",
+      "right": "1.0.0-1.alpha"
+    },
+    {
+      "compare": 1,
+      "left": "0.11.0",
+      "right": "0.1.0+abc123"
+    },
+    {
+      "compare": 1,
+      "left": "0.11.0",
+      "right": "0.1.0+def456"
+    },
+    {
+      "compare": -1,
+      "left": "0.11.0",
+      "right": "1.0.0-rc.1+build.9"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0",
+      "right": "0.1.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0",
+      "right": "0.2.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0",
+      "right": "0.9.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0",
+      "right": "0.10.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0",
+      "right": "0.11.0"
+    },
+    {
+      "compare": 0,
+      "left": "1.0.0",
+      "right": "1.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0",
+      "right": "1.99.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0",
+      "right": "1.100.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0",
+      "right": "99.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0",
+      "right": "100.0.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0",
+      "right": "0.1.9"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0",
+      "right": "0.1.10"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0",
+      "right": "1.0.0-alpha"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0",
+      "right": "1.0.0-alpha.1"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0",
+      "right": "1.0.0-alpha.beta"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0",
+      "right": "1.0.0-beta"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0",
+      "right": "1.0.0-beta.2"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0",
+      "right": "1.0.0-beta.11"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0",
+      "right": "1.0.0-rc.1"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0",
+      "right": "1.0.0-1"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0",
+      "right": "1.0.0-1.alpha"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0",
+      "right": "0.1.0+abc123"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0",
+      "right": "0.1.0+def456"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0",
+      "right": "1.0.0-rc.1+build.9"
+    },
+    {
+      "compare": 1,
+      "left": "1.99.0",
+      "right": "0.1.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.99.0",
+      "right": "0.2.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.99.0",
+      "right": "0.9.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.99.0",
+      "right": "0.10.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.99.0",
+      "right": "0.11.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.99.0",
+      "right": "1.0.0"
+    },
+    {
+      "compare": 0,
+      "left": "1.99.0",
+      "right": "1.99.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.99.0",
+      "right": "1.100.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.99.0",
+      "right": "99.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.99.0",
+      "right": "100.0.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.99.0",
+      "right": "0.1.9"
+    },
+    {
+      "compare": 1,
+      "left": "1.99.0",
+      "right": "0.1.10"
+    },
+    {
+      "compare": 1,
+      "left": "1.99.0",
+      "right": "1.0.0-alpha"
+    },
+    {
+      "compare": 1,
+      "left": "1.99.0",
+      "right": "1.0.0-alpha.1"
+    },
+    {
+      "compare": 1,
+      "left": "1.99.0",
+      "right": "1.0.0-alpha.beta"
+    },
+    {
+      "compare": 1,
+      "left": "1.99.0",
+      "right": "1.0.0-beta"
+    },
+    {
+      "compare": 1,
+      "left": "1.99.0",
+      "right": "1.0.0-beta.2"
+    },
+    {
+      "compare": 1,
+      "left": "1.99.0",
+      "right": "1.0.0-beta.11"
+    },
+    {
+      "compare": 1,
+      "left": "1.99.0",
+      "right": "1.0.0-rc.1"
+    },
+    {
+      "compare": 1,
+      "left": "1.99.0",
+      "right": "1.0.0-1"
+    },
+    {
+      "compare": 1,
+      "left": "1.99.0",
+      "right": "1.0.0-1.alpha"
+    },
+    {
+      "compare": 1,
+      "left": "1.99.0",
+      "right": "0.1.0+abc123"
+    },
+    {
+      "compare": 1,
+      "left": "1.99.0",
+      "right": "0.1.0+def456"
+    },
+    {
+      "compare": 1,
+      "left": "1.99.0",
+      "right": "1.0.0-rc.1+build.9"
+    },
+    {
+      "compare": 1,
+      "left": "1.100.0",
+      "right": "0.1.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.100.0",
+      "right": "0.2.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.100.0",
+      "right": "0.9.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.100.0",
+      "right": "0.10.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.100.0",
+      "right": "0.11.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.100.0",
+      "right": "1.0.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.100.0",
+      "right": "1.99.0"
+    },
+    {
+      "compare": 0,
+      "left": "1.100.0",
+      "right": "1.100.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.100.0",
+      "right": "99.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.100.0",
+      "right": "100.0.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.100.0",
+      "right": "0.1.9"
+    },
+    {
+      "compare": 1,
+      "left": "1.100.0",
+      "right": "0.1.10"
+    },
+    {
+      "compare": 1,
+      "left": "1.100.0",
+      "right": "1.0.0-alpha"
+    },
+    {
+      "compare": 1,
+      "left": "1.100.0",
+      "right": "1.0.0-alpha.1"
+    },
+    {
+      "compare": 1,
+      "left": "1.100.0",
+      "right": "1.0.0-alpha.beta"
+    },
+    {
+      "compare": 1,
+      "left": "1.100.0",
+      "right": "1.0.0-beta"
+    },
+    {
+      "compare": 1,
+      "left": "1.100.0",
+      "right": "1.0.0-beta.2"
+    },
+    {
+      "compare": 1,
+      "left": "1.100.0",
+      "right": "1.0.0-beta.11"
+    },
+    {
+      "compare": 1,
+      "left": "1.100.0",
+      "right": "1.0.0-rc.1"
+    },
+    {
+      "compare": 1,
+      "left": "1.100.0",
+      "right": "1.0.0-1"
+    },
+    {
+      "compare": 1,
+      "left": "1.100.0",
+      "right": "1.0.0-1.alpha"
+    },
+    {
+      "compare": 1,
+      "left": "1.100.0",
+      "right": "0.1.0+abc123"
+    },
+    {
+      "compare": 1,
+      "left": "1.100.0",
+      "right": "0.1.0+def456"
+    },
+    {
+      "compare": 1,
+      "left": "1.100.0",
+      "right": "1.0.0-rc.1+build.9"
+    },
+    {
+      "compare": 1,
+      "left": "99.0.0",
+      "right": "0.1.0"
+    },
+    {
+      "compare": 1,
+      "left": "99.0.0",
+      "right": "0.2.0"
+    },
+    {
+      "compare": 1,
+      "left": "99.0.0",
+      "right": "0.9.0"
+    },
+    {
+      "compare": 1,
+      "left": "99.0.0",
+      "right": "0.10.0"
+    },
+    {
+      "compare": 1,
+      "left": "99.0.0",
+      "right": "0.11.0"
+    },
+    {
+      "compare": 1,
+      "left": "99.0.0",
+      "right": "1.0.0"
+    },
+    {
+      "compare": 1,
+      "left": "99.0.0",
+      "right": "1.99.0"
+    },
+    {
+      "compare": 1,
+      "left": "99.0.0",
+      "right": "1.100.0"
+    },
+    {
+      "compare": 0,
+      "left": "99.0.0",
+      "right": "99.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "99.0.0",
+      "right": "100.0.0"
+    },
+    {
+      "compare": 1,
+      "left": "99.0.0",
+      "right": "0.1.9"
+    },
+    {
+      "compare": 1,
+      "left": "99.0.0",
+      "right": "0.1.10"
+    },
+    {
+      "compare": 1,
+      "left": "99.0.0",
+      "right": "1.0.0-alpha"
+    },
+    {
+      "compare": 1,
+      "left": "99.0.0",
+      "right": "1.0.0-alpha.1"
+    },
+    {
+      "compare": 1,
+      "left": "99.0.0",
+      "right": "1.0.0-alpha.beta"
+    },
+    {
+      "compare": 1,
+      "left": "99.0.0",
+      "right": "1.0.0-beta"
+    },
+    {
+      "compare": 1,
+      "left": "99.0.0",
+      "right": "1.0.0-beta.2"
+    },
+    {
+      "compare": 1,
+      "left": "99.0.0",
+      "right": "1.0.0-beta.11"
+    },
+    {
+      "compare": 1,
+      "left": "99.0.0",
+      "right": "1.0.0-rc.1"
+    },
+    {
+      "compare": 1,
+      "left": "99.0.0",
+      "right": "1.0.0-1"
+    },
+    {
+      "compare": 1,
+      "left": "99.0.0",
+      "right": "1.0.0-1.alpha"
+    },
+    {
+      "compare": 1,
+      "left": "99.0.0",
+      "right": "0.1.0+abc123"
+    },
+    {
+      "compare": 1,
+      "left": "99.0.0",
+      "right": "0.1.0+def456"
+    },
+    {
+      "compare": 1,
+      "left": "99.0.0",
+      "right": "1.0.0-rc.1+build.9"
+    },
+    {
+      "compare": 1,
+      "left": "100.0.0",
+      "right": "0.1.0"
+    },
+    {
+      "compare": 1,
+      "left": "100.0.0",
+      "right": "0.2.0"
+    },
+    {
+      "compare": 1,
+      "left": "100.0.0",
+      "right": "0.9.0"
+    },
+    {
+      "compare": 1,
+      "left": "100.0.0",
+      "right": "0.10.0"
+    },
+    {
+      "compare": 1,
+      "left": "100.0.0",
+      "right": "0.11.0"
+    },
+    {
+      "compare": 1,
+      "left": "100.0.0",
+      "right": "1.0.0"
+    },
+    {
+      "compare": 1,
+      "left": "100.0.0",
+      "right": "1.99.0"
+    },
+    {
+      "compare": 1,
+      "left": "100.0.0",
+      "right": "1.100.0"
+    },
+    {
+      "compare": 1,
+      "left": "100.0.0",
+      "right": "99.0.0"
+    },
+    {
+      "compare": 0,
+      "left": "100.0.0",
+      "right": "100.0.0"
+    },
+    {
+      "compare": 1,
+      "left": "100.0.0",
+      "right": "0.1.9"
+    },
+    {
+      "compare": 1,
+      "left": "100.0.0",
+      "right": "0.1.10"
+    },
+    {
+      "compare": 1,
+      "left": "100.0.0",
+      "right": "1.0.0-alpha"
+    },
+    {
+      "compare": 1,
+      "left": "100.0.0",
+      "right": "1.0.0-alpha.1"
+    },
+    {
+      "compare": 1,
+      "left": "100.0.0",
+      "right": "1.0.0-alpha.beta"
+    },
+    {
+      "compare": 1,
+      "left": "100.0.0",
+      "right": "1.0.0-beta"
+    },
+    {
+      "compare": 1,
+      "left": "100.0.0",
+      "right": "1.0.0-beta.2"
+    },
+    {
+      "compare": 1,
+      "left": "100.0.0",
+      "right": "1.0.0-beta.11"
+    },
+    {
+      "compare": 1,
+      "left": "100.0.0",
+      "right": "1.0.0-rc.1"
+    },
+    {
+      "compare": 1,
+      "left": "100.0.0",
+      "right": "1.0.0-1"
+    },
+    {
+      "compare": 1,
+      "left": "100.0.0",
+      "right": "1.0.0-1.alpha"
+    },
+    {
+      "compare": 1,
+      "left": "100.0.0",
+      "right": "0.1.0+abc123"
+    },
+    {
+      "compare": 1,
+      "left": "100.0.0",
+      "right": "0.1.0+def456"
+    },
+    {
+      "compare": 1,
+      "left": "100.0.0",
+      "right": "1.0.0-rc.1+build.9"
+    },
+    {
+      "compare": 1,
+      "left": "0.1.9",
+      "right": "0.1.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.9",
+      "right": "0.2.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.9",
+      "right": "0.9.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.9",
+      "right": "0.10.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.9",
+      "right": "0.11.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.9",
+      "right": "1.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.9",
+      "right": "1.99.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.9",
+      "right": "1.100.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.9",
+      "right": "99.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.9",
+      "right": "100.0.0"
+    },
+    {
+      "compare": 0,
+      "left": "0.1.9",
+      "right": "0.1.9"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.9",
+      "right": "0.1.10"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.9",
+      "right": "1.0.0-alpha"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.9",
+      "right": "1.0.0-alpha.1"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.9",
+      "right": "1.0.0-alpha.beta"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.9",
+      "right": "1.0.0-beta"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.9",
+      "right": "1.0.0-beta.2"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.9",
+      "right": "1.0.0-beta.11"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.9",
+      "right": "1.0.0-rc.1"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.9",
+      "right": "1.0.0-1"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.9",
+      "right": "1.0.0-1.alpha"
+    },
+    {
+      "compare": 1,
+      "left": "0.1.9",
+      "right": "0.1.0+abc123"
+    },
+    {
+      "compare": 1,
+      "left": "0.1.9",
+      "right": "0.1.0+def456"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.9",
+      "right": "1.0.0-rc.1+build.9"
+    },
+    {
+      "compare": 1,
+      "left": "0.1.10",
+      "right": "0.1.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.10",
+      "right": "0.2.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.10",
+      "right": "0.9.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.10",
+      "right": "0.10.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.10",
+      "right": "0.11.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.10",
+      "right": "1.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.10",
+      "right": "1.99.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.10",
+      "right": "1.100.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.10",
+      "right": "99.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.10",
+      "right": "100.0.0"
+    },
+    {
+      "compare": 1,
+      "left": "0.1.10",
+      "right": "0.1.9"
+    },
+    {
+      "compare": 0,
+      "left": "0.1.10",
+      "right": "0.1.10"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.10",
+      "right": "1.0.0-alpha"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.10",
+      "right": "1.0.0-alpha.1"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.10",
+      "right": "1.0.0-alpha.beta"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.10",
+      "right": "1.0.0-beta"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.10",
+      "right": "1.0.0-beta.2"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.10",
+      "right": "1.0.0-beta.11"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.10",
+      "right": "1.0.0-rc.1"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.10",
+      "right": "1.0.0-1"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.10",
+      "right": "1.0.0-1.alpha"
+    },
+    {
+      "compare": 1,
+      "left": "0.1.10",
+      "right": "0.1.0+abc123"
+    },
+    {
+      "compare": 1,
+      "left": "0.1.10",
+      "right": "0.1.0+def456"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.10",
+      "right": "1.0.0-rc.1+build.9"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-alpha",
+      "right": "0.1.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-alpha",
+      "right": "0.2.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-alpha",
+      "right": "0.9.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-alpha",
+      "right": "0.10.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-alpha",
+      "right": "0.11.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-alpha",
+      "right": "1.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-alpha",
+      "right": "1.99.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-alpha",
+      "right": "1.100.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-alpha",
+      "right": "99.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-alpha",
+      "right": "100.0.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-alpha",
+      "right": "0.1.9"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-alpha",
+      "right": "0.1.10"
+    },
+    {
+      "compare": 0,
+      "left": "1.0.0-alpha",
+      "right": "1.0.0-alpha"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-alpha",
+      "right": "1.0.0-alpha.1"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-alpha",
+      "right": "1.0.0-alpha.beta"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-alpha",
+      "right": "1.0.0-beta"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-alpha",
+      "right": "1.0.0-beta.2"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-alpha",
+      "right": "1.0.0-beta.11"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-alpha",
+      "right": "1.0.0-rc.1"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-alpha",
+      "right": "1.0.0-1"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-alpha",
+      "right": "1.0.0-1.alpha"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-alpha",
+      "right": "0.1.0+abc123"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-alpha",
+      "right": "0.1.0+def456"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-alpha",
+      "right": "1.0.0-rc.1+build.9"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-alpha.1",
+      "right": "0.1.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-alpha.1",
+      "right": "0.2.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-alpha.1",
+      "right": "0.9.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-alpha.1",
+      "right": "0.10.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-alpha.1",
+      "right": "0.11.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-alpha.1",
+      "right": "1.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-alpha.1",
+      "right": "1.99.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-alpha.1",
+      "right": "1.100.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-alpha.1",
+      "right": "99.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-alpha.1",
+      "right": "100.0.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-alpha.1",
+      "right": "0.1.9"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-alpha.1",
+      "right": "0.1.10"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-alpha.1",
+      "right": "1.0.0-alpha"
+    },
+    {
+      "compare": 0,
+      "left": "1.0.0-alpha.1",
+      "right": "1.0.0-alpha.1"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-alpha.1",
+      "right": "1.0.0-alpha.beta"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-alpha.1",
+      "right": "1.0.0-beta"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-alpha.1",
+      "right": "1.0.0-beta.2"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-alpha.1",
+      "right": "1.0.0-beta.11"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-alpha.1",
+      "right": "1.0.0-rc.1"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-alpha.1",
+      "right": "1.0.0-1"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-alpha.1",
+      "right": "1.0.0-1.alpha"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-alpha.1",
+      "right": "0.1.0+abc123"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-alpha.1",
+      "right": "0.1.0+def456"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-alpha.1",
+      "right": "1.0.0-rc.1+build.9"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-alpha.beta",
+      "right": "0.1.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-alpha.beta",
+      "right": "0.2.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-alpha.beta",
+      "right": "0.9.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-alpha.beta",
+      "right": "0.10.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-alpha.beta",
+      "right": "0.11.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-alpha.beta",
+      "right": "1.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-alpha.beta",
+      "right": "1.99.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-alpha.beta",
+      "right": "1.100.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-alpha.beta",
+      "right": "99.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-alpha.beta",
+      "right": "100.0.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-alpha.beta",
+      "right": "0.1.9"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-alpha.beta",
+      "right": "0.1.10"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-alpha.beta",
+      "right": "1.0.0-alpha"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-alpha.beta",
+      "right": "1.0.0-alpha.1"
+    },
+    {
+      "compare": 0,
+      "left": "1.0.0-alpha.beta",
+      "right": "1.0.0-alpha.beta"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-alpha.beta",
+      "right": "1.0.0-beta"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-alpha.beta",
+      "right": "1.0.0-beta.2"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-alpha.beta",
+      "right": "1.0.0-beta.11"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-alpha.beta",
+      "right": "1.0.0-rc.1"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-alpha.beta",
+      "right": "1.0.0-1"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-alpha.beta",
+      "right": "1.0.0-1.alpha"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-alpha.beta",
+      "right": "0.1.0+abc123"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-alpha.beta",
+      "right": "0.1.0+def456"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-alpha.beta",
+      "right": "1.0.0-rc.1+build.9"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-beta",
+      "right": "0.1.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-beta",
+      "right": "0.2.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-beta",
+      "right": "0.9.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-beta",
+      "right": "0.10.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-beta",
+      "right": "0.11.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-beta",
+      "right": "1.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-beta",
+      "right": "1.99.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-beta",
+      "right": "1.100.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-beta",
+      "right": "99.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-beta",
+      "right": "100.0.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-beta",
+      "right": "0.1.9"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-beta",
+      "right": "0.1.10"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-beta",
+      "right": "1.0.0-alpha"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-beta",
+      "right": "1.0.0-alpha.1"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-beta",
+      "right": "1.0.0-alpha.beta"
+    },
+    {
+      "compare": 0,
+      "left": "1.0.0-beta",
+      "right": "1.0.0-beta"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-beta",
+      "right": "1.0.0-beta.2"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-beta",
+      "right": "1.0.0-beta.11"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-beta",
+      "right": "1.0.0-rc.1"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-beta",
+      "right": "1.0.0-1"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-beta",
+      "right": "1.0.0-1.alpha"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-beta",
+      "right": "0.1.0+abc123"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-beta",
+      "right": "0.1.0+def456"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-beta",
+      "right": "1.0.0-rc.1+build.9"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-beta.2",
+      "right": "0.1.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-beta.2",
+      "right": "0.2.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-beta.2",
+      "right": "0.9.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-beta.2",
+      "right": "0.10.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-beta.2",
+      "right": "0.11.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-beta.2",
+      "right": "1.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-beta.2",
+      "right": "1.99.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-beta.2",
+      "right": "1.100.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-beta.2",
+      "right": "99.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-beta.2",
+      "right": "100.0.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-beta.2",
+      "right": "0.1.9"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-beta.2",
+      "right": "0.1.10"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-beta.2",
+      "right": "1.0.0-alpha"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-beta.2",
+      "right": "1.0.0-alpha.1"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-beta.2",
+      "right": "1.0.0-alpha.beta"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-beta.2",
+      "right": "1.0.0-beta"
+    },
+    {
+      "compare": 0,
+      "left": "1.0.0-beta.2",
+      "right": "1.0.0-beta.2"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-beta.2",
+      "right": "1.0.0-beta.11"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-beta.2",
+      "right": "1.0.0-rc.1"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-beta.2",
+      "right": "1.0.0-1"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-beta.2",
+      "right": "1.0.0-1.alpha"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-beta.2",
+      "right": "0.1.0+abc123"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-beta.2",
+      "right": "0.1.0+def456"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-beta.2",
+      "right": "1.0.0-rc.1+build.9"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-beta.11",
+      "right": "0.1.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-beta.11",
+      "right": "0.2.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-beta.11",
+      "right": "0.9.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-beta.11",
+      "right": "0.10.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-beta.11",
+      "right": "0.11.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-beta.11",
+      "right": "1.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-beta.11",
+      "right": "1.99.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-beta.11",
+      "right": "1.100.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-beta.11",
+      "right": "99.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-beta.11",
+      "right": "100.0.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-beta.11",
+      "right": "0.1.9"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-beta.11",
+      "right": "0.1.10"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-beta.11",
+      "right": "1.0.0-alpha"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-beta.11",
+      "right": "1.0.0-alpha.1"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-beta.11",
+      "right": "1.0.0-alpha.beta"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-beta.11",
+      "right": "1.0.0-beta"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-beta.11",
+      "right": "1.0.0-beta.2"
+    },
+    {
+      "compare": 0,
+      "left": "1.0.0-beta.11",
+      "right": "1.0.0-beta.11"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-beta.11",
+      "right": "1.0.0-rc.1"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-beta.11",
+      "right": "1.0.0-1"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-beta.11",
+      "right": "1.0.0-1.alpha"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-beta.11",
+      "right": "0.1.0+abc123"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-beta.11",
+      "right": "0.1.0+def456"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-beta.11",
+      "right": "1.0.0-rc.1+build.9"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-rc.1",
+      "right": "0.1.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-rc.1",
+      "right": "0.2.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-rc.1",
+      "right": "0.9.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-rc.1",
+      "right": "0.10.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-rc.1",
+      "right": "0.11.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-rc.1",
+      "right": "1.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-rc.1",
+      "right": "1.99.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-rc.1",
+      "right": "1.100.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-rc.1",
+      "right": "99.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-rc.1",
+      "right": "100.0.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-rc.1",
+      "right": "0.1.9"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-rc.1",
+      "right": "0.1.10"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-rc.1",
+      "right": "1.0.0-alpha"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-rc.1",
+      "right": "1.0.0-alpha.1"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-rc.1",
+      "right": "1.0.0-alpha.beta"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-rc.1",
+      "right": "1.0.0-beta"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-rc.1",
+      "right": "1.0.0-beta.2"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-rc.1",
+      "right": "1.0.0-beta.11"
+    },
+    {
+      "compare": 0,
+      "left": "1.0.0-rc.1",
+      "right": "1.0.0-rc.1"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-rc.1",
+      "right": "1.0.0-1"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-rc.1",
+      "right": "1.0.0-1.alpha"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-rc.1",
+      "right": "0.1.0+abc123"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-rc.1",
+      "right": "0.1.0+def456"
+    },
+    {
+      "compare": 0,
+      "left": "1.0.0-rc.1",
+      "right": "1.0.0-rc.1+build.9"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-1",
+      "right": "0.1.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-1",
+      "right": "0.2.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-1",
+      "right": "0.9.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-1",
+      "right": "0.10.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-1",
+      "right": "0.11.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-1",
+      "right": "1.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-1",
+      "right": "1.99.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-1",
+      "right": "1.100.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-1",
+      "right": "99.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-1",
+      "right": "100.0.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-1",
+      "right": "0.1.9"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-1",
+      "right": "0.1.10"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-1",
+      "right": "1.0.0-alpha"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-1",
+      "right": "1.0.0-alpha.1"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-1",
+      "right": "1.0.0-alpha.beta"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-1",
+      "right": "1.0.0-beta"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-1",
+      "right": "1.0.0-beta.2"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-1",
+      "right": "1.0.0-beta.11"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-1",
+      "right": "1.0.0-rc.1"
+    },
+    {
+      "compare": 0,
+      "left": "1.0.0-1",
+      "right": "1.0.0-1"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-1",
+      "right": "1.0.0-1.alpha"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-1",
+      "right": "0.1.0+abc123"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-1",
+      "right": "0.1.0+def456"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-1",
+      "right": "1.0.0-rc.1+build.9"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-1.alpha",
+      "right": "0.1.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-1.alpha",
+      "right": "0.2.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-1.alpha",
+      "right": "0.9.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-1.alpha",
+      "right": "0.10.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-1.alpha",
+      "right": "0.11.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-1.alpha",
+      "right": "1.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-1.alpha",
+      "right": "1.99.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-1.alpha",
+      "right": "1.100.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-1.alpha",
+      "right": "99.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-1.alpha",
+      "right": "100.0.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-1.alpha",
+      "right": "0.1.9"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-1.alpha",
+      "right": "0.1.10"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-1.alpha",
+      "right": "1.0.0-alpha"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-1.alpha",
+      "right": "1.0.0-alpha.1"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-1.alpha",
+      "right": "1.0.0-alpha.beta"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-1.alpha",
+      "right": "1.0.0-beta"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-1.alpha",
+      "right": "1.0.0-beta.2"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-1.alpha",
+      "right": "1.0.0-beta.11"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-1.alpha",
+      "right": "1.0.0-rc.1"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-1.alpha",
+      "right": "1.0.0-1"
+    },
+    {
+      "compare": 0,
+      "left": "1.0.0-1.alpha",
+      "right": "1.0.0-1.alpha"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-1.alpha",
+      "right": "0.1.0+abc123"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-1.alpha",
+      "right": "0.1.0+def456"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-1.alpha",
+      "right": "1.0.0-rc.1+build.9"
+    },
+    {
+      "compare": 0,
+      "left": "0.1.0+abc123",
+      "right": "0.1.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0+abc123",
+      "right": "0.2.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0+abc123",
+      "right": "0.9.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0+abc123",
+      "right": "0.10.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0+abc123",
+      "right": "0.11.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0+abc123",
+      "right": "1.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0+abc123",
+      "right": "1.99.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0+abc123",
+      "right": "1.100.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0+abc123",
+      "right": "99.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0+abc123",
+      "right": "100.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0+abc123",
+      "right": "0.1.9"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0+abc123",
+      "right": "0.1.10"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0+abc123",
+      "right": "1.0.0-alpha"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0+abc123",
+      "right": "1.0.0-alpha.1"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0+abc123",
+      "right": "1.0.0-alpha.beta"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0+abc123",
+      "right": "1.0.0-beta"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0+abc123",
+      "right": "1.0.0-beta.2"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0+abc123",
+      "right": "1.0.0-beta.11"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0+abc123",
+      "right": "1.0.0-rc.1"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0+abc123",
+      "right": "1.0.0-1"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0+abc123",
+      "right": "1.0.0-1.alpha"
+    },
+    {
+      "compare": 0,
+      "left": "0.1.0+abc123",
+      "right": "0.1.0+abc123"
+    },
+    {
+      "compare": 0,
+      "left": "0.1.0+abc123",
+      "right": "0.1.0+def456"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0+abc123",
+      "right": "1.0.0-rc.1+build.9"
+    },
+    {
+      "compare": 0,
+      "left": "0.1.0+def456",
+      "right": "0.1.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0+def456",
+      "right": "0.2.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0+def456",
+      "right": "0.9.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0+def456",
+      "right": "0.10.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0+def456",
+      "right": "0.11.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0+def456",
+      "right": "1.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0+def456",
+      "right": "1.99.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0+def456",
+      "right": "1.100.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0+def456",
+      "right": "99.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0+def456",
+      "right": "100.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0+def456",
+      "right": "0.1.9"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0+def456",
+      "right": "0.1.10"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0+def456",
+      "right": "1.0.0-alpha"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0+def456",
+      "right": "1.0.0-alpha.1"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0+def456",
+      "right": "1.0.0-alpha.beta"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0+def456",
+      "right": "1.0.0-beta"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0+def456",
+      "right": "1.0.0-beta.2"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0+def456",
+      "right": "1.0.0-beta.11"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0+def456",
+      "right": "1.0.0-rc.1"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0+def456",
+      "right": "1.0.0-1"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0+def456",
+      "right": "1.0.0-1.alpha"
+    },
+    {
+      "compare": 0,
+      "left": "0.1.0+def456",
+      "right": "0.1.0+abc123"
+    },
+    {
+      "compare": 0,
+      "left": "0.1.0+def456",
+      "right": "0.1.0+def456"
+    },
+    {
+      "compare": -1,
+      "left": "0.1.0+def456",
+      "right": "1.0.0-rc.1+build.9"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-rc.1+build.9",
+      "right": "0.1.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-rc.1+build.9",
+      "right": "0.2.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-rc.1+build.9",
+      "right": "0.9.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-rc.1+build.9",
+      "right": "0.10.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-rc.1+build.9",
+      "right": "0.11.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-rc.1+build.9",
+      "right": "1.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-rc.1+build.9",
+      "right": "1.99.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-rc.1+build.9",
+      "right": "1.100.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-rc.1+build.9",
+      "right": "99.0.0"
+    },
+    {
+      "compare": -1,
+      "left": "1.0.0-rc.1+build.9",
+      "right": "100.0.0"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-rc.1+build.9",
+      "right": "0.1.9"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-rc.1+build.9",
+      "right": "0.1.10"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-rc.1+build.9",
+      "right": "1.0.0-alpha"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-rc.1+build.9",
+      "right": "1.0.0-alpha.1"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-rc.1+build.9",
+      "right": "1.0.0-alpha.beta"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-rc.1+build.9",
+      "right": "1.0.0-beta"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-rc.1+build.9",
+      "right": "1.0.0-beta.2"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-rc.1+build.9",
+      "right": "1.0.0-beta.11"
+    },
+    {
+      "compare": 0,
+      "left": "1.0.0-rc.1+build.9",
+      "right": "1.0.0-rc.1"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-rc.1+build.9",
+      "right": "1.0.0-1"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-rc.1+build.9",
+      "right": "1.0.0-1.alpha"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-rc.1+build.9",
+      "right": "0.1.0+abc123"
+    },
+    {
+      "compare": 1,
+      "left": "1.0.0-rc.1+build.9",
+      "right": "0.1.0+def456"
+    },
+    {
+      "compare": 0,
+      "left": "1.0.0-rc.1+build.9",
+      "right": "1.0.0-rc.1+build.9"
+    }
+  ],
+  "max_length": 64,
+  "rejections": [
+    "v1.2.3",
+    "1.2",
+    "1.2.3.4",
+    "latest",
+    "",
+    "1.2.3-",
+    "1.2.3+",
+    "01.0.0",
+    "1.02.0",
+    "1.0.00",
+    "1.0.0-alpha..1",
+    "1.0.0-01",
+    "1.0.0_alpha",
+    "1.0.0 extra"
+  ],
+  "steps": [
+    {
+      "installed": "0.1.0",
+      "step": "none",
+      "target": "0.1.0"
+    },
+    {
+      "installed": "0.1.0",
+      "step": "minor",
+      "target": "0.2.0"
+    },
+    {
+      "installed": "0.1.0",
+      "step": "minor",
+      "target": "0.9.0"
+    },
+    {
+      "installed": "0.1.0",
+      "step": "minor",
+      "target": "0.10.0"
+    },
+    {
+      "installed": "0.1.0",
+      "step": "minor",
+      "target": "0.11.0"
+    },
+    {
+      "installed": "0.1.0",
+      "step": "major",
+      "target": "1.0.0"
+    },
+    {
+      "installed": "0.1.0",
+      "step": "major",
+      "target": "1.99.0"
+    },
+    {
+      "installed": "0.1.0",
+      "step": "major",
+      "target": "1.100.0"
+    },
+    {
+      "installed": "0.1.0",
+      "step": "major",
+      "target": "99.0.0"
+    },
+    {
+      "installed": "0.1.0",
+      "step": "major",
+      "target": "100.0.0"
+    },
+    {
+      "installed": "0.1.0",
+      "step": "patch",
+      "target": "0.1.9"
+    },
+    {
+      "installed": "0.1.0",
+      "step": "patch",
+      "target": "0.1.10"
+    },
+    {
+      "installed": "0.1.0",
+      "step": "major",
+      "target": "1.0.0-alpha"
+    },
+    {
+      "installed": "0.1.0",
+      "step": "major",
+      "target": "1.0.0-alpha.1"
+    },
+    {
+      "installed": "0.1.0",
+      "step": "major",
+      "target": "1.0.0-alpha.beta"
+    },
+    {
+      "installed": "0.1.0",
+      "step": "major",
+      "target": "1.0.0-beta"
+    },
+    {
+      "installed": "0.1.0",
+      "step": "major",
+      "target": "1.0.0-beta.2"
+    },
+    {
+      "installed": "0.1.0",
+      "step": "major",
+      "target": "1.0.0-beta.11"
+    },
+    {
+      "installed": "0.1.0",
+      "step": "major",
+      "target": "1.0.0-rc.1"
+    },
+    {
+      "installed": "0.1.0",
+      "step": "major",
+      "target": "1.0.0-1"
+    },
+    {
+      "installed": "0.1.0",
+      "step": "major",
+      "target": "1.0.0-1.alpha"
+    },
+    {
+      "installed": "0.1.0",
+      "step": "none",
+      "target": "0.1.0+abc123"
+    },
+    {
+      "installed": "0.1.0",
+      "step": "none",
+      "target": "0.1.0+def456"
+    },
+    {
+      "installed": "0.1.0",
+      "step": "major",
+      "target": "1.0.0-rc.1+build.9"
+    },
+    {
+      "installed": "0.2.0",
+      "step": "minor",
+      "target": "0.1.0"
+    },
+    {
+      "installed": "0.2.0",
+      "step": "none",
+      "target": "0.2.0"
+    },
+    {
+      "installed": "0.2.0",
+      "step": "minor",
+      "target": "0.9.0"
+    },
+    {
+      "installed": "0.2.0",
+      "step": "minor",
+      "target": "0.10.0"
+    },
+    {
+      "installed": "0.2.0",
+      "step": "minor",
+      "target": "0.11.0"
+    },
+    {
+      "installed": "0.2.0",
+      "step": "major",
+      "target": "1.0.0"
+    },
+    {
+      "installed": "0.2.0",
+      "step": "major",
+      "target": "1.99.0"
+    },
+    {
+      "installed": "0.2.0",
+      "step": "major",
+      "target": "1.100.0"
+    },
+    {
+      "installed": "0.2.0",
+      "step": "major",
+      "target": "99.0.0"
+    },
+    {
+      "installed": "0.2.0",
+      "step": "major",
+      "target": "100.0.0"
+    },
+    {
+      "installed": "0.2.0",
+      "step": "minor",
+      "target": "0.1.9"
+    },
+    {
+      "installed": "0.2.0",
+      "step": "minor",
+      "target": "0.1.10"
+    },
+    {
+      "installed": "0.2.0",
+      "step": "major",
+      "target": "1.0.0-alpha"
+    },
+    {
+      "installed": "0.2.0",
+      "step": "major",
+      "target": "1.0.0-alpha.1"
+    },
+    {
+      "installed": "0.2.0",
+      "step": "major",
+      "target": "1.0.0-alpha.beta"
+    },
+    {
+      "installed": "0.2.0",
+      "step": "major",
+      "target": "1.0.0-beta"
+    },
+    {
+      "installed": "0.2.0",
+      "step": "major",
+      "target": "1.0.0-beta.2"
+    },
+    {
+      "installed": "0.2.0",
+      "step": "major",
+      "target": "1.0.0-beta.11"
+    },
+    {
+      "installed": "0.2.0",
+      "step": "major",
+      "target": "1.0.0-rc.1"
+    },
+    {
+      "installed": "0.2.0",
+      "step": "major",
+      "target": "1.0.0-1"
+    },
+    {
+      "installed": "0.2.0",
+      "step": "major",
+      "target": "1.0.0-1.alpha"
+    },
+    {
+      "installed": "0.2.0",
+      "step": "minor",
+      "target": "0.1.0+abc123"
+    },
+    {
+      "installed": "0.2.0",
+      "step": "minor",
+      "target": "0.1.0+def456"
+    },
+    {
+      "installed": "0.2.0",
+      "step": "major",
+      "target": "1.0.0-rc.1+build.9"
+    },
+    {
+      "installed": "0.9.0",
+      "step": "minor",
+      "target": "0.1.0"
+    },
+    {
+      "installed": "0.9.0",
+      "step": "minor",
+      "target": "0.2.0"
+    },
+    {
+      "installed": "0.9.0",
+      "step": "none",
+      "target": "0.9.0"
+    },
+    {
+      "installed": "0.9.0",
+      "step": "minor",
+      "target": "0.10.0"
+    },
+    {
+      "installed": "0.9.0",
+      "step": "minor",
+      "target": "0.11.0"
+    },
+    {
+      "installed": "0.9.0",
+      "step": "major",
+      "target": "1.0.0"
+    },
+    {
+      "installed": "0.9.0",
+      "step": "major",
+      "target": "1.99.0"
+    },
+    {
+      "installed": "0.9.0",
+      "step": "major",
+      "target": "1.100.0"
+    },
+    {
+      "installed": "0.9.0",
+      "step": "major",
+      "target": "99.0.0"
+    },
+    {
+      "installed": "0.9.0",
+      "step": "major",
+      "target": "100.0.0"
+    },
+    {
+      "installed": "0.9.0",
+      "step": "minor",
+      "target": "0.1.9"
+    },
+    {
+      "installed": "0.9.0",
+      "step": "minor",
+      "target": "0.1.10"
+    },
+    {
+      "installed": "0.9.0",
+      "step": "major",
+      "target": "1.0.0-alpha"
+    },
+    {
+      "installed": "0.9.0",
+      "step": "major",
+      "target": "1.0.0-alpha.1"
+    },
+    {
+      "installed": "0.9.0",
+      "step": "major",
+      "target": "1.0.0-alpha.beta"
+    },
+    {
+      "installed": "0.9.0",
+      "step": "major",
+      "target": "1.0.0-beta"
+    },
+    {
+      "installed": "0.9.0",
+      "step": "major",
+      "target": "1.0.0-beta.2"
+    },
+    {
+      "installed": "0.9.0",
+      "step": "major",
+      "target": "1.0.0-beta.11"
+    },
+    {
+      "installed": "0.9.0",
+      "step": "major",
+      "target": "1.0.0-rc.1"
+    },
+    {
+      "installed": "0.9.0",
+      "step": "major",
+      "target": "1.0.0-1"
+    },
+    {
+      "installed": "0.9.0",
+      "step": "major",
+      "target": "1.0.0-1.alpha"
+    },
+    {
+      "installed": "0.9.0",
+      "step": "minor",
+      "target": "0.1.0+abc123"
+    },
+    {
+      "installed": "0.9.0",
+      "step": "minor",
+      "target": "0.1.0+def456"
+    },
+    {
+      "installed": "0.9.0",
+      "step": "major",
+      "target": "1.0.0-rc.1+build.9"
+    },
+    {
+      "installed": "0.10.0",
+      "step": "minor",
+      "target": "0.1.0"
+    },
+    {
+      "installed": "0.10.0",
+      "step": "minor",
+      "target": "0.2.0"
+    },
+    {
+      "installed": "0.10.0",
+      "step": "minor",
+      "target": "0.9.0"
+    },
+    {
+      "installed": "0.10.0",
+      "step": "none",
+      "target": "0.10.0"
+    },
+    {
+      "installed": "0.10.0",
+      "step": "minor",
+      "target": "0.11.0"
+    },
+    {
+      "installed": "0.10.0",
+      "step": "major",
+      "target": "1.0.0"
+    },
+    {
+      "installed": "0.10.0",
+      "step": "major",
+      "target": "1.99.0"
+    },
+    {
+      "installed": "0.10.0",
+      "step": "major",
+      "target": "1.100.0"
+    },
+    {
+      "installed": "0.10.0",
+      "step": "major",
+      "target": "99.0.0"
+    },
+    {
+      "installed": "0.10.0",
+      "step": "major",
+      "target": "100.0.0"
+    },
+    {
+      "installed": "0.10.0",
+      "step": "minor",
+      "target": "0.1.9"
+    },
+    {
+      "installed": "0.10.0",
+      "step": "minor",
+      "target": "0.1.10"
+    },
+    {
+      "installed": "0.10.0",
+      "step": "major",
+      "target": "1.0.0-alpha"
+    },
+    {
+      "installed": "0.10.0",
+      "step": "major",
+      "target": "1.0.0-alpha.1"
+    },
+    {
+      "installed": "0.10.0",
+      "step": "major",
+      "target": "1.0.0-alpha.beta"
+    },
+    {
+      "installed": "0.10.0",
+      "step": "major",
+      "target": "1.0.0-beta"
+    },
+    {
+      "installed": "0.10.0",
+      "step": "major",
+      "target": "1.0.0-beta.2"
+    },
+    {
+      "installed": "0.10.0",
+      "step": "major",
+      "target": "1.0.0-beta.11"
+    },
+    {
+      "installed": "0.10.0",
+      "step": "major",
+      "target": "1.0.0-rc.1"
+    },
+    {
+      "installed": "0.10.0",
+      "step": "major",
+      "target": "1.0.0-1"
+    },
+    {
+      "installed": "0.10.0",
+      "step": "major",
+      "target": "1.0.0-1.alpha"
+    },
+    {
+      "installed": "0.10.0",
+      "step": "minor",
+      "target": "0.1.0+abc123"
+    },
+    {
+      "installed": "0.10.0",
+      "step": "minor",
+      "target": "0.1.0+def456"
+    },
+    {
+      "installed": "0.10.0",
+      "step": "major",
+      "target": "1.0.0-rc.1+build.9"
+    },
+    {
+      "installed": "0.11.0",
+      "step": "minor",
+      "target": "0.1.0"
+    },
+    {
+      "installed": "0.11.0",
+      "step": "minor",
+      "target": "0.2.0"
+    },
+    {
+      "installed": "0.11.0",
+      "step": "minor",
+      "target": "0.9.0"
+    },
+    {
+      "installed": "0.11.0",
+      "step": "minor",
+      "target": "0.10.0"
+    },
+    {
+      "installed": "0.11.0",
+      "step": "none",
+      "target": "0.11.0"
+    },
+    {
+      "installed": "0.11.0",
+      "step": "major",
+      "target": "1.0.0"
+    },
+    {
+      "installed": "0.11.0",
+      "step": "major",
+      "target": "1.99.0"
+    },
+    {
+      "installed": "0.11.0",
+      "step": "major",
+      "target": "1.100.0"
+    },
+    {
+      "installed": "0.11.0",
+      "step": "major",
+      "target": "99.0.0"
+    },
+    {
+      "installed": "0.11.0",
+      "step": "major",
+      "target": "100.0.0"
+    },
+    {
+      "installed": "0.11.0",
+      "step": "minor",
+      "target": "0.1.9"
+    },
+    {
+      "installed": "0.11.0",
+      "step": "minor",
+      "target": "0.1.10"
+    },
+    {
+      "installed": "0.11.0",
+      "step": "major",
+      "target": "1.0.0-alpha"
+    },
+    {
+      "installed": "0.11.0",
+      "step": "major",
+      "target": "1.0.0-alpha.1"
+    },
+    {
+      "installed": "0.11.0",
+      "step": "major",
+      "target": "1.0.0-alpha.beta"
+    },
+    {
+      "installed": "0.11.0",
+      "step": "major",
+      "target": "1.0.0-beta"
+    },
+    {
+      "installed": "0.11.0",
+      "step": "major",
+      "target": "1.0.0-beta.2"
+    },
+    {
+      "installed": "0.11.0",
+      "step": "major",
+      "target": "1.0.0-beta.11"
+    },
+    {
+      "installed": "0.11.0",
+      "step": "major",
+      "target": "1.0.0-rc.1"
+    },
+    {
+      "installed": "0.11.0",
+      "step": "major",
+      "target": "1.0.0-1"
+    },
+    {
+      "installed": "0.11.0",
+      "step": "major",
+      "target": "1.0.0-1.alpha"
+    },
+    {
+      "installed": "0.11.0",
+      "step": "minor",
+      "target": "0.1.0+abc123"
+    },
+    {
+      "installed": "0.11.0",
+      "step": "minor",
+      "target": "0.1.0+def456"
+    },
+    {
+      "installed": "0.11.0",
+      "step": "major",
+      "target": "1.0.0-rc.1+build.9"
+    },
+    {
+      "installed": "1.0.0",
+      "step": "major",
+      "target": "0.1.0"
+    },
+    {
+      "installed": "1.0.0",
+      "step": "major",
+      "target": "0.2.0"
+    },
+    {
+      "installed": "1.0.0",
+      "step": "major",
+      "target": "0.9.0"
+    },
+    {
+      "installed": "1.0.0",
+      "step": "major",
+      "target": "0.10.0"
+    },
+    {
+      "installed": "1.0.0",
+      "step": "major",
+      "target": "0.11.0"
+    },
+    {
+      "installed": "1.0.0",
+      "step": "none",
+      "target": "1.0.0"
+    },
+    {
+      "installed": "1.0.0",
+      "step": "minor",
+      "target": "1.99.0"
+    },
+    {
+      "installed": "1.0.0",
+      "step": "minor",
+      "target": "1.100.0"
+    },
+    {
+      "installed": "1.0.0",
+      "step": "major",
+      "target": "99.0.0"
+    },
+    {
+      "installed": "1.0.0",
+      "step": "major",
+      "target": "100.0.0"
+    },
+    {
+      "installed": "1.0.0",
+      "step": "major",
+      "target": "0.1.9"
+    },
+    {
+      "installed": "1.0.0",
+      "step": "major",
+      "target": "0.1.10"
+    },
+    {
+      "installed": "1.0.0",
+      "step": "prerelease",
+      "target": "1.0.0-alpha"
+    },
+    {
+      "installed": "1.0.0",
+      "step": "prerelease",
+      "target": "1.0.0-alpha.1"
+    },
+    {
+      "installed": "1.0.0",
+      "step": "prerelease",
+      "target": "1.0.0-alpha.beta"
+    },
+    {
+      "installed": "1.0.0",
+      "step": "prerelease",
+      "target": "1.0.0-beta"
+    },
+    {
+      "installed": "1.0.0",
+      "step": "prerelease",
+      "target": "1.0.0-beta.2"
+    },
+    {
+      "installed": "1.0.0",
+      "step": "prerelease",
+      "target": "1.0.0-beta.11"
+    },
+    {
+      "installed": "1.0.0",
+      "step": "prerelease",
+      "target": "1.0.0-rc.1"
+    },
+    {
+      "installed": "1.0.0",
+      "step": "prerelease",
+      "target": "1.0.0-1"
+    },
+    {
+      "installed": "1.0.0",
+      "step": "prerelease",
+      "target": "1.0.0-1.alpha"
+    },
+    {
+      "installed": "1.0.0",
+      "step": "major",
+      "target": "0.1.0+abc123"
+    },
+    {
+      "installed": "1.0.0",
+      "step": "major",
+      "target": "0.1.0+def456"
+    },
+    {
+      "installed": "1.0.0",
+      "step": "prerelease",
+      "target": "1.0.0-rc.1+build.9"
+    },
+    {
+      "installed": "1.99.0",
+      "step": "major",
+      "target": "0.1.0"
+    },
+    {
+      "installed": "1.99.0",
+      "step": "major",
+      "target": "0.2.0"
+    },
+    {
+      "installed": "1.99.0",
+      "step": "major",
+      "target": "0.9.0"
+    },
+    {
+      "installed": "1.99.0",
+      "step": "major",
+      "target": "0.10.0"
+    },
+    {
+      "installed": "1.99.0",
+      "step": "major",
+      "target": "0.11.0"
+    },
+    {
+      "installed": "1.99.0",
+      "step": "minor",
+      "target": "1.0.0"
+    },
+    {
+      "installed": "1.99.0",
+      "step": "none",
+      "target": "1.99.0"
+    },
+    {
+      "installed": "1.99.0",
+      "step": "minor",
+      "target": "1.100.0"
+    },
+    {
+      "installed": "1.99.0",
+      "step": "major",
+      "target": "99.0.0"
+    },
+    {
+      "installed": "1.99.0",
+      "step": "major",
+      "target": "100.0.0"
+    },
+    {
+      "installed": "1.99.0",
+      "step": "major",
+      "target": "0.1.9"
+    },
+    {
+      "installed": "1.99.0",
+      "step": "major",
+      "target": "0.1.10"
+    },
+    {
+      "installed": "1.99.0",
+      "step": "minor",
+      "target": "1.0.0-alpha"
+    },
+    {
+      "installed": "1.99.0",
+      "step": "minor",
+      "target": "1.0.0-alpha.1"
+    },
+    {
+      "installed": "1.99.0",
+      "step": "minor",
+      "target": "1.0.0-alpha.beta"
+    },
+    {
+      "installed": "1.99.0",
+      "step": "minor",
+      "target": "1.0.0-beta"
+    },
+    {
+      "installed": "1.99.0",
+      "step": "minor",
+      "target": "1.0.0-beta.2"
+    },
+    {
+      "installed": "1.99.0",
+      "step": "minor",
+      "target": "1.0.0-beta.11"
+    },
+    {
+      "installed": "1.99.0",
+      "step": "minor",
+      "target": "1.0.0-rc.1"
+    },
+    {
+      "installed": "1.99.0",
+      "step": "minor",
+      "target": "1.0.0-1"
+    },
+    {
+      "installed": "1.99.0",
+      "step": "minor",
+      "target": "1.0.0-1.alpha"
+    },
+    {
+      "installed": "1.99.0",
+      "step": "major",
+      "target": "0.1.0+abc123"
+    },
+    {
+      "installed": "1.99.0",
+      "step": "major",
+      "target": "0.1.0+def456"
+    },
+    {
+      "installed": "1.99.0",
+      "step": "minor",
+      "target": "1.0.0-rc.1+build.9"
+    },
+    {
+      "installed": "1.100.0",
+      "step": "major",
+      "target": "0.1.0"
+    },
+    {
+      "installed": "1.100.0",
+      "step": "major",
+      "target": "0.2.0"
+    },
+    {
+      "installed": "1.100.0",
+      "step": "major",
+      "target": "0.9.0"
+    },
+    {
+      "installed": "1.100.0",
+      "step": "major",
+      "target": "0.10.0"
+    },
+    {
+      "installed": "1.100.0",
+      "step": "major",
+      "target": "0.11.0"
+    },
+    {
+      "installed": "1.100.0",
+      "step": "minor",
+      "target": "1.0.0"
+    },
+    {
+      "installed": "1.100.0",
+      "step": "minor",
+      "target": "1.99.0"
+    },
+    {
+      "installed": "1.100.0",
+      "step": "none",
+      "target": "1.100.0"
+    },
+    {
+      "installed": "1.100.0",
+      "step": "major",
+      "target": "99.0.0"
+    },
+    {
+      "installed": "1.100.0",
+      "step": "major",
+      "target": "100.0.0"
+    },
+    {
+      "installed": "1.100.0",
+      "step": "major",
+      "target": "0.1.9"
+    },
+    {
+      "installed": "1.100.0",
+      "step": "major",
+      "target": "0.1.10"
+    },
+    {
+      "installed": "1.100.0",
+      "step": "minor",
+      "target": "1.0.0-alpha"
+    },
+    {
+      "installed": "1.100.0",
+      "step": "minor",
+      "target": "1.0.0-alpha.1"
+    },
+    {
+      "installed": "1.100.0",
+      "step": "minor",
+      "target": "1.0.0-alpha.beta"
+    },
+    {
+      "installed": "1.100.0",
+      "step": "minor",
+      "target": "1.0.0-beta"
+    },
+    {
+      "installed": "1.100.0",
+      "step": "minor",
+      "target": "1.0.0-beta.2"
+    },
+    {
+      "installed": "1.100.0",
+      "step": "minor",
+      "target": "1.0.0-beta.11"
+    },
+    {
+      "installed": "1.100.0",
+      "step": "minor",
+      "target": "1.0.0-rc.1"
+    },
+    {
+      "installed": "1.100.0",
+      "step": "minor",
+      "target": "1.0.0-1"
+    },
+    {
+      "installed": "1.100.0",
+      "step": "minor",
+      "target": "1.0.0-1.alpha"
+    },
+    {
+      "installed": "1.100.0",
+      "step": "major",
+      "target": "0.1.0+abc123"
+    },
+    {
+      "installed": "1.100.0",
+      "step": "major",
+      "target": "0.1.0+def456"
+    },
+    {
+      "installed": "1.100.0",
+      "step": "minor",
+      "target": "1.0.0-rc.1+build.9"
+    },
+    {
+      "installed": "99.0.0",
+      "step": "major",
+      "target": "0.1.0"
+    },
+    {
+      "installed": "99.0.0",
+      "step": "major",
+      "target": "0.2.0"
+    },
+    {
+      "installed": "99.0.0",
+      "step": "major",
+      "target": "0.9.0"
+    },
+    {
+      "installed": "99.0.0",
+      "step": "major",
+      "target": "0.10.0"
+    },
+    {
+      "installed": "99.0.0",
+      "step": "major",
+      "target": "0.11.0"
+    },
+    {
+      "installed": "99.0.0",
+      "step": "major",
+      "target": "1.0.0"
+    },
+    {
+      "installed": "99.0.0",
+      "step": "major",
+      "target": "1.99.0"
+    },
+    {
+      "installed": "99.0.0",
+      "step": "major",
+      "target": "1.100.0"
+    },
+    {
+      "installed": "99.0.0",
+      "step": "none",
+      "target": "99.0.0"
+    },
+    {
+      "installed": "99.0.0",
+      "step": "major",
+      "target": "100.0.0"
+    },
+    {
+      "installed": "99.0.0",
+      "step": "major",
+      "target": "0.1.9"
+    },
+    {
+      "installed": "99.0.0",
+      "step": "major",
+      "target": "0.1.10"
+    },
+    {
+      "installed": "99.0.0",
+      "step": "major",
+      "target": "1.0.0-alpha"
+    },
+    {
+      "installed": "99.0.0",
+      "step": "major",
+      "target": "1.0.0-alpha.1"
+    },
+    {
+      "installed": "99.0.0",
+      "step": "major",
+      "target": "1.0.0-alpha.beta"
+    },
+    {
+      "installed": "99.0.0",
+      "step": "major",
+      "target": "1.0.0-beta"
+    },
+    {
+      "installed": "99.0.0",
+      "step": "major",
+      "target": "1.0.0-beta.2"
+    },
+    {
+      "installed": "99.0.0",
+      "step": "major",
+      "target": "1.0.0-beta.11"
+    },
+    {
+      "installed": "99.0.0",
+      "step": "major",
+      "target": "1.0.0-rc.1"
+    },
+    {
+      "installed": "99.0.0",
+      "step": "major",
+      "target": "1.0.0-1"
+    },
+    {
+      "installed": "99.0.0",
+      "step": "major",
+      "target": "1.0.0-1.alpha"
+    },
+    {
+      "installed": "99.0.0",
+      "step": "major",
+      "target": "0.1.0+abc123"
+    },
+    {
+      "installed": "99.0.0",
+      "step": "major",
+      "target": "0.1.0+def456"
+    },
+    {
+      "installed": "99.0.0",
+      "step": "major",
+      "target": "1.0.0-rc.1+build.9"
+    },
+    {
+      "installed": "100.0.0",
+      "step": "major",
+      "target": "0.1.0"
+    },
+    {
+      "installed": "100.0.0",
+      "step": "major",
+      "target": "0.2.0"
+    },
+    {
+      "installed": "100.0.0",
+      "step": "major",
+      "target": "0.9.0"
+    },
+    {
+      "installed": "100.0.0",
+      "step": "major",
+      "target": "0.10.0"
+    },
+    {
+      "installed": "100.0.0",
+      "step": "major",
+      "target": "0.11.0"
+    },
+    {
+      "installed": "100.0.0",
+      "step": "major",
+      "target": "1.0.0"
+    },
+    {
+      "installed": "100.0.0",
+      "step": "major",
+      "target": "1.99.0"
+    },
+    {
+      "installed": "100.0.0",
+      "step": "major",
+      "target": "1.100.0"
+    },
+    {
+      "installed": "100.0.0",
+      "step": "major",
+      "target": "99.0.0"
+    },
+    {
+      "installed": "100.0.0",
+      "step": "none",
+      "target": "100.0.0"
+    },
+    {
+      "installed": "100.0.0",
+      "step": "major",
+      "target": "0.1.9"
+    },
+    {
+      "installed": "100.0.0",
+      "step": "major",
+      "target": "0.1.10"
+    },
+    {
+      "installed": "100.0.0",
+      "step": "major",
+      "target": "1.0.0-alpha"
+    },
+    {
+      "installed": "100.0.0",
+      "step": "major",
+      "target": "1.0.0-alpha.1"
+    },
+    {
+      "installed": "100.0.0",
+      "step": "major",
+      "target": "1.0.0-alpha.beta"
+    },
+    {
+      "installed": "100.0.0",
+      "step": "major",
+      "target": "1.0.0-beta"
+    },
+    {
+      "installed": "100.0.0",
+      "step": "major",
+      "target": "1.0.0-beta.2"
+    },
+    {
+      "installed": "100.0.0",
+      "step": "major",
+      "target": "1.0.0-beta.11"
+    },
+    {
+      "installed": "100.0.0",
+      "step": "major",
+      "target": "1.0.0-rc.1"
+    },
+    {
+      "installed": "100.0.0",
+      "step": "major",
+      "target": "1.0.0-1"
+    },
+    {
+      "installed": "100.0.0",
+      "step": "major",
+      "target": "1.0.0-1.alpha"
+    },
+    {
+      "installed": "100.0.0",
+      "step": "major",
+      "target": "0.1.0+abc123"
+    },
+    {
+      "installed": "100.0.0",
+      "step": "major",
+      "target": "0.1.0+def456"
+    },
+    {
+      "installed": "100.0.0",
+      "step": "major",
+      "target": "1.0.0-rc.1+build.9"
+    },
+    {
+      "installed": "0.1.9",
+      "step": "patch",
+      "target": "0.1.0"
+    },
+    {
+      "installed": "0.1.9",
+      "step": "minor",
+      "target": "0.2.0"
+    },
+    {
+      "installed": "0.1.9",
+      "step": "minor",
+      "target": "0.9.0"
+    },
+    {
+      "installed": "0.1.9",
+      "step": "minor",
+      "target": "0.10.0"
+    },
+    {
+      "installed": "0.1.9",
+      "step": "minor",
+      "target": "0.11.0"
+    },
+    {
+      "installed": "0.1.9",
+      "step": "major",
+      "target": "1.0.0"
+    },
+    {
+      "installed": "0.1.9",
+      "step": "major",
+      "target": "1.99.0"
+    },
+    {
+      "installed": "0.1.9",
+      "step": "major",
+      "target": "1.100.0"
+    },
+    {
+      "installed": "0.1.9",
+      "step": "major",
+      "target": "99.0.0"
+    },
+    {
+      "installed": "0.1.9",
+      "step": "major",
+      "target": "100.0.0"
+    },
+    {
+      "installed": "0.1.9",
+      "step": "none",
+      "target": "0.1.9"
+    },
+    {
+      "installed": "0.1.9",
+      "step": "patch",
+      "target": "0.1.10"
+    },
+    {
+      "installed": "0.1.9",
+      "step": "major",
+      "target": "1.0.0-alpha"
+    },
+    {
+      "installed": "0.1.9",
+      "step": "major",
+      "target": "1.0.0-alpha.1"
+    },
+    {
+      "installed": "0.1.9",
+      "step": "major",
+      "target": "1.0.0-alpha.beta"
+    },
+    {
+      "installed": "0.1.9",
+      "step": "major",
+      "target": "1.0.0-beta"
+    },
+    {
+      "installed": "0.1.9",
+      "step": "major",
+      "target": "1.0.0-beta.2"
+    },
+    {
+      "installed": "0.1.9",
+      "step": "major",
+      "target": "1.0.0-beta.11"
+    },
+    {
+      "installed": "0.1.9",
+      "step": "major",
+      "target": "1.0.0-rc.1"
+    },
+    {
+      "installed": "0.1.9",
+      "step": "major",
+      "target": "1.0.0-1"
+    },
+    {
+      "installed": "0.1.9",
+      "step": "major",
+      "target": "1.0.0-1.alpha"
+    },
+    {
+      "installed": "0.1.9",
+      "step": "patch",
+      "target": "0.1.0+abc123"
+    },
+    {
+      "installed": "0.1.9",
+      "step": "patch",
+      "target": "0.1.0+def456"
+    },
+    {
+      "installed": "0.1.9",
+      "step": "major",
+      "target": "1.0.0-rc.1+build.9"
+    },
+    {
+      "installed": "0.1.10",
+      "step": "patch",
+      "target": "0.1.0"
+    },
+    {
+      "installed": "0.1.10",
+      "step": "minor",
+      "target": "0.2.0"
+    },
+    {
+      "installed": "0.1.10",
+      "step": "minor",
+      "target": "0.9.0"
+    },
+    {
+      "installed": "0.1.10",
+      "step": "minor",
+      "target": "0.10.0"
+    },
+    {
+      "installed": "0.1.10",
+      "step": "minor",
+      "target": "0.11.0"
+    },
+    {
+      "installed": "0.1.10",
+      "step": "major",
+      "target": "1.0.0"
+    },
+    {
+      "installed": "0.1.10",
+      "step": "major",
+      "target": "1.99.0"
+    },
+    {
+      "installed": "0.1.10",
+      "step": "major",
+      "target": "1.100.0"
+    },
+    {
+      "installed": "0.1.10",
+      "step": "major",
+      "target": "99.0.0"
+    },
+    {
+      "installed": "0.1.10",
+      "step": "major",
+      "target": "100.0.0"
+    },
+    {
+      "installed": "0.1.10",
+      "step": "patch",
+      "target": "0.1.9"
+    },
+    {
+      "installed": "0.1.10",
+      "step": "none",
+      "target": "0.1.10"
+    },
+    {
+      "installed": "0.1.10",
+      "step": "major",
+      "target": "1.0.0-alpha"
+    },
+    {
+      "installed": "0.1.10",
+      "step": "major",
+      "target": "1.0.0-alpha.1"
+    },
+    {
+      "installed": "0.1.10",
+      "step": "major",
+      "target": "1.0.0-alpha.beta"
+    },
+    {
+      "installed": "0.1.10",
+      "step": "major",
+      "target": "1.0.0-beta"
+    },
+    {
+      "installed": "0.1.10",
+      "step": "major",
+      "target": "1.0.0-beta.2"
+    },
+    {
+      "installed": "0.1.10",
+      "step": "major",
+      "target": "1.0.0-beta.11"
+    },
+    {
+      "installed": "0.1.10",
+      "step": "major",
+      "target": "1.0.0-rc.1"
+    },
+    {
+      "installed": "0.1.10",
+      "step": "major",
+      "target": "1.0.0-1"
+    },
+    {
+      "installed": "0.1.10",
+      "step": "major",
+      "target": "1.0.0-1.alpha"
+    },
+    {
+      "installed": "0.1.10",
+      "step": "patch",
+      "target": "0.1.0+abc123"
+    },
+    {
+      "installed": "0.1.10",
+      "step": "patch",
+      "target": "0.1.0+def456"
+    },
+    {
+      "installed": "0.1.10",
+      "step": "major",
+      "target": "1.0.0-rc.1+build.9"
+    },
+    {
+      "installed": "1.0.0-alpha",
+      "step": "major",
+      "target": "0.1.0"
+    },
+    {
+      "installed": "1.0.0-alpha",
+      "step": "major",
+      "target": "0.2.0"
+    },
+    {
+      "installed": "1.0.0-alpha",
+      "step": "major",
+      "target": "0.9.0"
+    },
+    {
+      "installed": "1.0.0-alpha",
+      "step": "major",
+      "target": "0.10.0"
+    },
+    {
+      "installed": "1.0.0-alpha",
+      "step": "major",
+      "target": "0.11.0"
+    },
+    {
+      "installed": "1.0.0-alpha",
+      "step": "prerelease",
+      "target": "1.0.0"
+    },
+    {
+      "installed": "1.0.0-alpha",
+      "step": "minor",
+      "target": "1.99.0"
+    },
+    {
+      "installed": "1.0.0-alpha",
+      "step": "minor",
+      "target": "1.100.0"
+    },
+    {
+      "installed": "1.0.0-alpha",
+      "step": "major",
+      "target": "99.0.0"
+    },
+    {
+      "installed": "1.0.0-alpha",
+      "step": "major",
+      "target": "100.0.0"
+    },
+    {
+      "installed": "1.0.0-alpha",
+      "step": "major",
+      "target": "0.1.9"
+    },
+    {
+      "installed": "1.0.0-alpha",
+      "step": "major",
+      "target": "0.1.10"
+    },
+    {
+      "installed": "1.0.0-alpha",
+      "step": "none",
+      "target": "1.0.0-alpha"
+    },
+    {
+      "installed": "1.0.0-alpha",
+      "step": "prerelease",
+      "target": "1.0.0-alpha.1"
+    },
+    {
+      "installed": "1.0.0-alpha",
+      "step": "prerelease",
+      "target": "1.0.0-alpha.beta"
+    },
+    {
+      "installed": "1.0.0-alpha",
+      "step": "prerelease",
+      "target": "1.0.0-beta"
+    },
+    {
+      "installed": "1.0.0-alpha",
+      "step": "prerelease",
+      "target": "1.0.0-beta.2"
+    },
+    {
+      "installed": "1.0.0-alpha",
+      "step": "prerelease",
+      "target": "1.0.0-beta.11"
+    },
+    {
+      "installed": "1.0.0-alpha",
+      "step": "prerelease",
+      "target": "1.0.0-rc.1"
+    },
+    {
+      "installed": "1.0.0-alpha",
+      "step": "prerelease",
+      "target": "1.0.0-1"
+    },
+    {
+      "installed": "1.0.0-alpha",
+      "step": "prerelease",
+      "target": "1.0.0-1.alpha"
+    },
+    {
+      "installed": "1.0.0-alpha",
+      "step": "major",
+      "target": "0.1.0+abc123"
+    },
+    {
+      "installed": "1.0.0-alpha",
+      "step": "major",
+      "target": "0.1.0+def456"
+    },
+    {
+      "installed": "1.0.0-alpha",
+      "step": "prerelease",
+      "target": "1.0.0-rc.1+build.9"
+    },
+    {
+      "installed": "1.0.0-alpha.1",
+      "step": "major",
+      "target": "0.1.0"
+    },
+    {
+      "installed": "1.0.0-alpha.1",
+      "step": "major",
+      "target": "0.2.0"
+    },
+    {
+      "installed": "1.0.0-alpha.1",
+      "step": "major",
+      "target": "0.9.0"
+    },
+    {
+      "installed": "1.0.0-alpha.1",
+      "step": "major",
+      "target": "0.10.0"
+    },
+    {
+      "installed": "1.0.0-alpha.1",
+      "step": "major",
+      "target": "0.11.0"
+    },
+    {
+      "installed": "1.0.0-alpha.1",
+      "step": "prerelease",
+      "target": "1.0.0"
+    },
+    {
+      "installed": "1.0.0-alpha.1",
+      "step": "minor",
+      "target": "1.99.0"
+    },
+    {
+      "installed": "1.0.0-alpha.1",
+      "step": "minor",
+      "target": "1.100.0"
+    },
+    {
+      "installed": "1.0.0-alpha.1",
+      "step": "major",
+      "target": "99.0.0"
+    },
+    {
+      "installed": "1.0.0-alpha.1",
+      "step": "major",
+      "target": "100.0.0"
+    },
+    {
+      "installed": "1.0.0-alpha.1",
+      "step": "major",
+      "target": "0.1.9"
+    },
+    {
+      "installed": "1.0.0-alpha.1",
+      "step": "major",
+      "target": "0.1.10"
+    },
+    {
+      "installed": "1.0.0-alpha.1",
+      "step": "prerelease",
+      "target": "1.0.0-alpha"
+    },
+    {
+      "installed": "1.0.0-alpha.1",
+      "step": "none",
+      "target": "1.0.0-alpha.1"
+    },
+    {
+      "installed": "1.0.0-alpha.1",
+      "step": "prerelease",
+      "target": "1.0.0-alpha.beta"
+    },
+    {
+      "installed": "1.0.0-alpha.1",
+      "step": "prerelease",
+      "target": "1.0.0-beta"
+    },
+    {
+      "installed": "1.0.0-alpha.1",
+      "step": "prerelease",
+      "target": "1.0.0-beta.2"
+    },
+    {
+      "installed": "1.0.0-alpha.1",
+      "step": "prerelease",
+      "target": "1.0.0-beta.11"
+    },
+    {
+      "installed": "1.0.0-alpha.1",
+      "step": "prerelease",
+      "target": "1.0.0-rc.1"
+    },
+    {
+      "installed": "1.0.0-alpha.1",
+      "step": "prerelease",
+      "target": "1.0.0-1"
+    },
+    {
+      "installed": "1.0.0-alpha.1",
+      "step": "prerelease",
+      "target": "1.0.0-1.alpha"
+    },
+    {
+      "installed": "1.0.0-alpha.1",
+      "step": "major",
+      "target": "0.1.0+abc123"
+    },
+    {
+      "installed": "1.0.0-alpha.1",
+      "step": "major",
+      "target": "0.1.0+def456"
+    },
+    {
+      "installed": "1.0.0-alpha.1",
+      "step": "prerelease",
+      "target": "1.0.0-rc.1+build.9"
+    },
+    {
+      "installed": "1.0.0-alpha.beta",
+      "step": "major",
+      "target": "0.1.0"
+    },
+    {
+      "installed": "1.0.0-alpha.beta",
+      "step": "major",
+      "target": "0.2.0"
+    },
+    {
+      "installed": "1.0.0-alpha.beta",
+      "step": "major",
+      "target": "0.9.0"
+    },
+    {
+      "installed": "1.0.0-alpha.beta",
+      "step": "major",
+      "target": "0.10.0"
+    },
+    {
+      "installed": "1.0.0-alpha.beta",
+      "step": "major",
+      "target": "0.11.0"
+    },
+    {
+      "installed": "1.0.0-alpha.beta",
+      "step": "prerelease",
+      "target": "1.0.0"
+    },
+    {
+      "installed": "1.0.0-alpha.beta",
+      "step": "minor",
+      "target": "1.99.0"
+    },
+    {
+      "installed": "1.0.0-alpha.beta",
+      "step": "minor",
+      "target": "1.100.0"
+    },
+    {
+      "installed": "1.0.0-alpha.beta",
+      "step": "major",
+      "target": "99.0.0"
+    },
+    {
+      "installed": "1.0.0-alpha.beta",
+      "step": "major",
+      "target": "100.0.0"
+    },
+    {
+      "installed": "1.0.0-alpha.beta",
+      "step": "major",
+      "target": "0.1.9"
+    },
+    {
+      "installed": "1.0.0-alpha.beta",
+      "step": "major",
+      "target": "0.1.10"
+    },
+    {
+      "installed": "1.0.0-alpha.beta",
+      "step": "prerelease",
+      "target": "1.0.0-alpha"
+    },
+    {
+      "installed": "1.0.0-alpha.beta",
+      "step": "prerelease",
+      "target": "1.0.0-alpha.1"
+    },
+    {
+      "installed": "1.0.0-alpha.beta",
+      "step": "none",
+      "target": "1.0.0-alpha.beta"
+    },
+    {
+      "installed": "1.0.0-alpha.beta",
+      "step": "prerelease",
+      "target": "1.0.0-beta"
+    },
+    {
+      "installed": "1.0.0-alpha.beta",
+      "step": "prerelease",
+      "target": "1.0.0-beta.2"
+    },
+    {
+      "installed": "1.0.0-alpha.beta",
+      "step": "prerelease",
+      "target": "1.0.0-beta.11"
+    },
+    {
+      "installed": "1.0.0-alpha.beta",
+      "step": "prerelease",
+      "target": "1.0.0-rc.1"
+    },
+    {
+      "installed": "1.0.0-alpha.beta",
+      "step": "prerelease",
+      "target": "1.0.0-1"
+    },
+    {
+      "installed": "1.0.0-alpha.beta",
+      "step": "prerelease",
+      "target": "1.0.0-1.alpha"
+    },
+    {
+      "installed": "1.0.0-alpha.beta",
+      "step": "major",
+      "target": "0.1.0+abc123"
+    },
+    {
+      "installed": "1.0.0-alpha.beta",
+      "step": "major",
+      "target": "0.1.0+def456"
+    },
+    {
+      "installed": "1.0.0-alpha.beta",
+      "step": "prerelease",
+      "target": "1.0.0-rc.1+build.9"
+    },
+    {
+      "installed": "1.0.0-beta",
+      "step": "major",
+      "target": "0.1.0"
+    },
+    {
+      "installed": "1.0.0-beta",
+      "step": "major",
+      "target": "0.2.0"
+    },
+    {
+      "installed": "1.0.0-beta",
+      "step": "major",
+      "target": "0.9.0"
+    },
+    {
+      "installed": "1.0.0-beta",
+      "step": "major",
+      "target": "0.10.0"
+    },
+    {
+      "installed": "1.0.0-beta",
+      "step": "major",
+      "target": "0.11.0"
+    },
+    {
+      "installed": "1.0.0-beta",
+      "step": "prerelease",
+      "target": "1.0.0"
+    },
+    {
+      "installed": "1.0.0-beta",
+      "step": "minor",
+      "target": "1.99.0"
+    },
+    {
+      "installed": "1.0.0-beta",
+      "step": "minor",
+      "target": "1.100.0"
+    },
+    {
+      "installed": "1.0.0-beta",
+      "step": "major",
+      "target": "99.0.0"
+    },
+    {
+      "installed": "1.0.0-beta",
+      "step": "major",
+      "target": "100.0.0"
+    },
+    {
+      "installed": "1.0.0-beta",
+      "step": "major",
+      "target": "0.1.9"
+    },
+    {
+      "installed": "1.0.0-beta",
+      "step": "major",
+      "target": "0.1.10"
+    },
+    {
+      "installed": "1.0.0-beta",
+      "step": "prerelease",
+      "target": "1.0.0-alpha"
+    },
+    {
+      "installed": "1.0.0-beta",
+      "step": "prerelease",
+      "target": "1.0.0-alpha.1"
+    },
+    {
+      "installed": "1.0.0-beta",
+      "step": "prerelease",
+      "target": "1.0.0-alpha.beta"
+    },
+    {
+      "installed": "1.0.0-beta",
+      "step": "none",
+      "target": "1.0.0-beta"
+    },
+    {
+      "installed": "1.0.0-beta",
+      "step": "prerelease",
+      "target": "1.0.0-beta.2"
+    },
+    {
+      "installed": "1.0.0-beta",
+      "step": "prerelease",
+      "target": "1.0.0-beta.11"
+    },
+    {
+      "installed": "1.0.0-beta",
+      "step": "prerelease",
+      "target": "1.0.0-rc.1"
+    },
+    {
+      "installed": "1.0.0-beta",
+      "step": "prerelease",
+      "target": "1.0.0-1"
+    },
+    {
+      "installed": "1.0.0-beta",
+      "step": "prerelease",
+      "target": "1.0.0-1.alpha"
+    },
+    {
+      "installed": "1.0.0-beta",
+      "step": "major",
+      "target": "0.1.0+abc123"
+    },
+    {
+      "installed": "1.0.0-beta",
+      "step": "major",
+      "target": "0.1.0+def456"
+    },
+    {
+      "installed": "1.0.0-beta",
+      "step": "prerelease",
+      "target": "1.0.0-rc.1+build.9"
+    },
+    {
+      "installed": "1.0.0-beta.2",
+      "step": "major",
+      "target": "0.1.0"
+    },
+    {
+      "installed": "1.0.0-beta.2",
+      "step": "major",
+      "target": "0.2.0"
+    },
+    {
+      "installed": "1.0.0-beta.2",
+      "step": "major",
+      "target": "0.9.0"
+    },
+    {
+      "installed": "1.0.0-beta.2",
+      "step": "major",
+      "target": "0.10.0"
+    },
+    {
+      "installed": "1.0.0-beta.2",
+      "step": "major",
+      "target": "0.11.0"
+    },
+    {
+      "installed": "1.0.0-beta.2",
+      "step": "prerelease",
+      "target": "1.0.0"
+    },
+    {
+      "installed": "1.0.0-beta.2",
+      "step": "minor",
+      "target": "1.99.0"
+    },
+    {
+      "installed": "1.0.0-beta.2",
+      "step": "minor",
+      "target": "1.100.0"
+    },
+    {
+      "installed": "1.0.0-beta.2",
+      "step": "major",
+      "target": "99.0.0"
+    },
+    {
+      "installed": "1.0.0-beta.2",
+      "step": "major",
+      "target": "100.0.0"
+    },
+    {
+      "installed": "1.0.0-beta.2",
+      "step": "major",
+      "target": "0.1.9"
+    },
+    {
+      "installed": "1.0.0-beta.2",
+      "step": "major",
+      "target": "0.1.10"
+    },
+    {
+      "installed": "1.0.0-beta.2",
+      "step": "prerelease",
+      "target": "1.0.0-alpha"
+    },
+    {
+      "installed": "1.0.0-beta.2",
+      "step": "prerelease",
+      "target": "1.0.0-alpha.1"
+    },
+    {
+      "installed": "1.0.0-beta.2",
+      "step": "prerelease",
+      "target": "1.0.0-alpha.beta"
+    },
+    {
+      "installed": "1.0.0-beta.2",
+      "step": "prerelease",
+      "target": "1.0.0-beta"
+    },
+    {
+      "installed": "1.0.0-beta.2",
+      "step": "none",
+      "target": "1.0.0-beta.2"
+    },
+    {
+      "installed": "1.0.0-beta.2",
+      "step": "prerelease",
+      "target": "1.0.0-beta.11"
+    },
+    {
+      "installed": "1.0.0-beta.2",
+      "step": "prerelease",
+      "target": "1.0.0-rc.1"
+    },
+    {
+      "installed": "1.0.0-beta.2",
+      "step": "prerelease",
+      "target": "1.0.0-1"
+    },
+    {
+      "installed": "1.0.0-beta.2",
+      "step": "prerelease",
+      "target": "1.0.0-1.alpha"
+    },
+    {
+      "installed": "1.0.0-beta.2",
+      "step": "major",
+      "target": "0.1.0+abc123"
+    },
+    {
+      "installed": "1.0.0-beta.2",
+      "step": "major",
+      "target": "0.1.0+def456"
+    },
+    {
+      "installed": "1.0.0-beta.2",
+      "step": "prerelease",
+      "target": "1.0.0-rc.1+build.9"
+    },
+    {
+      "installed": "1.0.0-beta.11",
+      "step": "major",
+      "target": "0.1.0"
+    },
+    {
+      "installed": "1.0.0-beta.11",
+      "step": "major",
+      "target": "0.2.0"
+    },
+    {
+      "installed": "1.0.0-beta.11",
+      "step": "major",
+      "target": "0.9.0"
+    },
+    {
+      "installed": "1.0.0-beta.11",
+      "step": "major",
+      "target": "0.10.0"
+    },
+    {
+      "installed": "1.0.0-beta.11",
+      "step": "major",
+      "target": "0.11.0"
+    },
+    {
+      "installed": "1.0.0-beta.11",
+      "step": "prerelease",
+      "target": "1.0.0"
+    },
+    {
+      "installed": "1.0.0-beta.11",
+      "step": "minor",
+      "target": "1.99.0"
+    },
+    {
+      "installed": "1.0.0-beta.11",
+      "step": "minor",
+      "target": "1.100.0"
+    },
+    {
+      "installed": "1.0.0-beta.11",
+      "step": "major",
+      "target": "99.0.0"
+    },
+    {
+      "installed": "1.0.0-beta.11",
+      "step": "major",
+      "target": "100.0.0"
+    },
+    {
+      "installed": "1.0.0-beta.11",
+      "step": "major",
+      "target": "0.1.9"
+    },
+    {
+      "installed": "1.0.0-beta.11",
+      "step": "major",
+      "target": "0.1.10"
+    },
+    {
+      "installed": "1.0.0-beta.11",
+      "step": "prerelease",
+      "target": "1.0.0-alpha"
+    },
+    {
+      "installed": "1.0.0-beta.11",
+      "step": "prerelease",
+      "target": "1.0.0-alpha.1"
+    },
+    {
+      "installed": "1.0.0-beta.11",
+      "step": "prerelease",
+      "target": "1.0.0-alpha.beta"
+    },
+    {
+      "installed": "1.0.0-beta.11",
+      "step": "prerelease",
+      "target": "1.0.0-beta"
+    },
+    {
+      "installed": "1.0.0-beta.11",
+      "step": "prerelease",
+      "target": "1.0.0-beta.2"
+    },
+    {
+      "installed": "1.0.0-beta.11",
+      "step": "none",
+      "target": "1.0.0-beta.11"
+    },
+    {
+      "installed": "1.0.0-beta.11",
+      "step": "prerelease",
+      "target": "1.0.0-rc.1"
+    },
+    {
+      "installed": "1.0.0-beta.11",
+      "step": "prerelease",
+      "target": "1.0.0-1"
+    },
+    {
+      "installed": "1.0.0-beta.11",
+      "step": "prerelease",
+      "target": "1.0.0-1.alpha"
+    },
+    {
+      "installed": "1.0.0-beta.11",
+      "step": "major",
+      "target": "0.1.0+abc123"
+    },
+    {
+      "installed": "1.0.0-beta.11",
+      "step": "major",
+      "target": "0.1.0+def456"
+    },
+    {
+      "installed": "1.0.0-beta.11",
+      "step": "prerelease",
+      "target": "1.0.0-rc.1+build.9"
+    },
+    {
+      "installed": "1.0.0-rc.1",
+      "step": "major",
+      "target": "0.1.0"
+    },
+    {
+      "installed": "1.0.0-rc.1",
+      "step": "major",
+      "target": "0.2.0"
+    },
+    {
+      "installed": "1.0.0-rc.1",
+      "step": "major",
+      "target": "0.9.0"
+    },
+    {
+      "installed": "1.0.0-rc.1",
+      "step": "major",
+      "target": "0.10.0"
+    },
+    {
+      "installed": "1.0.0-rc.1",
+      "step": "major",
+      "target": "0.11.0"
+    },
+    {
+      "installed": "1.0.0-rc.1",
+      "step": "prerelease",
+      "target": "1.0.0"
+    },
+    {
+      "installed": "1.0.0-rc.1",
+      "step": "minor",
+      "target": "1.99.0"
+    },
+    {
+      "installed": "1.0.0-rc.1",
+      "step": "minor",
+      "target": "1.100.0"
+    },
+    {
+      "installed": "1.0.0-rc.1",
+      "step": "major",
+      "target": "99.0.0"
+    },
+    {
+      "installed": "1.0.0-rc.1",
+      "step": "major",
+      "target": "100.0.0"
+    },
+    {
+      "installed": "1.0.0-rc.1",
+      "step": "major",
+      "target": "0.1.9"
+    },
+    {
+      "installed": "1.0.0-rc.1",
+      "step": "major",
+      "target": "0.1.10"
+    },
+    {
+      "installed": "1.0.0-rc.1",
+      "step": "prerelease",
+      "target": "1.0.0-alpha"
+    },
+    {
+      "installed": "1.0.0-rc.1",
+      "step": "prerelease",
+      "target": "1.0.0-alpha.1"
+    },
+    {
+      "installed": "1.0.0-rc.1",
+      "step": "prerelease",
+      "target": "1.0.0-alpha.beta"
+    },
+    {
+      "installed": "1.0.0-rc.1",
+      "step": "prerelease",
+      "target": "1.0.0-beta"
+    },
+    {
+      "installed": "1.0.0-rc.1",
+      "step": "prerelease",
+      "target": "1.0.0-beta.2"
+    },
+    {
+      "installed": "1.0.0-rc.1",
+      "step": "prerelease",
+      "target": "1.0.0-beta.11"
+    },
+    {
+      "installed": "1.0.0-rc.1",
+      "step": "none",
+      "target": "1.0.0-rc.1"
+    },
+    {
+      "installed": "1.0.0-rc.1",
+      "step": "prerelease",
+      "target": "1.0.0-1"
+    },
+    {
+      "installed": "1.0.0-rc.1",
+      "step": "prerelease",
+      "target": "1.0.0-1.alpha"
+    },
+    {
+      "installed": "1.0.0-rc.1",
+      "step": "major",
+      "target": "0.1.0+abc123"
+    },
+    {
+      "installed": "1.0.0-rc.1",
+      "step": "major",
+      "target": "0.1.0+def456"
+    },
+    {
+      "installed": "1.0.0-rc.1",
+      "step": "none",
+      "target": "1.0.0-rc.1+build.9"
+    },
+    {
+      "installed": "1.0.0-1",
+      "step": "major",
+      "target": "0.1.0"
+    },
+    {
+      "installed": "1.0.0-1",
+      "step": "major",
+      "target": "0.2.0"
+    },
+    {
+      "installed": "1.0.0-1",
+      "step": "major",
+      "target": "0.9.0"
+    },
+    {
+      "installed": "1.0.0-1",
+      "step": "major",
+      "target": "0.10.0"
+    },
+    {
+      "installed": "1.0.0-1",
+      "step": "major",
+      "target": "0.11.0"
+    },
+    {
+      "installed": "1.0.0-1",
+      "step": "prerelease",
+      "target": "1.0.0"
+    },
+    {
+      "installed": "1.0.0-1",
+      "step": "minor",
+      "target": "1.99.0"
+    },
+    {
+      "installed": "1.0.0-1",
+      "step": "minor",
+      "target": "1.100.0"
+    },
+    {
+      "installed": "1.0.0-1",
+      "step": "major",
+      "target": "99.0.0"
+    },
+    {
+      "installed": "1.0.0-1",
+      "step": "major",
+      "target": "100.0.0"
+    },
+    {
+      "installed": "1.0.0-1",
+      "step": "major",
+      "target": "0.1.9"
+    },
+    {
+      "installed": "1.0.0-1",
+      "step": "major",
+      "target": "0.1.10"
+    },
+    {
+      "installed": "1.0.0-1",
+      "step": "prerelease",
+      "target": "1.0.0-alpha"
+    },
+    {
+      "installed": "1.0.0-1",
+      "step": "prerelease",
+      "target": "1.0.0-alpha.1"
+    },
+    {
+      "installed": "1.0.0-1",
+      "step": "prerelease",
+      "target": "1.0.0-alpha.beta"
+    },
+    {
+      "installed": "1.0.0-1",
+      "step": "prerelease",
+      "target": "1.0.0-beta"
+    },
+    {
+      "installed": "1.0.0-1",
+      "step": "prerelease",
+      "target": "1.0.0-beta.2"
+    },
+    {
+      "installed": "1.0.0-1",
+      "step": "prerelease",
+      "target": "1.0.0-beta.11"
+    },
+    {
+      "installed": "1.0.0-1",
+      "step": "prerelease",
+      "target": "1.0.0-rc.1"
+    },
+    {
+      "installed": "1.0.0-1",
+      "step": "none",
+      "target": "1.0.0-1"
+    },
+    {
+      "installed": "1.0.0-1",
+      "step": "prerelease",
+      "target": "1.0.0-1.alpha"
+    },
+    {
+      "installed": "1.0.0-1",
+      "step": "major",
+      "target": "0.1.0+abc123"
+    },
+    {
+      "installed": "1.0.0-1",
+      "step": "major",
+      "target": "0.1.0+def456"
+    },
+    {
+      "installed": "1.0.0-1",
+      "step": "prerelease",
+      "target": "1.0.0-rc.1+build.9"
+    },
+    {
+      "installed": "1.0.0-1.alpha",
+      "step": "major",
+      "target": "0.1.0"
+    },
+    {
+      "installed": "1.0.0-1.alpha",
+      "step": "major",
+      "target": "0.2.0"
+    },
+    {
+      "installed": "1.0.0-1.alpha",
+      "step": "major",
+      "target": "0.9.0"
+    },
+    {
+      "installed": "1.0.0-1.alpha",
+      "step": "major",
+      "target": "0.10.0"
+    },
+    {
+      "installed": "1.0.0-1.alpha",
+      "step": "major",
+      "target": "0.11.0"
+    },
+    {
+      "installed": "1.0.0-1.alpha",
+      "step": "prerelease",
+      "target": "1.0.0"
+    },
+    {
+      "installed": "1.0.0-1.alpha",
+      "step": "minor",
+      "target": "1.99.0"
+    },
+    {
+      "installed": "1.0.0-1.alpha",
+      "step": "minor",
+      "target": "1.100.0"
+    },
+    {
+      "installed": "1.0.0-1.alpha",
+      "step": "major",
+      "target": "99.0.0"
+    },
+    {
+      "installed": "1.0.0-1.alpha",
+      "step": "major",
+      "target": "100.0.0"
+    },
+    {
+      "installed": "1.0.0-1.alpha",
+      "step": "major",
+      "target": "0.1.9"
+    },
+    {
+      "installed": "1.0.0-1.alpha",
+      "step": "major",
+      "target": "0.1.10"
+    },
+    {
+      "installed": "1.0.0-1.alpha",
+      "step": "prerelease",
+      "target": "1.0.0-alpha"
+    },
+    {
+      "installed": "1.0.0-1.alpha",
+      "step": "prerelease",
+      "target": "1.0.0-alpha.1"
+    },
+    {
+      "installed": "1.0.0-1.alpha",
+      "step": "prerelease",
+      "target": "1.0.0-alpha.beta"
+    },
+    {
+      "installed": "1.0.0-1.alpha",
+      "step": "prerelease",
+      "target": "1.0.0-beta"
+    },
+    {
+      "installed": "1.0.0-1.alpha",
+      "step": "prerelease",
+      "target": "1.0.0-beta.2"
+    },
+    {
+      "installed": "1.0.0-1.alpha",
+      "step": "prerelease",
+      "target": "1.0.0-beta.11"
+    },
+    {
+      "installed": "1.0.0-1.alpha",
+      "step": "prerelease",
+      "target": "1.0.0-rc.1"
+    },
+    {
+      "installed": "1.0.0-1.alpha",
+      "step": "prerelease",
+      "target": "1.0.0-1"
+    },
+    {
+      "installed": "1.0.0-1.alpha",
+      "step": "none",
+      "target": "1.0.0-1.alpha"
+    },
+    {
+      "installed": "1.0.0-1.alpha",
+      "step": "major",
+      "target": "0.1.0+abc123"
+    },
+    {
+      "installed": "1.0.0-1.alpha",
+      "step": "major",
+      "target": "0.1.0+def456"
+    },
+    {
+      "installed": "1.0.0-1.alpha",
+      "step": "prerelease",
+      "target": "1.0.0-rc.1+build.9"
+    },
+    {
+      "installed": "0.1.0+abc123",
+      "step": "none",
+      "target": "0.1.0"
+    },
+    {
+      "installed": "0.1.0+abc123",
+      "step": "minor",
+      "target": "0.2.0"
+    },
+    {
+      "installed": "0.1.0+abc123",
+      "step": "minor",
+      "target": "0.9.0"
+    },
+    {
+      "installed": "0.1.0+abc123",
+      "step": "minor",
+      "target": "0.10.0"
+    },
+    {
+      "installed": "0.1.0+abc123",
+      "step": "minor",
+      "target": "0.11.0"
+    },
+    {
+      "installed": "0.1.0+abc123",
+      "step": "major",
+      "target": "1.0.0"
+    },
+    {
+      "installed": "0.1.0+abc123",
+      "step": "major",
+      "target": "1.99.0"
+    },
+    {
+      "installed": "0.1.0+abc123",
+      "step": "major",
+      "target": "1.100.0"
+    },
+    {
+      "installed": "0.1.0+abc123",
+      "step": "major",
+      "target": "99.0.0"
+    },
+    {
+      "installed": "0.1.0+abc123",
+      "step": "major",
+      "target": "100.0.0"
+    },
+    {
+      "installed": "0.1.0+abc123",
+      "step": "patch",
+      "target": "0.1.9"
+    },
+    {
+      "installed": "0.1.0+abc123",
+      "step": "patch",
+      "target": "0.1.10"
+    },
+    {
+      "installed": "0.1.0+abc123",
+      "step": "major",
+      "target": "1.0.0-alpha"
+    },
+    {
+      "installed": "0.1.0+abc123",
+      "step": "major",
+      "target": "1.0.0-alpha.1"
+    },
+    {
+      "installed": "0.1.0+abc123",
+      "step": "major",
+      "target": "1.0.0-alpha.beta"
+    },
+    {
+      "installed": "0.1.0+abc123",
+      "step": "major",
+      "target": "1.0.0-beta"
+    },
+    {
+      "installed": "0.1.0+abc123",
+      "step": "major",
+      "target": "1.0.0-beta.2"
+    },
+    {
+      "installed": "0.1.0+abc123",
+      "step": "major",
+      "target": "1.0.0-beta.11"
+    },
+    {
+      "installed": "0.1.0+abc123",
+      "step": "major",
+      "target": "1.0.0-rc.1"
+    },
+    {
+      "installed": "0.1.0+abc123",
+      "step": "major",
+      "target": "1.0.0-1"
+    },
+    {
+      "installed": "0.1.0+abc123",
+      "step": "major",
+      "target": "1.0.0-1.alpha"
+    },
+    {
+      "installed": "0.1.0+abc123",
+      "step": "none",
+      "target": "0.1.0+abc123"
+    },
+    {
+      "installed": "0.1.0+abc123",
+      "step": "none",
+      "target": "0.1.0+def456"
+    },
+    {
+      "installed": "0.1.0+abc123",
+      "step": "major",
+      "target": "1.0.0-rc.1+build.9"
+    },
+    {
+      "installed": "0.1.0+def456",
+      "step": "none",
+      "target": "0.1.0"
+    },
+    {
+      "installed": "0.1.0+def456",
+      "step": "minor",
+      "target": "0.2.0"
+    },
+    {
+      "installed": "0.1.0+def456",
+      "step": "minor",
+      "target": "0.9.0"
+    },
+    {
+      "installed": "0.1.0+def456",
+      "step": "minor",
+      "target": "0.10.0"
+    },
+    {
+      "installed": "0.1.0+def456",
+      "step": "minor",
+      "target": "0.11.0"
+    },
+    {
+      "installed": "0.1.0+def456",
+      "step": "major",
+      "target": "1.0.0"
+    },
+    {
+      "installed": "0.1.0+def456",
+      "step": "major",
+      "target": "1.99.0"
+    },
+    {
+      "installed": "0.1.0+def456",
+      "step": "major",
+      "target": "1.100.0"
+    },
+    {
+      "installed": "0.1.0+def456",
+      "step": "major",
+      "target": "99.0.0"
+    },
+    {
+      "installed": "0.1.0+def456",
+      "step": "major",
+      "target": "100.0.0"
+    },
+    {
+      "installed": "0.1.0+def456",
+      "step": "patch",
+      "target": "0.1.9"
+    },
+    {
+      "installed": "0.1.0+def456",
+      "step": "patch",
+      "target": "0.1.10"
+    },
+    {
+      "installed": "0.1.0+def456",
+      "step": "major",
+      "target": "1.0.0-alpha"
+    },
+    {
+      "installed": "0.1.0+def456",
+      "step": "major",
+      "target": "1.0.0-alpha.1"
+    },
+    {
+      "installed": "0.1.0+def456",
+      "step": "major",
+      "target": "1.0.0-alpha.beta"
+    },
+    {
+      "installed": "0.1.0+def456",
+      "step": "major",
+      "target": "1.0.0-beta"
+    },
+    {
+      "installed": "0.1.0+def456",
+      "step": "major",
+      "target": "1.0.0-beta.2"
+    },
+    {
+      "installed": "0.1.0+def456",
+      "step": "major",
+      "target": "1.0.0-beta.11"
+    },
+    {
+      "installed": "0.1.0+def456",
+      "step": "major",
+      "target": "1.0.0-rc.1"
+    },
+    {
+      "installed": "0.1.0+def456",
+      "step": "major",
+      "target": "1.0.0-1"
+    },
+    {
+      "installed": "0.1.0+def456",
+      "step": "major",
+      "target": "1.0.0-1.alpha"
+    },
+    {
+      "installed": "0.1.0+def456",
+      "step": "none",
+      "target": "0.1.0+abc123"
+    },
+    {
+      "installed": "0.1.0+def456",
+      "step": "none",
+      "target": "0.1.0+def456"
+    },
+    {
+      "installed": "0.1.0+def456",
+      "step": "major",
+      "target": "1.0.0-rc.1+build.9"
+    },
+    {
+      "installed": "1.0.0-rc.1+build.9",
+      "step": "major",
+      "target": "0.1.0"
+    },
+    {
+      "installed": "1.0.0-rc.1+build.9",
+      "step": "major",
+      "target": "0.2.0"
+    },
+    {
+      "installed": "1.0.0-rc.1+build.9",
+      "step": "major",
+      "target": "0.9.0"
+    },
+    {
+      "installed": "1.0.0-rc.1+build.9",
+      "step": "major",
+      "target": "0.10.0"
+    },
+    {
+      "installed": "1.0.0-rc.1+build.9",
+      "step": "major",
+      "target": "0.11.0"
+    },
+    {
+      "installed": "1.0.0-rc.1+build.9",
+      "step": "prerelease",
+      "target": "1.0.0"
+    },
+    {
+      "installed": "1.0.0-rc.1+build.9",
+      "step": "minor",
+      "target": "1.99.0"
+    },
+    {
+      "installed": "1.0.0-rc.1+build.9",
+      "step": "minor",
+      "target": "1.100.0"
+    },
+    {
+      "installed": "1.0.0-rc.1+build.9",
+      "step": "major",
+      "target": "99.0.0"
+    },
+    {
+      "installed": "1.0.0-rc.1+build.9",
+      "step": "major",
+      "target": "100.0.0"
+    },
+    {
+      "installed": "1.0.0-rc.1+build.9",
+      "step": "major",
+      "target": "0.1.9"
+    },
+    {
+      "installed": "1.0.0-rc.1+build.9",
+      "step": "major",
+      "target": "0.1.10"
+    },
+    {
+      "installed": "1.0.0-rc.1+build.9",
+      "step": "prerelease",
+      "target": "1.0.0-alpha"
+    },
+    {
+      "installed": "1.0.0-rc.1+build.9",
+      "step": "prerelease",
+      "target": "1.0.0-alpha.1"
+    },
+    {
+      "installed": "1.0.0-rc.1+build.9",
+      "step": "prerelease",
+      "target": "1.0.0-alpha.beta"
+    },
+    {
+      "installed": "1.0.0-rc.1+build.9",
+      "step": "prerelease",
+      "target": "1.0.0-beta"
+    },
+    {
+      "installed": "1.0.0-rc.1+build.9",
+      "step": "prerelease",
+      "target": "1.0.0-beta.2"
+    },
+    {
+      "installed": "1.0.0-rc.1+build.9",
+      "step": "prerelease",
+      "target": "1.0.0-beta.11"
+    },
+    {
+      "installed": "1.0.0-rc.1+build.9",
+      "step": "none",
+      "target": "1.0.0-rc.1"
+    },
+    {
+      "installed": "1.0.0-rc.1+build.9",
+      "step": "prerelease",
+      "target": "1.0.0-1"
+    },
+    {
+      "installed": "1.0.0-rc.1+build.9",
+      "step": "prerelease",
+      "target": "1.0.0-1.alpha"
+    },
+    {
+      "installed": "1.0.0-rc.1+build.9",
+      "step": "major",
+      "target": "0.1.0+abc123"
+    },
+    {
+      "installed": "1.0.0-rc.1+build.9",
+      "step": "major",
+      "target": "0.1.0+def456"
+    },
+    {
+      "installed": "1.0.0-rc.1+build.9",
+      "step": "none",
+      "target": "1.0.0-rc.1+build.9"
+    }
+  ],
+  "versions": [
+    {
+      "build": null,
+      "is_prerelease": false,
+      "major": 0,
+      "minor": 1,
+      "patch": 0,
+      "prerelease": [],
+      "raw": "0.1.0"
+    },
+    {
+      "build": null,
+      "is_prerelease": false,
+      "major": 0,
+      "minor": 2,
+      "patch": 0,
+      "prerelease": [],
+      "raw": "0.2.0"
+    },
+    {
+      "build": null,
+      "is_prerelease": false,
+      "major": 0,
+      "minor": 9,
+      "patch": 0,
+      "prerelease": [],
+      "raw": "0.9.0"
+    },
+    {
+      "build": null,
+      "is_prerelease": false,
+      "major": 0,
+      "minor": 10,
+      "patch": 0,
+      "prerelease": [],
+      "raw": "0.10.0"
+    },
+    {
+      "build": null,
+      "is_prerelease": false,
+      "major": 0,
+      "minor": 11,
+      "patch": 0,
+      "prerelease": [],
+      "raw": "0.11.0"
+    },
+    {
+      "build": null,
+      "is_prerelease": false,
+      "major": 1,
+      "minor": 0,
+      "patch": 0,
+      "prerelease": [],
+      "raw": "1.0.0"
+    },
+    {
+      "build": null,
+      "is_prerelease": false,
+      "major": 1,
+      "minor": 99,
+      "patch": 0,
+      "prerelease": [],
+      "raw": "1.99.0"
+    },
+    {
+      "build": null,
+      "is_prerelease": false,
+      "major": 1,
+      "minor": 100,
+      "patch": 0,
+      "prerelease": [],
+      "raw": "1.100.0"
+    },
+    {
+      "build": null,
+      "is_prerelease": false,
+      "major": 99,
+      "minor": 0,
+      "patch": 0,
+      "prerelease": [],
+      "raw": "99.0.0"
+    },
+    {
+      "build": null,
+      "is_prerelease": false,
+      "major": 100,
+      "minor": 0,
+      "patch": 0,
+      "prerelease": [],
+      "raw": "100.0.0"
+    },
+    {
+      "build": null,
+      "is_prerelease": false,
+      "major": 0,
+      "minor": 1,
+      "patch": 9,
+      "prerelease": [],
+      "raw": "0.1.9"
+    },
+    {
+      "build": null,
+      "is_prerelease": false,
+      "major": 0,
+      "minor": 1,
+      "patch": 10,
+      "prerelease": [],
+      "raw": "0.1.10"
+    },
+    {
+      "build": null,
+      "is_prerelease": true,
+      "major": 1,
+      "minor": 0,
+      "patch": 0,
+      "prerelease": [
+        "alpha"
+      ],
+      "raw": "1.0.0-alpha"
+    },
+    {
+      "build": null,
+      "is_prerelease": true,
+      "major": 1,
+      "minor": 0,
+      "patch": 0,
+      "prerelease": [
+        "alpha",
+        "1"
+      ],
+      "raw": "1.0.0-alpha.1"
+    },
+    {
+      "build": null,
+      "is_prerelease": true,
+      "major": 1,
+      "minor": 0,
+      "patch": 0,
+      "prerelease": [
+        "alpha",
+        "beta"
+      ],
+      "raw": "1.0.0-alpha.beta"
+    },
+    {
+      "build": null,
+      "is_prerelease": true,
+      "major": 1,
+      "minor": 0,
+      "patch": 0,
+      "prerelease": [
+        "beta"
+      ],
+      "raw": "1.0.0-beta"
+    },
+    {
+      "build": null,
+      "is_prerelease": true,
+      "major": 1,
+      "minor": 0,
+      "patch": 0,
+      "prerelease": [
+        "beta",
+        "2"
+      ],
+      "raw": "1.0.0-beta.2"
+    },
+    {
+      "build": null,
+      "is_prerelease": true,
+      "major": 1,
+      "minor": 0,
+      "patch": 0,
+      "prerelease": [
+        "beta",
+        "11"
+      ],
+      "raw": "1.0.0-beta.11"
+    },
+    {
+      "build": null,
+      "is_prerelease": true,
+      "major": 1,
+      "minor": 0,
+      "patch": 0,
+      "prerelease": [
+        "rc",
+        "1"
+      ],
+      "raw": "1.0.0-rc.1"
+    },
+    {
+      "build": null,
+      "is_prerelease": true,
+      "major": 1,
+      "minor": 0,
+      "patch": 0,
+      "prerelease": [
+        "1"
+      ],
+      "raw": "1.0.0-1"
+    },
+    {
+      "build": null,
+      "is_prerelease": true,
+      "major": 1,
+      "minor": 0,
+      "patch": 0,
+      "prerelease": [
+        "1",
+        "alpha"
+      ],
+      "raw": "1.0.0-1.alpha"
+    },
+    {
+      "build": "abc123",
+      "is_prerelease": false,
+      "major": 0,
+      "minor": 1,
+      "patch": 0,
+      "prerelease": [],
+      "raw": "0.1.0+abc123"
+    },
+    {
+      "build": "def456",
+      "is_prerelease": false,
+      "major": 0,
+      "minor": 1,
+      "patch": 0,
+      "prerelease": [],
+      "raw": "0.1.0+def456"
+    },
+    {
+      "build": "build.9",
+      "is_prerelease": true,
+      "major": 1,
+      "minor": 0,
+      "patch": 0,
+      "prerelease": [
+        "rc",
+        "1"
+      ],
+      "raw": "1.0.0-rc.1+build.9"
+    }
+  ]
+}

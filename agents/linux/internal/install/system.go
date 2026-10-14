@@ -76,6 +76,49 @@ const (
 	// the version being replaced. Upgrade restores it when the new binary does
 	// not come up; install restores it when a rollback is needed.
 	PreviousBinarySuffix = ".previous"
+
+	// UpdateUnitName is the root-owned one-shot unit that performs a
+	// controller-driven update.
+	//
+	// ## Why a second unit exists at all
+	//
+	// The agent runs unprivileged, which is the single most important thing
+	// about its unit. An unprivileged process cannot replace a root-owned
+	// binary in /usr/local/bin and cannot restart its own unit — so it
+	// physically cannot install an update, and the first run of
+	// `scripts/update-e2e.sh` ended with exactly that: "upgrading needs root
+	// and this process is uid 996".
+	//
+	// The alternative to this unit is running the agent as root, which would
+	// trade a bounded, auditable, root-owned install step for a long-lived
+	// network-facing root process. That is not a trade worth making for a
+	// monitoring agent.
+	UpdateUnitName = ServiceName + "-update"
+	// UpdatePathUnitName watches for the request file and starts the unit.
+	//
+	// A path unit rather than a socket, a D-Bus service or polkit rules: it
+	// needs no authorization configuration, works identically on every
+	// distribution with systemd, and the trigger is a file an administrator
+	// can read with `cat`.
+	UpdatePathUnitName = UpdateUnitName + ".path"
+
+	DefaultUpdateUnitPath     = "/etc/systemd/system/" + UpdateUnitName + ".service"
+	DefaultUpdatePathUnitPath = "/etc/systemd/system/" + UpdatePathUnitName
+
+	// DefaultStateDir is the one directory shared between the unprivileged
+	// agent and the privileged update unit.
+	//
+	// Under /var/lib rather than /etc because it holds operational state: a
+	// staged archive, a request, an outcome. Created by systemd's
+	// StateDirectory=, which owns it to the service account, and **not**
+	// PrivateTmp — the whole point is that the root unit can see what the
+	// agent staged, and a private /tmp is invisible to another process.
+	DefaultStateDir = "/var/lib/" + ServiceName
+	// DefaultUpdateRequestPath is the typed instruction the agent writes and
+	// the privileged unit reads. See [UpdateRequest].
+	DefaultUpdateRequestPath = DefaultStateDir + "/update-request.json"
+	// DefaultUpdateOutcomePath is what the privileged unit writes back.
+	DefaultUpdateOutcomePath = DefaultStateDir + "/update-outcome.json"
 )
 
 // Modes for everything the installer creates.
@@ -96,6 +139,17 @@ const (
 	EnvFileMode os.FileMode = 0o644
 	// A CA certificate is public by construction.
 	CAFileMode os.FileMode = 0o644
+	// The state directory is 0750 and owned by the service account, like the
+	// configuration directory and for the same reason: the agent writes into
+	// it. Not world-readable, because a staged archive is a file somebody
+	// could otherwise watch for and swap — the digest check makes that
+	// useless, but there is no reason to offer the opportunity.
+	StateDirMode os.FileMode = 0o750
+	// The request and the outcome hold no secret: a version, a digest, a
+	// path, and publisher-signed metadata that is public by construction.
+	// 0640 rather than 0644 anyway — nothing needs to read them but root and
+	// the service account.
+	HandoffFileMode os.FileMode = 0o640
 )
 
 // ErrNoSuchUser reports that an account does not exist.
@@ -199,6 +253,11 @@ func (p Paths) EnvFile() string        { return p.join(DefaultEnvFile) }
 func (p Paths) CAFile() string         { return p.join(DefaultCAPath) }
 func (p Paths) Credential() string     { return p.join(config.DefaultCredentialFile) }
 func (p Paths) Configuration() string  { return p.join(config.DefaultConfigFile) }
+func (p Paths) StateDir() string       { return p.join(DefaultStateDir) }
+func (p Paths) UpdateRequest() string  { return p.join(DefaultUpdateRequestPath) }
+func (p Paths) UpdateOutcome() string  { return p.join(DefaultUpdateOutcomePath) }
+func (p Paths) UpdateUnit() string     { return p.join(DefaultUpdateUnitPath) }
+func (p Paths) UpdatePathUnit() string { return p.join(DefaultUpdatePathUnitPath) }
 
 // SystemdRuntimeDir is the directory whose existence means systemd is pid 1.
 //

@@ -18,7 +18,7 @@ import (
 	"github.com/felixstaude/homelab-control-center/agents/linux/internal/monitoring"
 )
 
-//go:embed hcc-agent.service
+//go:embed hcc-agent.service hcc-agent-update.service hcc-agent-update.path
 var unitFiles embed.FS
 
 // UnitFile returns the exact bytes the installer writes to
@@ -29,12 +29,24 @@ var unitFiles embed.FS
 // --dry-run` prints these bytes verbatim, which is what makes the dry run an
 // audit rather than a summary. A second copy under deploy/ existed until the
 // installer took ownership of it, and a second copy is a copy that drifts.
-func UnitFile() []byte {
-	contents, err := unitFiles.ReadFile("hcc-agent.service")
+func UnitFile() []byte { return embeddedUnit("hcc-agent.service") }
+
+// UpdateUnitFile returns the root-owned one-shot unit that installs an update.
+//
+// Why a second unit exists at all is in internal/install/handoff.go and in the
+// unit's own header: the agent service is unprivileged and so cannot replace a
+// root-owned binary or restart itself.
+func UpdateUnitFile() []byte { return embeddedUnit("hcc-agent-update.service") }
+
+// UpdatePathUnitFile returns the path unit that triggers the one above.
+func UpdatePathUnitFile() []byte { return embeddedUnit("hcc-agent-update.path") }
+
+func embeddedUnit(name string) []byte {
+	contents, err := unitFiles.ReadFile(name)
 	if err != nil {
-		// Unreachable: the file is embedded at compile time, so a failure
+		// Unreachable: the files are embedded at compile time, so a failure
 		// here means the binary is corrupt.
-		panic("the systemd unit is missing from this binary: " + err.Error())
+		panic("the systemd unit " + name + " is missing from this binary: " + err.Error())
 	}
 	return contents
 }
@@ -348,7 +360,13 @@ func (i *Installer) apply(ctx context.Context, mode Mode) error {
 	} else {
 		i.step("credential", i.Paths.Credential()+" (kept; this host is already enrolled)")
 	}
+	if err := i.ensureStateDirectory(ctx); err != nil {
+		return err
+	}
 	if err := i.writeUnit(ctx); err != nil {
+		return err
+	}
+	if err := i.writeUpdateUnits(ctx); err != nil {
 		return err
 	}
 	if err := i.startService(ctx); err != nil {
@@ -571,6 +589,36 @@ func EnvironmentFile(controllerURL, caPath string) []byte {
 	builder.WriteString(config.EnvLogLevel + "=info\n")
 	builder.WriteString("# text | json — journald captures either.\n")
 	builder.WriteString(config.EnvLogFormat + "=text\n")
+
+	// Written commented out, and set to false in the one place it is written
+	// at all. An installer that enabled automatic updates would be an
+	// installer that signed the host up to have its root-owned binary
+	// replaced without anybody saying so — the setting is discoverable here,
+	// and turning it on is a decision somebody makes about this host.
+	builder.WriteString("\n")
+	builder.WriteString("# --- Automatic updates (off) -------------------------------------\n")
+	builder.WriteString("#\n")
+	builder.WriteString("# With this false, the controller may still show that an update is\n")
+	builder.WriteString("# available and an administrator may still start one — this governs\n")
+	builder.WriteString("# only whether THIS host acts on an instruction unattended.\n")
+	builder.WriteString("#\n")
+	builder.WriteString("# An update is installed only when all of these hold: this is true,\n")
+	builder.WriteString("# the controller's policy for this host permits the step, and the\n")
+	builder.WriteString("# release metadata carries a valid publisher signature. The host's\n")
+	builder.WriteString("# half cannot be changed from the controller.\n")
+	builder.WriteString(config.EnvAutoUpdate + "=false\n")
+	builder.WriteString("\n")
+	builder.WriteString("# The most instability this host accepts: stable | beta | alpha.\n")
+	builder.WriteString("# A host on beta still receives newer stable releases.\n")
+	builder.WriteString("#" + config.EnvUpdateChannel + "=stable\n")
+	builder.WriteString("\n")
+	builder.WriteString("# Hold this host at one exact version, whatever is published.\n")
+	builder.WriteString("#" + config.EnvPinnedVersion + "=\n")
+	builder.WriteString("\n")
+	builder.WriteString("# Extra publisher keys to trust, base64 Ed25519, comma-separated.\n")
+	builder.WriteString("# Added to the key this build was stamped with, not instead of it.\n")
+	builder.WriteString("# Only needed when you build and sign your own agents.\n")
+	builder.WriteString("#" + config.EnvReleaseKeys + "=\n")
 	return []byte(builder.String())
 }
 
@@ -656,6 +704,123 @@ func (i *Installer) writeUnit(_ context.Context) error {
 		i.pushUndo("remove "+target, func(context.Context) error { return removeIfExists(target) })
 	}
 	i.step("systemd unit", fmt.Sprintf("%s (mode %#o)", target, UnitMode))
+	return nil
+}
+
+// ensureStateDirectory creates the one directory the unprivileged agent and
+// the privileged update unit share.
+//
+// Created here as well as by systemd's StateDirectory=, which looks redundant
+// and is not: `install --dry-run` has to be able to say what will exist, the
+// uninstaller has to know what to remove, and an agent run in the foreground
+// by an operator never goes through systemd at all. The modes agree, so
+// whichever creates it first is correct.
+func (i *Installer) ensureStateDirectory(ctx context.Context) error {
+	path := i.Paths.StateDir()
+
+	// Lstat for the same reason ensureConfigDirectory does it: a link planted
+	// here would have the chmod and chown applied to whatever it points at.
+	info, err := os.Lstat(path)
+	existed := err == nil
+	if existed && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf(
+			"%s is a symbolic link. The installer will not change the mode and "+
+				"ownership of whatever it points at; remove the link and re-run",
+			path,
+		)
+	}
+	if existed && !info.IsDir() {
+		return fmt.Errorf("%s exists and is not a directory", path)
+	}
+	if err := os.MkdirAll(path, StateDirMode); err != nil {
+		return fmt.Errorf("cannot create %s: %w", path, err)
+	}
+	// Explicitly, because MkdirAll honours the umask.
+	if err := os.Chmod(path, StateDirMode); err != nil {
+		return fmt.Errorf("cannot set the mode on %s: %w", path, err)
+	}
+	if err := i.System.Chown(path, i.account.UID, i.account.GID); err != nil {
+		return err
+	}
+	if !existed {
+		i.pushUndo("remove "+path, func(context.Context) error {
+			// os.Remove rather than RemoveAll, and a non-empty directory is
+			// not an error: a staged archive inside means an update is in
+			// flight, and a rollback of *this* install has no business
+			// deleting it.
+			err := os.Remove(path)
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				var pathError *os.PathError
+				if errors.As(err, &pathError) && errors.Is(pathError.Err, syscall.ENOTEMPTY) {
+					return nil
+				}
+				return err
+			}
+			return nil
+		})
+	}
+	i.step("state directory", fmt.Sprintf(
+		"%s (mode %#o, owned by %s)", path, StateDirMode, ServiceUser,
+	))
+	return nil
+}
+
+// writeUpdateUnits installs the privileged update unit and its trigger.
+//
+// Installed always, and **enabled**, even though automatic updates are off by
+// default. The two are separate on purpose: the units being present costs
+// nothing — the one-shot runs only when a request file exists, and the agent
+// writes one only when HCC_AGENT_AUTO_UPDATE is true — while installing them
+// lazily would mean an operator who enables updates has to know to re-run the
+// installer, and would find out by watching an update sit in `installing`.
+func (i *Installer) writeUpdateUnits(ctx context.Context) error {
+	for _, unit := range []struct {
+		target   string
+		contents []byte
+		label    string
+	}{
+		{i.Paths.UpdateUnit(), UpdateUnitFile(), "update unit"},
+		{i.Paths.UpdatePathUnit(), UpdatePathUnitFile(), "update trigger"},
+	} {
+		_, err := os.Stat(unit.target)
+		existed := err == nil
+		if err := os.MkdirAll(filepath.Dir(unit.target), 0o755); err != nil {
+			return fmt.Errorf("cannot create %s: %w", filepath.Dir(unit.target), err)
+		}
+		if err := writeFileAtomically(unit.target, unit.contents, UnitMode); err != nil {
+			return err
+		}
+		if !existed {
+			target := unit.target
+			i.pushUndo("remove "+target, func(context.Context) error {
+				return removeIfExists(target)
+			})
+		}
+		i.step(unit.label, fmt.Sprintf("%s (mode %#o, root-owned)", unit.target, UnitMode))
+	}
+
+	// Enabled but not started: a .path unit is "started" by being watched,
+	// and `enable --now` on it is how systemd begins watching. The one-shot
+	// it triggers is deliberately not enabled — it has no [Install] section,
+	// because a unit that ran at boot would install whatever request happened
+	// to be lying around.
+	i.pushUndo("disable "+UpdatePathUnitName, func(ctx context.Context) error {
+		_, err := i.System.Systemctl(ctx, "disable", "--now", UpdatePathUnitName)
+		return err
+	})
+	if _, err := i.System.Systemctl(ctx, "daemon-reload"); err != nil {
+		return err
+	}
+	if _, err := i.System.Systemctl(ctx, "enable", "--now", UpdatePathUnitName); err != nil {
+		// Not fatal. A host whose update trigger will not start is a host
+		// that cannot update itself automatically, which is the default
+		// anyway — and failing the whole installation over it would turn a
+		// working monitoring agent into no agent at all.
+		i.printf("  ! could not enable %s: %v\n", UpdatePathUnitName, err)
+		i.printf("    Automatic updates will not work on this host until it is enabled.\n")
+		return nil
+	}
+	i.step("update trigger", UpdatePathUnitName+" enabled")
 	return nil
 }
 
@@ -871,7 +1036,12 @@ func (i *Installer) describePlan(mode Mode) {
 		say("Keep the existing credential at %s — this host is already enrolled",
 			i.Paths.Credential())
 	}
+	say("Create %s   mode %#o   owner %s:%s", i.Paths.StateDir(), StateDirMode, ServiceUser, ServiceUser)
 	say("Write %s   mode %#o   owner root:root", i.Paths.Unit(), UnitMode)
+	say("Write %s   mode %#o   owner root:root", i.Paths.UpdateUnit(), UnitMode)
+	say("Write %s   mode %#o   owner root:root", i.Paths.UpdatePathUnit(), UnitMode)
+	say("systemctl enable --now %s  (watches for an update request; installs nothing by itself)",
+		UpdatePathUnitName)
 	say("systemctl daemon-reload, then systemctl enable --now %s", ServiceName)
 	say("Wait up to %s for the agent to connect and receive a configuration",
 		i.Options.ConnectTimeout)

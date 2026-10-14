@@ -197,6 +197,23 @@ func isLoopback(host string) bool {
 	return host == "localhost"
 }
 
+// NewTransport builds an HTTP transport trusting caFile in addition to the
+// system roots.
+//
+// Exported because the artifact download needs the same trust as the control
+// connection. An operator who runs an internal CA almost always mirrors the
+// release archives behind the same one, and a downloader that only trusted
+// public roots would make internal mirrors impossible — which was the state of
+// this code until the end-to-end update scenario tried one and got
+// "certificate signed by unknown authority".
+//
+// The download's TLS is defence in depth rather than the thing that makes it
+// safe: the digest comes out of signed release metadata, so a mirror with a
+// perfectly valid certificate still cannot substitute a binary.
+func NewTransport(caFile string) (*http.Transport, error) {
+	return newTransport(caFile)
+}
+
 // newTransport builds the HTTP transport, trusting caFile in addition to the
 // system roots when one is given.
 func newTransport(caFile string) (*http.Transport, error) {

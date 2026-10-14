@@ -1,0 +1,90 @@
+{
+  "algorithm": "ed25519",
+  "key_id_length": 16,
+  "max_signature_bytes": 8192,
+  "seed_note": "The private key for trusted_public_key_base64 is the ASCII bytes of 'hcc-contract-test-key-do-not-use'. It is a test vector key and signs nothing real.",
+  "trusted_key_id": "e20e0190ed5bdf21",
+  "trusted_public_key_base64": "IQN1uYqyXbYB7VqRggpLNlU5Gnpaybo8ojRROBvj9C8=",
+  "vectors": [
+    {
+      "expected_status": "valid",
+      "payload_base64": "",
+      "signature_document": "{\"algorithm\": \"ed25519\", \"key_id\": \"e20e0190ed5bdf21\", \"signature\": \"6EI1cvvaLCP8cG3+ZTZ6Z22u0yeLGPVdoxGtW5T89QekJaLUG2/VbgtYm7GIHCUV9LEWx+Z6ti2M8NvMuTAXBA==\"}"
+    },
+    {
+      "expected_status": "valid",
+      "payload_base64": "e30=",
+      "signature_document": "{\"algorithm\": \"ed25519\", \"key_id\": \"e20e0190ed5bdf21\", \"signature\": \"EwGPhjQ7jym0ugO48er/aHhKPKafVymCfNqBLGzThqYwjgy0zkzM9xWAviBpe2hCGiklHR83IYi8gWbvfttuDg==\"}"
+    },
+    {
+      "expected_status": "valid",
+      "payload_base64": "eyJzY2hlbWFfdmVyc2lvbiI6IDIsICJyZWNvbW1lbmRlZCI6ICIwLjEuMCJ9",
+      "signature_document": "{\"algorithm\": \"ed25519\", \"key_id\": \"e20e0190ed5bdf21\", \"signature\": \"+LoALDFf2PBUJSNQzgEdOOYYASk5A7N4RgU6zuwqRogiO+ZfamUnjcE7zqDR3f4blYWIM9kH4lk/1Rc98XrSBQ==\"}"
+    },
+    {
+      "expected_status": "valid",
+      "payload_base64": "eyJub3RlcyI6ICJjYWbDqSDigJQgcsOpc3Vtw6kifQ==",
+      "signature_document": "{\"algorithm\": \"ed25519\", \"key_id\": \"e20e0190ed5bdf21\", \"signature\": \"Xd0S+LAtVDlnloEY9k/1DqzNk99AMnYAIWZHvr5lMQW48xi9gA8hfGK7fpF9oX7WaDBwHvNPw1D4grDT8uwNCQ==\"}"
+    },
+    {
+      "expected_status": "valid",
+      "payload_base64": "ewogICJpbmRlbnRlZCI6IHRydWUKfQo=",
+      "signature_document": "{\"algorithm\": \"ed25519\", \"key_id\": \"e20e0190ed5bdf21\", \"signature\": \"6PmJ6wT1w/FVI0GATwAgAqhZby+Y+iv46bQOuzg7augCXmy2NcqVBbV77HX0qX7ltM35TWJc1GlZvFH8bzU/Dg==\"}"
+    },
+    {
+      "expected_status": "invalid",
+      "payload_base64": "eyJzY2hlbWFfdmVyc2lvbiI6IDIsICJyZWNvbW1lbmRlZCI6ICIwLjEuMCJ9",
+      "signature_document": "{\"algorithm\": \"ed25519\", \"key_id\": \"e20e0190ed5bdf21\", \"signature\": \"VfqU943NE42Sc1Douuaxki8nM8gFW8AIoGCiQALKD+iINKeZURt0kz3S/1ohRAf0gEM0hBRq5k+UbAlcKkh+Dw==\"}"
+    },
+    {
+      "expected_status": "untrusted_key",
+      "payload_base64": "eyJzY2hlbWFfdmVyc2lvbiI6IDIsICJyZWNvbW1lbmRlZCI6ICIwLjEuMCJ9",
+      "signature_document": "{\"algorithm\": \"ed25519\", \"key_id\": \"e8c92dc72a892086\", \"signature\": \"utPxNxI6t7ZROakKYKfLyIAeOQctmggpd1AecWTt/nqyNUEckpL9FAXk2Q9NCcTOLzuZM+hhxD3dAB1zJsuSBQ==\"}"
+    },
+    {
+      "expected_status": "invalid",
+      "payload_base64": "eyJzY2hlbWFfdmVyc2lvbiI6IDIsICJyZWNvbW1lbmRlZCI6ICIwLjEuMCJ9",
+      "signature_document": "{\"algorithm\": \"ed25519\", \"key_id\": \"e20e0190ed5bdf21\", \"signature\": \"utPxNxI6t7ZROakKYKfLyIAeOQctmggpd1AecWTt/nqyNUEckpL9FAXk2Q9NCcTOLzuZM+hhxD3dAB1zJsuSBQ==\"}"
+    },
+    {
+      "expected_status": "unsupported_algorithm",
+      "payload_base64": "eyJzY2hlbWFfdmVyc2lvbiI6IDIsICJyZWNvbW1lbmRlZCI6ICIwLjEuMCJ9",
+      "signature_document": "{\"algorithm\": \"md5-rsa-whatever\", \"key_id\": \"e20e0190ed5bdf21\", \"signature\": \"+LoALDFf2PBUJSNQzgEdOOYYASk5A7N4RgU6zuwqRogiO+ZfamUnjcE7zqDR3f4blYWIM9kH4lk/1Rc98XrSBQ==\"}"
+    },
+    {
+      "expected_status": "malformed",
+      "payload_base64": "eyJzY2hlbWFfdmVyc2lvbiI6IDIsICJyZWNvbW1lbmRlZCI6ICIwLjEuMCJ9",
+      "signature_document": "{not json"
+    },
+    {
+      "expected_status": "malformed",
+      "payload_base64": "eyJzY2hlbWFfdmVyc2lvbiI6IDIsICJyZWNvbW1lbmRlZCI6ICIwLjEuMCJ9",
+      "signature_document": "[]"
+    },
+    {
+      "expected_status": "malformed",
+      "payload_base64": "eyJzY2hlbWFfdmVyc2lvbiI6IDIsICJyZWNvbW1lbmRlZCI6ICIwLjEuMCJ9",
+      "signature_document": "{\"key_id\": \"x\", \"signature\": \"AA==\"}"
+    },
+    {
+      "expected_status": "malformed",
+      "payload_base64": "eyJzY2hlbWFfdmVyc2lvbiI6IDIsICJyZWNvbW1lbmRlZCI6ICIwLjEuMCJ9",
+      "signature_document": "{\"algorithm\": \"ed25519\", \"signature\": \"AA==\"}"
+    },
+    {
+      "expected_status": "malformed",
+      "payload_base64": "eyJzY2hlbWFfdmVyc2lvbiI6IDIsICJyZWNvbW1lbmRlZCI6ICIwLjEuMCJ9",
+      "signature_document": "{\"algorithm\": \"ed25519\", \"key_id\": \"x\"}"
+    },
+    {
+      "expected_status": "malformed",
+      "payload_base64": "eyJzY2hlbWFfdmVyc2lvbiI6IDIsICJyZWNvbW1lbmRlZCI6ICIwLjEuMCJ9",
+      "signature_document": "{\"algorithm\": \"ed25519\", \"key_id\": \"x\", \"signature\": \"not base64!\"}"
+    },
+    {
+      "expected_status": "malformed",
+      "payload_base64": "eyJzY2hlbWFfdmVyc2lvbiI6IDIsICJyZWNvbW1lbmRlZCI6ICIwLjEuMCJ9",
+      "signature_document": "{\"algorithm\": \"ed25519\", \"key_id\": \"x\", \"signature\": \"AA==\"}"
+    }
+  ]
+}

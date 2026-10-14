@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 from typing import TYPE_CHECKING, Final
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from hcc import __version__
+from hcc.agents.protocol import SUPPORTED_PROTOCOL_VERSIONS
 from hcc.agents.registry import ConnectionRegistry
 from hcc.api import health
 from hcc.api.v1 import router as v1_router
@@ -39,11 +41,15 @@ from hcc.services.hosts import HostService
 from hcc.services.metrics import MetricsService
 from hcc.services.monitoring import MonitoringConfigService
 from hcc.services.retention import RetentionService, policy_from_settings
+from hcc.services.updates import UpdateService
 from hcc.services.users import UserService
+from hcc.updates.schema import applied_revisions
 from hcc.web import mount_web_client
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+
+    from hcc.agents.releases import ReleaseManifest
 
 logger = get_logger(__name__)
 
@@ -194,6 +200,125 @@ async def _run_maintenance(
         await asyncio.sleep(interval_seconds)
 
 
+async def _run_update_policies(
+    database: Database,
+    updates: UpdateService,
+    settings: Settings,
+    interval_seconds: int,
+) -> None:
+    """Evaluate every host's automatic update policy on an interval.
+
+    ## This is what makes an automatic policy automatic
+
+    Without it, `hcc/updates/policy.py` is a decision nothing asks for and a
+    host set to "automatic patch" never updates. It is also the only thing
+    that calls `expire_stale`, so without it a job whose instruction expired
+    holds its host's one open slot indefinitely.
+
+    ## The manifest is read per pass, not once
+
+    Because it can change under a running controller: an operator replaces the
+    file and restarts, or — the case this actually covers — the signature is
+    fixed after being wrong. Reading it per pass costs one file read every five
+    minutes and means a correction takes effect without a restart.
+
+    A manifest that will not load is logged and the pass is skipped. It is not
+    fatal: a controller whose release metadata is broken should keep monitoring
+    hosts.
+
+    ## Every failure is caught and the loop continues
+
+    The same reasoning as metric maintenance: the task not running is the
+    failure that is invisible. An automatic policy that silently stopped being
+    evaluated looks exactly like a fleet with nothing to install.
+
+    ## It does not run at startup
+
+    Unlike metric maintenance, which needs partitions *now*. This sleeps
+    first, deliberately: a controller that has just been upgraded has a new
+    manifest and a fleet of hosts that are all suddenly out of date, and
+    starting every one of them in the first second of uptime — before an
+    administrator has looked at anything — is not what an interval of five
+    minutes is for. Five minutes is also long enough for a bad deployment to
+    be noticed and rolled back before it propagates.
+    """
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            metadata = _load_release_metadata(settings)
+            async with database.session_factory() as db:
+                result = await updates.run_policy_pass(
+                    db,
+                    manifest=metadata.manifest,
+                    applied_schema_revisions=await applied_revisions(db),
+                    metadata_authentic=metadata.authentic,
+                )
+            if result.did_something:
+                logger.info(
+                    "update_policy_pass",
+                    considered=result.considered,
+                    started=len(result.started),
+                    expired=len(result.expired),
+                    deferred=result.deferred,
+                    notified=result.notified,
+                    skipped_open=result.skipped_open,
+                    exhausted=result.exhausted,
+                    failed_to_start=result.failed_to_start,
+                )
+            else:
+                # Debug, so a fleet where nothing is due does not write a line
+                # every five minutes for ever. The counts are still there for
+                # somebody debugging why nothing happens.
+                logger.debug(
+                    "update_policy_pass_idle",
+                    considered=result.considered,
+                    deferred=result.deferred,
+                    notified=result.notified,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("update_policy_pass_failed")
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _ReleaseMetadata:
+    """The manifest and whether its signature verified."""
+
+    manifest: ReleaseManifest | None
+    authentic: bool
+
+
+def _load_release_metadata(settings: Settings) -> _ReleaseMetadata:
+    """Read and verify the release manifest, reporting rather than raising.
+
+    A separate, smaller version of what `api/v1/updates.py` does for a
+    request: the loop needs the manifest and one boolean, and does not need to
+    render a signature status for an interface.
+
+    **Fails closed.** Anything other than a manifest with a valid signature
+    from a trusted key produces ``authentic=False``, and the planner then
+    offers nothing — which is the behaviour an operator with a broken
+    signature should get from an unattended process.
+    """
+    from hcc.agents.releases import ManifestError, load_release_manifest
+    from hcc.updates.signing import SigningError, TrustStore, read_signature, verify_manifest
+
+    path = settings.agent_release_manifest
+    if path is None:
+        return _ReleaseMetadata(manifest=None, authentic=False)
+    try:
+        manifest = load_release_manifest(path)
+        signature = read_signature(path)
+        payload = path.read_bytes()
+    except (ManifestError, SigningError, OSError) as error:
+        logger.warning("update_policy_manifest_unusable", detail=str(error))
+        return _ReleaseMetadata(manifest=None, authentic=False)
+
+    verification = verify_manifest(payload, signature, TrustStore(settings.release_signing_keys))
+    return _ReleaseMetadata(manifest=manifest, authentic=verification.is_authentic)
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     """Build and configure the FastAPI application."""
     settings = settings or get_settings()
@@ -268,11 +393,45 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 ),
             )
 
+        # Automatic update policies, and the expiry sweep they depend on.
+        #
+        # A second task rather than more work inside the maintenance one: they
+        # have different failure consequences — a missed maintenance pass fills
+        # a disk, a missed policy pass means a host does not update — and a
+        # single task would make one of them the other's blast radius.
+        policies: asyncio.Task[None] | None = None
+        if settings.update_policy_interval_seconds > 0:
+            policies = asyncio.create_task(
+                _run_update_policies(
+                    database,
+                    app.state.update_service,
+                    settings,
+                    settings.update_policy_interval_seconds,
+                )
+            )
+        else:
+            # Said at startup rather than left to be discovered. A deployment
+            # with this off has hosts whose policy says "automatic patch" and
+            # which never update — and nothing in the interface would show the
+            # difference between that and a fleet with nothing to install.
+            logger.warning(
+                "update_policies_disabled",
+                detail=(
+                    "HCC_UPDATE_POLICY_INTERVAL_SECONDS is 0, so automatic "
+                    "update policies are not evaluated, no host updates "
+                    "itself, and expired update instructions are not swept."
+                ),
+            )
+
         try:
             yield
         finally:
             # Runs even if startup of a later resource fails, so connections
             # are never leaked.
+            if policies is not None:
+                policies.cancel()
+                with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+                    await asyncio.wait_for(policies, MAINTENANCE_SHUTDOWN_TIMEOUT_SECONDS)
             if maintenance is not None:
                 maintenance.cancel()
                 # Bounded, not a bare `await`. The task is usually sleeping and
@@ -380,6 +539,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # upsert, which is the cost the cache exists to remove.
     app.state.metrics_service = MetricsService()
     app.state.retention_service = RetentionService(policy_from_settings(settings))
+    # Phase 10 / Operation Evergreen. Shares the audit service for the same
+    # reason the monitoring service does: a policy change and the host
+    # mutation beside it land in one transaction and one trail.
+    #
+    # Takes the controller's own version and the protocol versions it speaks,
+    # because both are compatibility inputs to every update plan — and taking
+    # them here rather than importing them keeps the service testable against
+    # a controller version that is not this build's.
+    app.state.update_service = UpdateService(
+        audit=app.state.audit_service,
+        controller_version=__version__,
+        supported_protocol_versions=SUPPORTED_PROTOCOL_VERSIONS,
+    )
     # Per *process*, not per application and not shared across workers. This
     # is the honest statement of a real limitation rather than a cache: the
     # connections a worker holds are its own, and connectivity is derived from

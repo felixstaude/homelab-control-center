@@ -53,6 +53,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/signal"
 	"strings"
@@ -63,9 +64,12 @@ import (
 	"github.com/felixstaude/homelab-control-center/agents/linux/internal/config"
 	"github.com/felixstaude/homelab-control-center/agents/linux/internal/controller"
 	"github.com/felixstaude/homelab-control-center/agents/linux/internal/credentials"
+	"github.com/felixstaude/homelab-control-center/agents/linux/internal/install"
 	"github.com/felixstaude/homelab-control-center/agents/linux/internal/logging"
 	"github.com/felixstaude/homelab-control-center/agents/linux/internal/monitoring"
 	"github.com/felixstaude/homelab-control-center/agents/linux/internal/protocol"
+	"github.com/felixstaude/homelab-control-center/agents/linux/internal/release"
+	"github.com/felixstaude/homelab-control-center/agents/linux/internal/updater"
 )
 
 // Exit codes. Distinct codes let a service manager and an operator tell a
@@ -112,6 +116,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runUninstall(rest, stdout, stderr)
 	case "upgrade":
 		return runUpgrade(rest, stdout, stderr)
+	case "apply-update":
+		return runApplyUpdate(rest, stdout, stderr)
 	case "doctor":
 		return runDoctor(rest, stdout, stderr)
 	case "enroll":
@@ -152,6 +158,10 @@ Operating:
 Lower level:
   hcc-agent enroll     claim this host using a one-time enrollment credential
   hcc-agent run        connect to the controller and stay connected
+  hcc-agent apply-update
+                       install an update the agent staged and verified. Run by
+                       hcc-agent-update.service, not by a person: it takes no
+                       arguments and reads a request at a fixed path.
 
 Install flags:
   --controller URL     base URL of the control plane (required, https)
@@ -174,8 +184,21 @@ Configuration (environment):
   `+config.EnvLogLevel+`              debug | info | warn | error
   `+config.EnvLogFormat+`             text | json
 
+Automatic updates (off unless this host says otherwise):
+  `+config.EnvAutoUpdate+`            act on an update the controller authorizes
+                                       (default false)
+  `+config.EnvUpdateChannel+`         stable | beta | alpha (default stable)
+  `+config.EnvPinnedVersion+`         hold this host at one exact version
+  `+config.EnvReleaseKeys+`           extra publisher keys to trust, base64,
+                                       comma-separated; added to the one this
+                                       build was stamped with
+
 No secret is accepted as a flag: a command line is readable by every local
 user through /proc. There is no option to skip TLS verification.
+
+An update is installed only when this host has enabled it, the controller's
+policy for this host permits the step, and the release metadata carries a
+valid publisher signature. The controller cannot change the first or the last.
 
 See agents/linux/README.md for the full reference.
 `)
@@ -321,7 +344,17 @@ func runAgent(args []string, _, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	instance, err := agent.New(cfg, logger)
+	options, err := updateOptions(cfg, logger)
+	if err != nil {
+		// A trust store that cannot be built is a configuration error, not a
+		// reason to run without updates: an operator who set a key meant it,
+		// and starting anyway would leave a host that reports itself healthy
+		// and quietly declines every update.
+		logger.Error("the update trust store could not be built", "error", err)
+		return exitBadConfig
+	}
+
+	instance, err := agent.New(cfg, logger, options...)
 	if err != nil {
 		logger.Error("failed to construct agent", "error", err)
 		return exitBadConfig
@@ -343,6 +376,133 @@ func runAgent(args []string, _, stderr io.Writer) int {
 		logger.Error("agent terminated with an error", "error", err)
 		return exitRuntimeError
 	}
+}
+
+// updateOptions builds the controller-driven update engine, or nothing.
+//
+// # Why this is in main rather than in internal/agent
+//
+// The updater depends on internal/install, which is the privileged half of
+// this binary: it replaces the executable, writes a unit file and restarts a
+// service. internal/agent — the session loop, the thing a socket talks to —
+// deliberately has no path to it. The two are joined here, once, at the top,
+// where the joining is visible.
+//
+// # What makes an update possible at all
+//
+// Four things, each independently sufficient to refuse:
+//
+//  1. The operator has enabled it on this host (HCC_AGENT_AUTO_UPDATE).
+//  2. This build trusts at least one publisher key.
+//  3. The controller sends an instruction — which it only does when *its*
+//     policy for this host says so, and when the release is compatible.
+//  4. The instruction's metadata carries a valid signature by a trusted key,
+//     and the archive's bytes hash to what that signed metadata says.
+//
+// The first two are the host's own and the controller cannot affect them. That
+// asymmetry is the design: the controller chooses *whether* and *when*, the
+// publisher's signature establishes *what*, and the host keeps a veto over
+// both.
+//
+// When updates are off, no applier is installed and the agent tells the
+// controller nothing is coming. It does not pretend: a host with automatic
+// updates disabled reports the instruction as declined with that reason, so
+// "why has this host not updated" has an answer in the history.
+func updateOptions(cfg config.Config, logger *slog.Logger) ([]agent.Option, error) {
+	applier, err := updateApplier(cfg, logger)
+	if err != nil {
+		return nil, err
+	}
+	if applier == nil {
+		return nil, nil
+	}
+	return []agent.Option{agent.WithUpdateApplier(applier)}, nil
+}
+
+// updateApplier builds the engine, or returns nil when this host has not
+// enabled updates.
+//
+// Separate from [updateOptions] so that both the decision and the resulting
+// engine are testable: an agent.Option is a closure over private state, and a
+// test that could only observe "one option was returned" would not be able to
+// assert the thing that matters — that an unsigned instruction is declined.
+func updateApplier(cfg config.Config, logger *slog.Logger) (agent.UpdateApplier, error) {
+	if !cfg.AutoUpdate {
+		logger.Info("controller-driven updates are disabled on this host",
+			"enable_with", config.EnvAutoUpdate+"=true",
+		)
+		return nil, nil
+	}
+
+	// The publisher's key from the build, plus whatever the operator added.
+	// Union rather than override: an operator building their own agents signs
+	// with their own key and should not have to give up the publisher's.
+	keys := append([]string{}, buildinfo.ReleaseKeys()...)
+	keys = append(keys, cfg.ReleaseKeys...)
+	store, err := release.NewTrustStore(keys)
+	if err != nil {
+		return nil, err
+	}
+	if store.Len() == 0 {
+		// Not an error: it is the state of every build of this repository that
+		// is not an official release, and refusing to start would make a
+		// development agent unusable. The agent runs, declines instructions,
+		// and says why — which is exactly what it should do, because such a
+		// binary cannot tell a real release from a forged one.
+		logger.Warn("automatic updates are enabled but this build trusts no publisher key",
+			"consequence", "every update instruction will be declined",
+			"configure_with", config.EnvReleaseKeys,
+		)
+	}
+
+	paths := install.Paths{}
+	engine := updater.New(updater.Options{
+		TrustStore: store,
+		Policy: updater.Policy{
+			AutoUpdate:    cfg.AutoUpdate,
+			Channel:       cfg.UpdateChannel,
+			PinnedVersion: cfg.PinnedVersion,
+		},
+		Platform:         buildinfo.Get().Platform,
+		InstalledVersion: buildinfo.Get().Version,
+		Paths:            paths,
+		StagingDir:       updater.StagingDirFor(paths),
+		// The same CA the control connection trusts. An operator running an
+		// internal CA mirrors the archives behind it too, and a downloader
+		// that only trusted public roots would make internal mirrors
+		// impossible.
+		CAFile: cfg.CAFile,
+		Logger: logger,
+	})
+	logger.Info("controller-driven updates are enabled",
+		"channel", channelOrStable(cfg.UpdateChannel),
+		"pinned", cfg.PinnedVersion,
+		"trusted_keys", store.Len(),
+	)
+	return updateAdapter{engine}, nil
+}
+
+func channelOrStable(channel string) string {
+	if channel == "" {
+		return "stable"
+	}
+	return channel
+}
+
+// updateAdapter satisfies agent.UpdateApplier using the real updater.
+//
+// The two interfaces have identical method sets but are distinct named types,
+// which is the point: internal/agent declares what it needs without importing
+// the package that provides it. Go will accept an agent.UpdateReporter where
+// an updater.Reporter is wanted, so the adapter is one line.
+type updateAdapter struct {
+	engine *updater.Updater
+}
+
+func (a updateAdapter) Apply(
+	ctx context.Context, instruction protocol.UpdateInstruction, reporter agent.UpdateReporter,
+) error {
+	return a.engine.Apply(ctx, instruction, reporter)
 }
 
 // runStatus answers "is this host enrolled?" without starting anything.

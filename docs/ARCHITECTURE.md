@@ -11,6 +11,7 @@ documents, linked from the relevant sections below:
 | [`AGENT_ARCHITECTURE.md`](AGENT_ARCHITECTURE.md) | Transport, enrollment, credential rotation and revocation, configuration synchronisation, offline behaviour |
 | [`MONITORING_MODULES.md`](MONITORING_MODULES.md) | The module catalogue, collection methods, hardware caveats |
 | [`SCHEDULING.md`](SCHEDULING.md) | The shared scheduling model, DST, missed runs, drift |
+| [`UPDATES.md`](UPDATES.md) | Agent updates: what establishes a release is genuine, policies, channels, maintenance windows, troubleshooting |
 | [`DATA_RETENTION.md`](DATA_RETENTION.md) | Per-category retention, downsampling, storage limits, volume figures |
 | [`REMOTE_MANAGEMENT.md`](REMOTE_MANAGEMENT.md) | Capability model, authorization chain, remote terminal |
 | [`PLUGINS.md`](PLUGINS.md) | Future extension points; why no plugin system now |
@@ -2972,6 +2973,146 @@ place as the thing it applies to.
 `immutable` for a year, so a browser fetches each one about once per release.
 `PERFORMANCE.md §6` lists it as unmeasured rather than implying otherwise.
 
+
+### ADR-060: The publisher signs releases; the controller only authorizes them
+
+**Decision.** A release is established by a detached Ed25519 signature over the
+release manifest's exact bytes, made by a key the publisher holds and the
+controller does not. The agent carries the public key, stamped in at link time
+by `scripts/build-agent-artifacts.sh --trust-key`, and takes the expected
+SHA-256 for its architecture **out of** the verified metadata. The controller
+decides *whether* a host is offered an update and *when*; it does not get to
+say what the bytes are.
+
+**Why not have the controller vouch for the binary.** It already does, for the
+*fresh install* command — the digest an administrator pastes travels inside
+their own authenticated session, and `hcc/agents/releases.py` argues at length
+that this is the right trust anchor for a human running a command. That
+argument does not survive automation. An unattended agent installing as root
+from a digest the controller supplied would mean a compromised control plane
+could install arbitrary code on every host in a fleet — and the control plane
+is the most likely thing to be compromised, because it holds the fleet's
+credentials and is reachable from a browser.
+
+So the controller is deliberately demoted for this one purpose. An attacker who
+owns it can withhold updates and offer an older *signed* release. They cannot
+choose the bytes.
+
+**Why detached, and over exact bytes.** Two JSON libraries do not agree on key
+order, integer rendering or non-ASCII escaping, so a signature over a
+re-serialised document would turn a formatting difference into something
+indistinguishable from tampering. The manifest therefore travels as a *string*
+through the protocol and is read from disk verbatim, never rebuilt from the
+parsed model.
+
+**Why a stamped key rather than a configured one.** A trust anchor that lives
+in configuration is a trust anchor the configuration can be made to change. An
+operator who signs their own agents adds a key with `HCC_AGENT_RELEASE_KEYS`,
+which is *added* to the stamped one and needs root on the host to set — and
+the privileged half of an update deliberately ignores it, trusting only what
+the binary was built to trust.
+
+**Consequence accepted.** A build with no stamped key trusts nothing and
+declines every update, with that as the reason. That is every build of this
+repository that is not an official release, and it is correct: such a binary
+genuinely cannot tell a real release from a forged one. Four tests hold that
+line.
+
+**Cost.** A publisher key that leaks lets its holder install arbitrary code as
+root on every host that trusts it. The same property every signed distribution
+has, with the same mitigations — the key lives off the build machine, `keygen`
+writes it mode 0600, and the trust store is a list so rotation can overlap.
+There is no revocation. See
+[the update management security review](security/2026-10-14-update-management-review.md).
+
+### ADR-061: A path-triggered root unit installs updates, because the agent is unprivileged
+
+**Decision.** `hcc-agent.service` stays unprivileged. When an update is
+authorized, the agent fetches, bounds, hashes and verifies the archive itself,
+then writes a typed request to `/var/lib/hcc-agent/update-request.json`.
+`hcc-agent-update.path` notices it and `hcc-agent-update.service` — root,
+one-shot, `ExecStart=/usr/local/bin/hcc-agent apply-update` — performs the
+install.
+
+**Why anything was needed.** An unprivileged process cannot replace a
+root-owned binary in `/usr/local/bin` or restart its own unit. The first real
+run of `scripts/update-e2e.sh` ended with "upgrading needs root and this
+process is uid 996" after every other part of the update had worked. Nothing
+in 1200 unit tests could have found that: they all inject the installer.
+
+**What was rejected.**
+
+| Option | Why not |
+| --- | --- |
+| Run the agent as root | a long-lived network-facing root process, for a monitoring agent |
+| A setuid helper | a new attack surface, famously hard to get right |
+| Polkit rules | per-distribution configuration, a surprising amount of it |
+| A D-Bus service | a daemon to write and harden |
+
+systemd is already pid 1 and already watches paths. The trigger is a file an
+administrator can read with `cat`.
+
+**Why this is not "the agent account can run anything as root".** The request
+carries the publisher's signed metadata and its detached signature **and no
+digest**. `apply-update` verifies that signature itself and derives the
+expected hash from the verified metadata, so there is nothing in the request
+whose author chooses what the bytes should be. The privilege granted is exactly
+"cause root to install a genuinely published, publisher-signed release".
+`TestThereIsNoDigestFieldToSupply` asserts the field is absent from the type
+rather than merely rejected.
+
+Defence in depth on top, each with its own test: the archive must be a regular
+file (`lstat`, so a symlink is refused rather than followed) inside the state
+directory; the request must not be world-writable; unknown JSON fields are
+refused because ignoring one is how a check gets skipped; the schema version is
+checked because an update that replaces the agent mid-flight may be read by a
+different build than wrote it.
+
+**Why the request is removed before the install, not after.** `PathExists`
+re-triggers while the file is there, so a crash mid-install with the request
+present would be an install loop — on a service that replaces its own binary,
+which is the worst available failure. Removing first means a crash costs one
+failed update.
+
+**Why the staging directory is `/var/lib`, not `/tmp`.** The unit sets
+`PrivateTmp=yes`, so an archive the agent stages under `/tmp` is in a mount
+namespace root cannot see. `StateDirectory=hcc-agent` is the shared ground, and
+the handoff refuses to proceed if the archive is anywhere else rather than
+letting root fail with "cannot stat".
+
+### ADR-062: No process reports its own successful replacement
+
+**Decision.** The states an agent can report during an update stop at
+`restarting`. The controller concludes the job when the replacement connects:
+the target version means `succeeded`, the previous version means
+`rolled_back`, and a third version means `failed` with "something changed this
+host outside the update system". `restarting → succeeded` is therefore an
+allowed transition and `installing → succeeded` deliberately is not.
+
+**Why.** The install ends with `systemctl restart`, which terminates the
+process performing it. There is no moment at which the old agent can observe
+that the new one works, and a report claiming otherwise would be a claim
+nothing checked. The reconnection *is* the health evidence.
+
+**Why `installing → succeeded` is excluded.** An agent that never said it was
+restarting might have died for an unrelated reason — a crash, an operator
+stopping the service, the host rebooting. Concluding `succeeded` from a
+reconnection in that state would turn an unrelated restart into a successful
+update.
+
+This had two consequences that were found by running it rather than by
+reasoning. `install.Upgrader` reported `restarting` *after* the systemctl call,
+so the report never left the dying process and the job held `installing` — a
+state nothing could conclude. And the handoff's reports were merely *queued*
+onto a buffered channel, so they died in the buffer for the same reason; frames
+whose delivery matters now carry an acknowledgement and the reporter waits for
+the write.
+
+**Consequence for the interface.** Progress is derived from the last reported
+state, never from elapsed time. A stuck download shows a bar that does not
+move, which is the true and useful answer; a bar that advanced on a timer would
+be inventing progress and somebody would believe it.
+
 ---
 
 ## 14. Open design questions
@@ -2986,6 +3127,6 @@ milestone that depends on it, not before the next commit.
 | 3 | Host groups as a configuration layer. [`AGENT_ARCHITECTURE.md §6.1`](AGENT_ARCHITECTURE.md#61-layering) reserves the slot but defers it. | Fleet-scale configuration | Defer until someone runs enough hosts to need it; two layers cover the homelab case |
 | 4 | ~~Metric identity across config changes.~~ **Answered in Phase 3.** A series is identified by `(host, module, metric, labels_key)`, so a different label set is a different series. The read API returns every series a host has ever produced, including ones that have stopped, so "no CPU data" and "CPU data until Tuesday" stay different answers. Stitching is deferred to the interface and not yet done. | — | Resolved: a new series |
 | 5 | Whether `sessions.control` is worth shipping at all. Attaching to an existing session inherits that session's privileges, including root. | Session management milestone | Possibly read-only only; the control half may be more risk than value |
-| 6 | Agent self-update distribution. Phase 10 lists it as opt-in and signature-verified, but it makes the controller a code-distribution channel — the same concern as plugin question 10. | Phase 10 | Keep opt-in and signed; prefer OS packages over self-update |
+| 6 | ~~Agent self-update distribution.~~ **Answered.** Built, opt-in and signature-verified, and the concern is resolved by *not* making the controller a code-distribution channel: it authorizes which release and when, and a publisher signature establishes what the bytes are ([ADR-060](#adr-060-the-publisher-signs-releases-the-controller-only-authorizes-them)). Off by default on every host. See [`UPDATES.md`](UPDATES.md). | — | Resolved: the controller authorizes, the publisher signs |
 | 7 | ~~Rollup computation location.~~ **Answered in Phase 3:** controller-side, in a single `INSERT … SELECT … ON CONFLICT DO UPDATE` per tier. See [ADR-052](#adr-052-postgresql-native-partitioning-not-timescaledb) for why not continuous aggregates. | — | Resolved: controller-side |
 | 8 | Whether the terminal needs a break-glass path when the controller is down. Today it does not work offline, by design. | Terminal milestone | Leave it unavailable; a break-glass path is an unaudited backdoor by another name |

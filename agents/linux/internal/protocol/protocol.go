@@ -30,7 +30,25 @@ import (
 // Sent on the handshake in the X-HCC-Protocol-Version header and in every
 // frame's "v" field. A controller that does not speak it refuses the handshake
 // with HTTP 400 and names the versions it does.
-const Version = 1
+//
+// # 2 adds update management
+//
+// The update frames below are the first controller→agent messages added since
+// this protocol existed, and they could not simply be sent: [ParseServerFrame]
+// *errors* on an unrecognised type rather than ignoring it, so pushing an
+// update_instruction to an already-installed fleet would make every agent
+// report a protocol error and disconnect.
+//
+// So the controller supports {1, 2} and sends an update frame only to a
+// connection that handshook at 2. An agent built before update management
+// existed keeps working and is simply never offered an update over the socket.
+//
+// The notification rides on [HeartbeatAck] rather than arriving as a new
+// frame, which is what makes the transition safe in the other direction too:
+// Go's encoding/json ignores unknown object keys, so a version-1 agent
+// receiving an acknowledgement with update_instruction_id in it ignores the
+// field and carries on.
+const Version = 2
 
 // HeaderProtocolVersion carries [Version] on the WebSocket handshake.
 //
@@ -65,7 +83,48 @@ const (
 	// direction that cannot instruct anything — and the reply is two counts.
 	TypeTelemetry    = "telemetry"
 	TypeTelemetryAck = "telemetry_ack"
+
+	// Update management, protocol 2.
+	//
+	// **Nothing here carries anything executable.** No command, no script, no
+	// path to run, no shell. TypeUpdateInstruction is data describing which
+	// published release to install; this agent verifies the publisher's
+	// Ed25519 signature over the release metadata itself and decides whether
+	// to proceed. An agent that ran what the controller told it would have
+	// turned a control-plane compromise into root on every monitored machine.
+	TypeUpdateInstruction = "update_instruction"
+	TypeUpdateRequest     = "update_request"
+	TypeUpdateProgress    = "update_progress"
+	TypeUpdateResult      = "update_result"
+	TypeUpdateCancel      = "update_cancel"
 )
+
+// Update states an agent may report.
+//
+// Mirrors hcc.models.updates.UpdateState, and only the subset an *agent*
+// produces: the controller owns `available`, `queued`, `cancelled` and
+// `deferred`, and an agent claiming one of those would be claiming a decision
+// that is not its to make. The controller validates every report against its
+// transition table regardless, so this list is the agent being well-behaved
+// rather than the enforcement.
+const (
+	StateDownloading     = "downloading"
+	StateVerifying       = "verifying"
+	StateStaged          = "staged"
+	StateInstalling      = "installing"
+	StateRestarting      = "restarting"
+	StateVerifyingHealth = "verifying_health"
+	StateSucceeded       = "succeeded"
+	StateFailed          = "failed"
+	StateRolledBack      = "rolled_back"
+)
+
+// MaxUpdateDetailLength bounds what this agent attaches to a report.
+//
+// Bounded by the sender, not only by the controller, and for the same reason
+// ConfigNack's problems are: a frame the controller refuses for size loses the
+// report entirely, which is the one thing the report exists to prevent.
+const MaxUpdateDetailLength = 1024
 
 // Close reasons the controller may send.
 //
@@ -211,6 +270,19 @@ type HeartbeatAck struct {
 	// config_request — which is the whole drift-detection mechanism, in one
 	// field, needing no separate channel and no push to have arrived.
 	ConfigVersion int64 `json:"config_version,omitempty"`
+
+	// UpdateInstructionID names an update instruction waiting for this host,
+	// or is empty.
+	//
+	// On the acknowledgement rather than in a new frame, and that is the whole
+	// migration strategy: encoding/json ignores unknown keys, so a version-1
+	// agent receiving this ignores it. A new frame type would have been a
+	// protocol error for every agent already installed.
+	//
+	// The agent answers with an update_request and does **not** act on the
+	// identifier: a notification is not evidence of anything, only an
+	// instruction whose signature verifies is.
+	UpdateInstructionID string `json:"update_instruction_id,omitempty"`
 }
 
 // Close is the controller's termination notice.
@@ -403,6 +475,130 @@ type TelemetryAck struct {
 	Detail   string `json:"detail,omitempty"`
 }
 
+// UpdateInstruction authorizes this agent to install one release.
+//
+// # What makes this safe to act on without a human
+//
+// Metadata and Signature. The digest the agent checks comes out of Metadata,
+// whose signature was made by a key the controller does not hold — so a
+// compromised control plane can withhold updates or offer an older one, which
+// is its job, but cannot produce metadata this agent accepts for a binary the
+// publisher did not build.
+//
+// Metadata is a **string**, carrying the exact bytes that were signed. Not a
+// struct: the signature covers those bytes, and two JSON libraries disagree
+// about key order, integer rendering and non-ASCII escaping, so verifying a
+// re-serialisation would turn a formatting difference into something
+// indistinguishable from tampering. The configuration snapshot carries its
+// document the same way and for the same reason.
+type UpdateInstruction struct {
+	V    int    `json:"v"`
+	Type string `json:"type"`
+
+	InstructionID string `json:"instruction_id"`
+	ToVersion     string `json:"to_version"`
+	Platform      string `json:"platform"`
+	// ExpiresAt is when this authorization stops being valid, RFC 3339.
+	//
+	// Enforced by the agent, which is the half that matters: the controller
+	// cannot reach a disconnected host to withdraw anything, so a machine
+	// switched on after a week must refuse by itself rather than install what
+	// was decided then.
+	ExpiresAt string `json:"expires_at"`
+	Metadata  string `json:"metadata"`
+	Signature string `json:"signature"`
+	// AllowDowngrade is whether an administrator authorized going backwards.
+	AllowDowngrade bool `json:"allow_downgrade,omitempty"`
+}
+
+// UpdateCancel withdraws an instruction.
+//
+// Advisory once the binary is being replaced: by then this agent's own
+// rollback is the recovery path, and honouring a cancel would mean leaving a
+// half-installed service behind.
+type UpdateCancel struct {
+	V             int    `json:"v"`
+	Type          string `json:"type"`
+	InstructionID string `json:"instruction_id"`
+	Reason        string `json:"reason,omitempty"`
+}
+
+// UpdateRequest asks the controller for the instruction it mentioned.
+//
+// No fields beyond the envelope, the same deliberate absence [ConfigRequest]
+// has: there is no instruction to name and no host to ask about, because the
+// host is decided by the credential that authenticated the connection.
+type UpdateRequest struct {
+	V    int    `json:"v"`
+	Type string `json:"type"`
+}
+
+// NewUpdateRequest builds a request.
+func NewUpdateRequest() UpdateRequest {
+	return UpdateRequest{V: Version, Type: TypeUpdateRequest}
+}
+
+// UpdateProgress reports a state transition as it happens.
+type UpdateProgress struct {
+	V    int    `json:"v"`
+	Type string `json:"type"`
+
+	InstructionID string `json:"instruction_id"`
+	State         string `json:"state"`
+	Detail        string `json:"detail,omitempty"`
+}
+
+// NewUpdateProgress builds a progress report, clamped to what the controller
+// accepts.
+func NewUpdateProgress(instructionID, state, detail string) UpdateProgress {
+	return UpdateProgress{
+		V:             Version,
+		Type:          TypeUpdateProgress,
+		InstructionID: instructionID,
+		State:         state,
+		Detail:        clampDetail(detail),
+	}
+}
+
+// UpdateResult reports a terminal outcome and the version now running.
+//
+// ResultingVersion is reported separately from the instruction's target
+// because they can differ, and the difference is the interesting case: a
+// result claiming success while the host runs the old version is a rollback
+// nobody noticed.
+type UpdateResult struct {
+	V    int    `json:"v"`
+	Type string `json:"type"`
+
+	InstructionID    string `json:"instruction_id"`
+	State            string `json:"state"`
+	ResultingVersion string `json:"resulting_version,omitempty"`
+	Error            string `json:"error,omitempty"`
+}
+
+// NewUpdateResult builds a result, clamped to what the controller accepts.
+func NewUpdateResult(instructionID, state, resultingVersion, failure string) UpdateResult {
+	return UpdateResult{
+		V:                Version,
+		Type:             TypeUpdateResult,
+		InstructionID:    instructionID,
+		State:            state,
+		ResultingVersion: resultingVersion,
+		Error:            clampDetail(failure),
+	}
+}
+
+// clampDetail bounds a message to what the controller will accept.
+//
+// Truncated rather than dropped: losing the tail of an error is better than
+// losing the report, and a frame over the limit is refused whole.
+func clampDetail(text string) string {
+	if len(text) <= MaxUpdateDetailLength {
+		return text
+	}
+	return text[:MaxUpdateDetailLength]
+}
+
 // ServerFrame is one decoded controller → agent frame.
 //
 // A tagged union rather than an interface, because a caller has to handle
@@ -417,6 +613,8 @@ type ServerFrame struct {
 	Available    *ConfigAvailable
 	Snapshot     *ConfigSnapshot
 	TelemetryAck *TelemetryAck
+	Instruction  *UpdateInstruction
+	Cancel       *UpdateCancel
 }
 
 // ErrFrameTooLarge reports a frame the agent refused to decode.
@@ -485,6 +683,20 @@ func ParseServerFrame(raw []byte) (ServerFrame, error) {
 			return ServerFrame{}, fmt.Errorf("malformed %s frame: %w", TypeTelemetryAck, err)
 		}
 		return ServerFrame{Type: TypeTelemetryAck, TelemetryAck: &ack}, nil
+
+	case TypeUpdateInstruction:
+		var instruction UpdateInstruction
+		if err := json.Unmarshal(raw, &instruction); err != nil {
+			return ServerFrame{}, fmt.Errorf("malformed %s frame: %w", TypeUpdateInstruction, err)
+		}
+		return ServerFrame{Type: TypeUpdateInstruction, Instruction: &instruction}, nil
+
+	case TypeUpdateCancel:
+		var cancel UpdateCancel
+		if err := json.Unmarshal(raw, &cancel); err != nil {
+			return ServerFrame{}, fmt.Errorf("malformed %s frame: %w", TypeUpdateCancel, err)
+		}
+		return ServerFrame{Type: TypeUpdateCancel, Cancel: &cancel}, nil
 
 	default:
 		return ServerFrame{}, fmt.Errorf(

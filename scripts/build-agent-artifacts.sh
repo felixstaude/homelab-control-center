@@ -16,6 +16,12 @@
 # Usage:
 #   ./scripts/build-agent-artifacts.sh [--version X.Y.Z] [--output DIR]
 #                                      [--arch amd64,arm64] [--clean]
+#                                      [--trust-key BASE64[,BASE64]]
+#
+# --trust-key stamps the publisher's Ed25519 *public* key into the binaries, so
+# the agents this build produces can verify release metadata for automatic
+# updates. Omit it and they trust nothing and decline every update, which is
+# the right answer for a binary nobody signed releases for.
 #
 # # Reproducibility
 #
@@ -54,6 +60,16 @@ OUTPUT_DIR="dist/agent"
 VERSION=""
 ARCHES="amd64,arm64,arm"
 CLEAN=0
+# The publisher keys this build's agents will trust for automatic updates.
+#
+# Empty by default, and an agent built with it empty trusts nothing and
+# declines every update instruction — which is the correct behaviour for a
+# binary that genuinely cannot tell a real release from a forged one. Only an
+# official release build passes this.
+#
+# The *public* key, to be clear. The private half never comes near a build
+# machine: see scripts/sign-release.py.
+SIGNING_PUBLIC_KEYS=""
 
 die() {
   printf "${RED}✗ %s${RESET}\n" "$*" >&2
@@ -68,6 +84,7 @@ while [ $# -gt 0 ]; do
     --version) VERSION="${2:?--version needs a value}"; shift 2 ;;
     --output) OUTPUT_DIR="${2:?--output needs a value}"; shift 2 ;;
     --arch) ARCHES="${2:?--arch needs a value}"; shift 2 ;;
+    --trust-key) SIGNING_PUBLIC_KEYS="${2:?--trust-key needs a value}"; shift 2 ;;
     --clean) CLEAN=1; shift ;;
     -h|--help) sed -n '2,45p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown argument: $1" ;;
@@ -141,6 +158,12 @@ LDFLAGS="-s -w"
 LDFLAGS="$LDFLAGS -X ${LDFLAGS_PKG}.version=${VERSION}"
 LDFLAGS="$LDFLAGS -X ${LDFLAGS_PKG}.commit=${COMMIT_SHORT}"
 LDFLAGS="$LDFLAGS -X ${LDFLAGS_PKG}.buildDate=${BUILD_DATE}"
+if [ -n "$SIGNING_PUBLIC_KEYS" ]; then
+  # Stamped in rather than read from a file at runtime: this is the agent's
+  # trust anchor, and a trust anchor in configuration is a trust anchor the
+  # configuration can be made to change.
+  LDFLAGS="$LDFLAGS -X ${LDFLAGS_PKG}.releaseKeys=${SIGNING_PUBLIC_KEYS}"
+fi
 
 STAGING="$(mktemp -d)"
 trap 'rm -rf "$STAGING"' EXIT

@@ -40,6 +40,11 @@ from hcc.agents.protocol import (
     Telemetry,
     TelemetryAck,
     TelemetryEntry,
+    UpdateCancel,
+    UpdateInstruction,
+    UpdateProgress,
+    UpdateRequest,
+    UpdateResult,
     is_supported_version,
     parse_agent_frame,
 )
@@ -58,9 +63,22 @@ def test_the_current_version_is_supported() -> None:
     assert PROTOCOL_VERSION in SUPPORTED_PROTOCOL_VERSIONS
 
 
-@pytest.mark.parametrize("value", [0, 2, 99, -1])
+@pytest.mark.parametrize("value", [0, 3, 99, -1])
 def test_an_unknown_version_is_not_supported(value: int) -> None:
     assert not is_supported_version(value)
+
+
+def test_version_one_is_still_supported() -> None:
+    """The whole backward-compatibility story, in one assertion.
+
+    Protocol 2 added the update frames. An agent built before they existed
+    keeps heartbeating, keeps receiving configuration and keeps sending
+    telemetry; it is simply never offered an update over the socket. Dropping
+    1 from this tuple would strand every already-installed agent, so it is
+    asserted rather than left to a reviewer to notice.
+    """
+    assert is_supported_version(1)
+    assert is_supported_version(2)
 
 
 def test_a_boolean_is_not_a_version() -> None:
@@ -320,6 +338,17 @@ def test_no_message_type_carries_anything_executable() -> None:
         TelemetryAck,
         MetricSample,
         TelemetryEntry,
+        # Protocol 2. These are the frames most likely to be mistaken for an
+        # instruction channel, so they are the ones it matters most to check.
+        # An `update_instruction` describes *which published release to
+        # install*; the agent verifies the publisher's signature itself and
+        # decides. If somebody ever adds a `command` field to one of these,
+        # this is the assertion that should stop them.
+        UpdateInstruction,
+        UpdateCancel,
+        UpdateRequest,
+        UpdateProgress,
+        UpdateResult,
     ):
         for name in model.model_fields:
             assert not any(word in name.lower() for word in forbidden), (
@@ -344,6 +373,17 @@ def test_no_message_type_carries_anything_executable() -> None:
         # controller→agent half is an acknowledgement carrying two counts.
         MessageType.TELEMETRY,
         MessageType.TELEMETRY_ACK,
+        # Protocol 2, update management. Five frames and not one of them
+        # carries a command, a script, a path to run or a shell. An
+        # instruction is data naming a published release; the agent verifies
+        # the publisher's signature itself and may refuse. The field-name
+        # check above covers these too, which is the assertion that would
+        # catch somebody adding `command` to one of them.
+        MessageType.UPDATE_INSTRUCTION,
+        MessageType.UPDATE_REQUEST,
+        MessageType.UPDATE_PROGRESS,
+        MessageType.UPDATE_RESULT,
+        MessageType.UPDATE_CANCEL,
     }
 
 

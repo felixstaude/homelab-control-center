@@ -551,3 +551,80 @@ func TestUpgradeOptionsOfferNoWayToSkipVerification(t *testing.T) {
 		}
 	}
 }
+
+// TestRestartingIsReportedBeforeTheServiceIsRestarted pins an ordering that
+// looks cosmetic and is not.
+//
+// In the controller-driven path the upgrade runs inside the service process,
+// so `systemctl restart` terminates the thing executing Run: a report placed
+// after the call would never be sent. The controller would hold the job in
+// `installing`, which is not a state it can conclude from a reconnection —
+// `restarting → succeeded` is an allowed transition and
+// `installing → succeeded` deliberately is not.
+//
+// A stuck `installing` is recoverable by nothing but the stale-job sweeper.
+// Reporting first means the worst case is a job that says "restarting" about
+// a restart that failed, and that path reports its own failure.
+func TestRestartingIsReportedBeforeTheServiceIsRestarted(t *testing.T) {
+	f := upgradeFixture(t)
+	archive, digest := writeArchive(t, f.root, buildArchive(t,
+		map[string][]byte{"hcc-agent": fakeAgentBinary(t, "0.2.0"), "LICENSE": []byte("x")},
+		map[string]int64{"LICENSE": 0o644},
+	))
+	f.system.configAfterStart = func() { f.writeConfiguration(2) }
+
+	// One interleaved log of reported states and privileged calls, so the
+	// assertion is about the order of the two streams rather than about each
+	// of them separately.
+	var sequence []string
+	restartIndex := -1
+	err := f.upgrader(UpgradeOptions{
+		ArchivePath:    archive,
+		ExpectedSHA256: digest,
+		ConnectTimeout: 5 * time.Second,
+		OnStep: func(state, _ string) {
+			sequence = append(sequence, "report:"+state)
+			if state == StepRestarting {
+				// Where the restart call had got to when `restarting` was
+				// reported. Captured here rather than compared afterwards
+				// because the fake's call list is the only record of it.
+				restartIndex = countRestarts(f.system.recorded())
+			}
+		},
+	}).Run(context.Background())
+	if err != nil {
+		t.Fatalf("upgrade failed: %v\n%s", err, f.output.String())
+	}
+
+	if restartIndex != 0 {
+		t.Errorf(
+			"`restarting` was reported after %d restart calls, want 0 (reported first)\nsequence: %v\ncalls: %v",
+			restartIndex, sequence, f.system.recorded(),
+		)
+	}
+	if countRestarts(f.system.recorded()) != 1 {
+		t.Errorf("the service was restarted %d times, want once: %v",
+			countRestarts(f.system.recorded()), f.system.recorded())
+	}
+	// And the state is still reported exactly once: a duplicate would be a
+	// no-op transition the controller refuses.
+	reported := 0
+	for _, entry := range sequence {
+		if entry == "report:"+StepRestarting {
+			reported++
+		}
+	}
+	if reported != 1 {
+		t.Errorf("`restarting` was reported %d times, want once: %v", reported, sequence)
+	}
+}
+
+func countRestarts(calls []string) int {
+	count := 0
+	for _, call := range calls {
+		if call == "systemctl restart "+ServiceName {
+			count++
+		}
+	}
+	return count
+}
