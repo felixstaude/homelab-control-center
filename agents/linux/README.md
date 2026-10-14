@@ -16,13 +16,31 @@ enrolled agent collects nothing. It executes no commands and does not touch
 Docker; the disk, network and sensor modules do not exist yet.
 
 ```bash
-hcc-agent enroll     # spend a one-time credential for a durable one
-hcc-agent run        # connect and stay connected (the service command)
+# Installing it. Needs root; the binary is its own installer.
+sudo ./hcc-agent install --controller https://hcc.example.com
+sudo ./hcc-agent install --dry-run ...   # print every path, mode and the unit
+sudo ./hcc-agent upgrade --from ARCHIVE --sha256 DIGEST
+sudo ./hcc-agent uninstall               # --purge also removes the credential
+
+# Operating it.
+hcc-agent doctor     # diagnose; changes nothing; prints no credential
 hcc-agent status     # is this host enrolled? (never prints the credential)
 hcc-agent version
+
+# Lower level, and what `install` composes.
+hcc-agent enroll     # spend a one-time credential for a durable one
+hcc-agent run        # connect and stay connected (the service command)
 ```
 
-Installation, the hardened systemd unit, and an explicit account of what has
+There is deliberately **no installation shell script**: the artifact you
+verify with `sha256sum -c` is the artifact that performs the installation and
+then is the installed program, so there is no second thing to trust
+([ADR-053](../../docs/ARCHITECTURE.md#adr-053-the-agent-binary-is-its-own-installer-there-is-no-installation-script)).
+The systemd unit is embedded in the binary and `install --dry-run` prints it
+verbatim
+([ADR-054](../../docs/ARCHITECTURE.md#adr-054-the-systemd-unit-has-exactly-one-copy-embedded-in-the-binary)).
+
+The whole lifecycle, the hardened unit, and an explicit account of what has
 and has not been verified: [`deploy/README.md`](deploy/README.md).
 
 The designed architecture — transport, enrollment, credential rotation,
@@ -186,14 +204,43 @@ the environment, so there is no reporting-interval variable either.
 ### Flags
 
 No secret is accepted as a flag, and `TestNoSecretIsSettableViaAFlag` fails
-if one becomes so. The only flag is:
+if one becomes so — a command line is readable by every local user through
+`/proc/<pid>/cmdline`, and a flag that exists gets used.
+
+Every flag takes a URL, a path or a boolean:
 
 ```
--version, --version    print version information and exit
+--version                print version information and exit
+
+install:
+  --controller URL       base URL of the control plane (required, https)
+  --token-file PATH      a file holding the one-time enrolment credential
+  --non-interactive      never prompt; no terminal becomes an error, not a hang
+  --ca-file PATH         a CA bundle to trust in addition to the system roots
+  --force                re-enrol a host that is already enrolled
+  --dry-run              print the plan and change nothing
+  --connect-timeout D    how long to wait for the service to connect
+
+upgrade:
+  --from PATH            a downloaded release archive (required)
+  --sha256 DIGEST        the digest the control plane showed (required)
+  --dry-run              verify and report, changing nothing
+
+uninstall:
+  --purge                also remove the credential, the state and the account
+  --dry-run              print what would go
+
+doctor:
+  --json                 machine-readable findings
+  --timeout D            bound on the network checks
 ```
 
-equivalent to the `version` subcommand. Logging is configured through the
-environment, which is what a unit file sets.
+`--token-file` takes a **path**, which is not a secret. There is no `--token`
+and there will not be one. `--sha256` on `upgrade` is required and there is no
+flag that skips it.
+
+Logging is configured through the environment, which is what the unit file
+sets.
 
 ### Exit codes
 
@@ -210,48 +257,40 @@ environment, which is what a unit file sets.
 `cmd/hcc-agent/signal_test.go`, which re-executes the test binary and sends it
 a real `SIGTERM`.
 
-## Example: systemd unit
+## The systemd unit
 
-Not installed by the project — packaging is Phase 10. This is the short
-reference; the **authoritative** unit, with the full hardening block and an
-explicit account of which directives have and have not been exercised on a
-live system, is in [`deploy/README.md`](deploy/README.md). Use that one.
+**There is one copy and this is not it.**
+[`internal/install/hcc-agent.service`](internal/install/hcc-agent.service) is
+the unit: it is embedded in the binary with `go:embed` and written verbatim by
+`hcc-agent install`. To read what would be installed, ask the installer:
 
-Note that no enrolment token appears here. Enrolment happens once, by hand,
-before the service is started; the unit only needs to know where the
-controller is, because the durable credential is read from its file at the
-point of use.
-
-```ini
-[Unit]
-Description=Homelab Control Center agent
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-# Dedicated unprivileged user. Group membership for Docker access is added
-# in Phase 6, when the agent first needs the socket.
-User=hcc-agent
-Group=hcc-agent
-Environment=HCC_AGENT_CONTROLLER_URL=https://hcc.internal:8000
-Environment=HCC_AGENT_LOG_FORMAT=json
-ExecStart=/usr/local/bin/hcc-agent run
-Restart=always
-RestartSec=5s
-
-# Hardening: the agent reads system state and makes outbound connections.
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
-ProtectKernelTunables=true
-ProtectControlGroups=true
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
-RestrictNamespaces=true
-LockPersonality=true
-MemoryDenyWriteExecute=true
-
-[Install]
-WantedBy=multi-user.target
+```bash
+sudo ./hcc-agent install --controller https://hcc.example.com --dry-run
 ```
+
+That prints the exact bytes, along with every path, mode and the service
+account.
+
+This section used to carry a "short reference" copy of the unit, and it is
+worth saying what was wrong with it, because it is the argument for
+[ADR-054](../../docs/ARCHITECTURE.md#adr-054-the-systemd-unit-has-exactly-one-copy-embedded-in-the-binary):
+
+* It had `ProtectSystem=strict` and **no** `ReadWritePaths`, so an agent
+  started from it would connect, receive a configuration, fail to store it,
+  correctly never acknowledge, and leave the interface showing the host stuck
+  on "saved, not yet confirmed" for ever while nothing was collected. The real
+  unit has carried the `ReadWritePaths` line, and a comment explaining it,
+  since the configuration channel shipped.
+* It had `Restart=always`, which hides a revoked credential and a missing one
+  behind an endless restart loop while `systemctl status` reports the service
+  as running. The real unit has `Restart=on-failure` for exactly that reason.
+* It had `After=network-online.target`, which delays boot on a machine whose
+  network comes up late and buys nothing the agent's own backoff does not
+  already handle.
+
+Three defects in a copy nobody ran, in a file whose own text called the other
+one authoritative. The unit has one copy now.
+
+No enrolment credential appears in the unit, and none can: the installer
+spends it before the service is started, and the durable credential is read
+from its own file at the point of use.

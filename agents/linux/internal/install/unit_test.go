@@ -91,6 +91,56 @@ func TestTheUnitIsTheOnlyCopyInTheRepository(t *testing.T) {
 	}
 }
 
+// TestNoDocumentCarriesASecondCopyOfTheUnit guards ADR-054 against the shape
+// of regression that already happened twice.
+//
+// `agents/linux/deploy/hcc-agent.service` was one copy. `agents/linux/README.md`
+// carried a third, described in its own text as a "short reference" while
+// calling another file authoritative — and that copy had `ProtectSystem=strict`
+// with no `ReadWritePaths`, `Restart=always` and `After=network-online.target`.
+// Three defects in a unit nobody ran.
+//
+// A documentation copy is not a documentation problem: somebody pastes it.
+func TestNoDocumentCarriesASecondCopyOfTheUnit(t *testing.T) {
+	// Relative to this package's directory, which is where `go test` runs.
+	documents := []string{
+		"../../README.md",
+		"../../deploy/README.md",
+		"../../../../README.md",
+		"../../../../docs/DEPLOYMENT.md",
+	}
+
+	// Three directives that only appear together in an actual unit. One of
+	// them in prose is fine — the deploy README discusses `ProtectSystem` by
+	// name — and all three in one file means somebody has pasted a unit.
+	fingerprint := []string{"[Service]", "ExecStart=", "WantedBy=multi-user.target"}
+
+	for _, name := range documents {
+		contents, err := os.ReadFile(name)
+		if err != nil {
+			// Not every path exists from every working directory; a missing
+			// document is not this test's business.
+			continue
+		}
+		text := string(contents)
+		present := 0
+		for _, marker := range fingerprint {
+			if strings.Contains(text, marker) {
+				present++
+			}
+		}
+		if present == len(fingerprint) {
+			t.Errorf(
+				"%s appears to contain a copy of the systemd unit. There is one copy "+
+					"(internal/install/hcc-agent.service, embedded in the binary) and "+
+					"`install --dry-run` prints it — see ADR-054. A documentation copy "+
+					"is not a documentation problem, because somebody pastes it.",
+				name,
+			)
+		}
+	}
+}
+
 func TestTheUnitReferencesTheInstallersOwnPaths(t *testing.T) {
 	unit := string(UnitFile())
 

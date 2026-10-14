@@ -16,6 +16,29 @@ made in the web interface.
 > when they stopped, and roughly what they were doing. That is a decision to
 > make deliberately rather than a default to accept.
 
+> ### Sections 3 to 5 are now one command
+>
+> ```bash
+> sudo ./hcc-agent install --controller https://hcc.example.com
+> ```
+>
+> `hcc-agent install` creates the service account, the state directory, the
+> binary, the environment file and the hardened unit; prompts for the
+> enrolment credential with the input hidden; starts the service; and waits
+> for the host to appear as **Connected** before reporting success. It is a
+> transaction — a failure rolls back what that run created, and never the
+> credential. `--dry-run` prints every path, mode and the complete unit and
+> changes nothing.
+>
+> The manual walkthrough below is kept because it was **run**, on a real
+> Debian host, and because it is the clearest explanation of *what* the
+> installer does and why each permission is what it is. For installing an
+> agent, use the command. The lifecycle — upgrade, uninstall, `doctor` — is
+> [`agents/linux/deploy/README.md`](../../agents/linux/deploy/README.md).
+>
+> Sections 6 onwards — enabling modules, reading the charts, the measured
+> numbers — are unchanged and are the point of this document.
+
 ---
 
 ## 1. What you need before starting

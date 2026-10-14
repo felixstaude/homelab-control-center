@@ -4,6 +4,8 @@ import {
   AGENT_SKIP_REASON,
   agentAvailable,
   agentStatus,
+  apiFromPage,
+  cookie,
   enrollAgent,
   ensureAdministrator,
   signInAndWait,
@@ -429,5 +431,109 @@ test.describe('host registration and the live agent', () => {
 
     // And nothing anywhere in the rendered page.
     expect(await page.content()).not.toContain(credential);
+  });
+});
+
+test.describe('the install instructions beside the credential', () => {
+  /**
+   * The only place the real `/api/v1/agent-releases` endpoint meets the real
+   * interface.
+   *
+   * The unit tests cover both halves against a fake, and the fake's *default*
+   * is "no release" precisely because that is what every build of this
+   * project reports. This asserts the real endpoint agrees — and, more
+   * importantly, that the interface's response to it is the build-from-source
+   * path rather than a download command whose URL would not resolve.
+   *
+   * A digest beside an invented URL is a claim nobody can check, which is
+   * worse than no claim. That is the property being tested.
+   */
+  let instructionsHostId = '';
+
+  test.beforeAll(() => {
+    ensureAdministrator();
+  });
+
+  test('a controller with no published release says so, and offers no download', async ({
+    page,
+  }) => {
+    await signInAndWait(page);
+
+    // Its own host, so this does not depend on the ordering of the tests
+    // above or on their credential still being pending.
+    // A POST needs the CSRF header the interface sends, so this goes through
+    // the page's own session exactly as the client would.
+    const csrf = await cookie(page, 'hcc_csrf');
+    const created = await apiFromPage(page, '/api/v1/hosts', {
+      method: 'POST',
+      headers: { 'X-CSRF-Token': csrf?.value ?? '' },
+      body: { name: 'e2e-install-instructions', environment: 'test' },
+    });
+    expect(created.status).toBe(201);
+    instructionsHostId = (created.body as { host_id: string }).host_id;
+
+    await page.goto(`/hosts/${instructionsHostId}`);
+    await page.getByRole('button', { name: /issue enrolment credential/i }).click();
+    await page.getByRole('button', { name: /issue credential/i }).click();
+
+    // The credential is shown — it is the part that expires, so a failure to
+    // render the install command must not withhold it.
+    await expect(page.getByText(/^[A-Za-z0-9_-]{43}$/)).toBeVisible();
+
+    // And the honest answer about the download.
+    await expect(page.getByText(/no prebuilt agent is available/i)).toBeVisible();
+    await expect(page.getByText(/make agent-build/)).toBeVisible();
+
+    // No invented download command. `sha256sum -c -` only appears in the
+    // verified-download path, so its absence is the assertion.
+    await expect(page.getByText(/sha256sum -c -/)).toHaveCount(0);
+    await expect(page.getByText(/curl -fsSLO https:\/\/github/)).toHaveCount(0);
+
+    // And no architecture selector, because there is nothing to select
+    // between.
+    await expect(page.getByLabel(/architecture of the host/i)).toHaveCount(0);
+  });
+
+  // The authorization half of this endpoint is asserted in
+  // 70-user-management.spec.ts, which has the non-admin accounts to assert it
+  // *with*: an administrator getting 200 says nothing about the gate.
+  test('it says why there is nothing to download, in the real response', async ({ page }) => {
+    await signInAndWait(page);
+
+    // Read through the page's own session, so this is the body a browser
+    // receives from the real endpoint rather than a fixture's.
+    const response = await apiFromPage(page, '/api/v1/agent-releases');
+    expect(response.status).toBe(200);
+    const releases = response.body as {
+      available: boolean;
+      unavailable_reason: string | null;
+      protocol_version: number;
+    };
+
+    // No manifest is committed, and that is the honest answer rather than an
+    // empty list the interface would have to guess the meaning of.
+    expect(releases.available).toBe(false);
+    // Lowercased: the sentence happens to start with it.
+    expect(releases.unavailable_reason?.toLowerCase()).toContain(
+      'build the agent from source',
+    );
+    // Useful even with nothing to download: it is what tells somebody whether
+    // an agent they built themselves can talk to this controller.
+    expect(releases.protocol_version).toBeGreaterThan(0);
+  });
+
+  test('it never carries a credential, a token or a key', async ({ page }) => {
+    await signInAndWait(page);
+
+    const releases = (await apiFromPage(page, '/api/v1/agent-releases')).body as Record<
+      string,
+      unknown
+    >;
+
+    // The contract test asserts this against the schema; this asserts it
+    // against the real response body, which is what a browser receives.
+    for (const field of Object.keys(releases)) {
+      expect(field).not.toMatch(/credential|token|secret|private|password/i);
+    }
   });
 });
