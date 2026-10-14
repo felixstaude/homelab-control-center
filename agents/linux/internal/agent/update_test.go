@@ -92,7 +92,28 @@ func testAgent(applier UpdateApplier) *Agent {
 	return &Agent{
 		logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
 		applyUpdate: applier,
-		outbound:    make(chan any, 8),
+		outbound:    make(chan outboundFrame, 8),
+	}
+}
+
+// takeFrame reads one queued frame and acknowledges it, standing in for the
+// session loop.
+//
+// The acknowledgement matters: a reporter that waits for a write — which the
+// terminal result and the two states around the restart do — would otherwise
+// sit out its timeout with nobody listening, and every test that reads a
+// result would take ten seconds.
+func takeFrame(t *testing.T, agent *Agent) any {
+	t.Helper()
+	select {
+	case item := <-agent.outbound:
+		if item.sent != nil {
+			item.sent <- nil
+		}
+		return item.frame
+	case <-time.After(2 * time.Second):
+		t.Fatal("no frame was queued")
+		return nil
 	}
 }
 
@@ -304,7 +325,7 @@ func TestReportsReachTheLoopRatherThanTheSocket(t *testing.T) {
 	agent.startUpdate(context.Background(), instruction())
 	waitFor(t, func() bool { return len(agent.outbound) == 2 })
 
-	first := <-agent.outbound
+	first := takeFrame(t, agent)
 	progress, ok := first.(protocol.UpdateProgress)
 	if !ok {
 		t.Fatalf("first frame is %T", first)
@@ -316,7 +337,7 @@ func TestReportsReachTheLoopRatherThanTheSocket(t *testing.T) {
 		t.Errorf("the progress frame names instruction %q", progress.InstructionID)
 	}
 
-	second := <-agent.outbound
+	second := takeFrame(t, agent)
 	result, ok := second.(protocol.UpdateResult)
 	if !ok {
 		t.Fatalf("second frame is %T", second)

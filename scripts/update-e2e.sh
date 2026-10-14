@@ -742,7 +742,11 @@ CONTROLLER_URL="https://$CONTROLLER_NAME:$TLS_PORT"
 # Proved from inside the container, because that is the only place it matters
 # — and because a mirror the agent cannot reach would make every update below
 # fail for a reason that has nothing to do with updates.
-if in_container sh -c "exec 3<>/dev/tcp/$CONTROLLER_NAME/$MIRROR_TLS_PORT" 2>/dev/null; then
+# `bash -c`, not `sh -c`: /dev/tcp is a bash feature and Debian's /bin/sh is
+# dash, which does not have it. This probe reported the mirror unreachable for
+# one run while the update it was checking for downloaded through it
+# successfully — a false negative is worse than no check.
+if in_container bash -c "exec 3<>/dev/tcp/$CONTROLLER_NAME/$MIRROR_TLS_PORT" 2>/dev/null; then
   ok "the container can open a connection to the artifact mirror"
 else
   bad "the container cannot reach the artifact mirror on $MIRROR_TLS_PORT"
@@ -1051,6 +1055,14 @@ if [ "${job_count:-0}" -ge 3 ]; then
 else
   bad "the history holds ${job_count:-0} attempts, expected at least 3"
 fi
+
+# The controller was restarted three times in the section above, so the agent
+# may still be reconnecting. Waited for rather than assumed: the assertion is
+# that the summary shows *the host's own report*, and a host that has not
+# reported yet correctly shows nothing. Asserting before it reconnects would
+# be testing the reconnection delay.
+await_query "the host has reported its version again after the restarts" \
+  "SELECT coalesce(agent_version, '') FROM hosts WHERE id = '$HOST_ID'" "$VERSION_NEW" 120 || true
 
 overview="$(api_get /updates/overview)"
 reported_version="$(printf '%s' "$overview" | "$VENV/bin/python" -c '

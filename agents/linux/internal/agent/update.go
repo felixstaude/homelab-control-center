@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"time"
 
 	"github.com/felixstaude/homelab-control-center/agents/linux/internal/buildinfo"
 	"github.com/felixstaude/homelab-control-center/agents/linux/internal/protocol"
@@ -212,11 +213,65 @@ type queuedReporter struct {
 }
 
 func (r *queuedReporter) Progress(_ context.Context, state, detail string) error {
-	return r.enqueue(protocol.NewUpdateProgress(r.instructionID, state, detail))
+	// `restarting` is the last thing an update says before systemd kills this
+	// process, and `installing` is the state immediately before it — so both
+	// are waited for. Everything else is fire-and-forget: a dropped
+	// intermediate report costs the interface a stale bar for one heartbeat,
+	// and waiting for each one would put the socket's latency inside the
+	// install.
+	//
+	// This is the fix for a defect the end-to-end scenario found: the reports
+	// were enqueued, the request file was written, systemd restarted the
+	// service, and the frames died in the buffer. The job showed
+	// `downloading` for a host that had already finished updating.
+	switch state {
+	case protocol.StateInstalling, protocol.StateRestarting:
+		return r.send(protocol.NewUpdateProgress(r.instructionID, state, detail))
+	default:
+		return r.enqueue(protocol.NewUpdateProgress(r.instructionID, state, detail))
+	}
 }
 
 func (r *queuedReporter) Result(_ context.Context, state, resultingVersion, failure string) error {
-	return r.enqueue(protocol.NewUpdateResult(r.instructionID, state, resultingVersion, failure))
+	// A result is terminal, so it is always waited for: it is the only thing
+	// that distinguishes a failed update from one still in flight, and the
+	// controller will otherwise sit on the job until it expires.
+	return r.send(protocol.NewUpdateResult(r.instructionID, state, resultingVersion, failure))
+}
+
+// outboundAckTimeout bounds how long a reporter waits for the loop to write.
+//
+// Ten seconds. Long enough for a congested link or a loop busy with a
+// collection; short enough that a dead socket does not hold up an install for
+// a report nobody will receive. On a timeout the update proceeds — the
+// alternative is abandoning a half-finished install because a socket hiccuped.
+const outboundAckTimeout = 10 * time.Second
+
+// send hands a frame to the loop and waits for it to be written.
+//
+// Returns nil on a timeout as well as on success, deliberately: the caller is
+// an installer, and the only thing it could do with the error is abandon an
+// update that is already underway.
+func (r *queuedReporter) send(frame any) error {
+	sent := make(chan error, 1)
+	select {
+	case r.agent.outbound <- outboundFrame{frame: frame, sent: sent}:
+	default:
+		r.logger.Warn("dropped an update report; the outbound queue is full")
+		return nil
+	}
+	select {
+	case err := <-sent:
+		if err != nil {
+			r.logger.Warn("could not report update progress", "error", err)
+		}
+		return nil
+	case <-time.After(outboundAckTimeout):
+		r.logger.Warn("the update report was not written within the timeout",
+			"timeout", outboundAckTimeout,
+		)
+		return nil
+	}
 }
 
 // enqueue hands a frame to the loop, dropping it rather than blocking.
@@ -227,7 +282,7 @@ func (r *queuedReporter) Result(_ context.Context, state, resultingVersion, fail
 // log line rather than back-pressure onto the installer.
 func (r *queuedReporter) enqueue(frame any) error {
 	select {
-	case r.agent.outbound <- frame:
+	case r.agent.outbound <- outboundFrame{frame: frame}:
 		return nil
 	default:
 		r.logger.Warn("dropped an update report; the outbound queue is full")

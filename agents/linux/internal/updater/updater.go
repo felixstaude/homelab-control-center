@@ -48,6 +48,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -254,15 +255,48 @@ func (u *Updater) Apply(
 		})
 		return err
 	}
+	// Removed whatever happened — *unless* the archive has been handed to the
+	// privileged installer, which is the one case where another process still
+	// needs it. `handedOff` is set by the branch below rather than inferred
+	// from the error, because a handoff returns nil and so is indistinguishable
+	// from a direct install that worked.
+	//
+	// Without this the handoff wrote a request naming a file it had just
+	// deleted, and root reported "cannot stat the staged archive" about a path
+	// that had existed a millisecond earlier. The privileged side removes it
+	// when it is done.
+	handedOff := false
 	defer func() {
-		// Removed whatever happened. A staged archive left behind is a few
-		// megabytes on a NAS and a puzzle for whoever finds it.
+		if handedOff {
+			return
+		}
 		if err := os.Remove(archivePath); err != nil && !os.IsNotExist(err) {
 			logger.Warn("could not remove the staged archive", "path", archivePath, "error", err)
 		}
 	}()
 
-	// --- 3. Install, through the same code an operator drives by hand ----
+	// --- 3. Install ------------------------------------------------------
+	//
+	// Two paths, chosen by whether this process can actually do it.
+	//
+	// An agent running as its own unprivileged service account cannot replace
+	// a root-owned binary or restart its own unit, so it hands the verified
+	// archive to a root-owned one-shot unit — see [Updater.handOff] and
+	// internal/install/handoff.go. That is the production path on every
+	// correctly-installed host.
+	//
+	// The direct path below is for a process that *is* root: an operator
+	// driving it, and the tests. Keeping both means the installer is exercised
+	// by `go test` without root, which is how its step ordering and rollback
+	// are covered at all.
+	if u.options.System.Geteuid() != 0 {
+		err := u.handOff(ctx, instruction, reporter, archivePath, logger)
+		// Only on success: a refused handoff leaves nothing to read, so the
+		// archive is this process's to clean up after all.
+		handedOff = err == nil
+		return err
+	}
+
 	options := install.UpgradeOptions{
 		ArchivePath:    archivePath,
 		ExpectedSHA256: target.SHA256,
@@ -293,6 +327,116 @@ func (u *Updater) Apply(
 	u.report(ctx, reporter, func() error {
 		return reporter.Result(ctx, protocol.StateSucceeded, instruction.ToVersion, "")
 	})
+	return nil
+}
+
+// handOff asks the privileged unit to install an archive this process has
+// already downloaded and verified.
+//
+// # What this process has established before writing anything
+//
+// The signature over the release metadata verified against a key stamped into
+// this binary, the archive downloaded under a size bound, and its digest
+// matched against the digest in that signed metadata. The request carries the
+// metadata and the signature so the privileged side re-establishes all of it
+// independently — it does not take this process's word for any of it, which
+// is what keeps "the agent account is compromised" from meaning "root is
+// compromised". See internal/install/handoff.go.
+//
+// # Why `restarting` is reported here and nothing after it
+//
+// The privileged unit ends by restarting hcc-agent.service, which terminates
+// **this process**. So the last thing it can honestly say is that a restart
+// is coming. The controller concludes the job when the replacement connects
+// and reports a version: the target means success, the previous version means
+// the agent's own rollback ran. No process can report its own successful
+// replacement.
+//
+// Returning nil here is therefore not a claim that the update succeeded. It is
+// a claim that the request was handed over, and the caller's own comment says
+// the same.
+func (u *Updater) handOff(
+	ctx context.Context,
+	instruction protocol.UpdateInstruction,
+	reporter Reporter,
+	archivePath string,
+	logger *slog.Logger,
+) error {
+	staged := filepath.Join(u.options.Paths.StateDir(), filepath.Base(archivePath))
+	if filepath.Clean(archivePath) != filepath.Clean(staged) {
+		// The privileged side refuses an archive outside its state directory,
+		// so staging it elsewhere is a failure worth naming here rather than
+		// a refusal from root with less context.
+		err := refuse(
+			"the archive was staged at %s, which the privileged installer will not read. "+
+				"It must be inside %s, which is the directory the service's "+
+				"StateDirectory= creates. Check that hcc-agent.service has it.",
+			archivePath, u.options.Paths.StateDir(),
+		)
+		u.report(ctx, reporter, func() error {
+			return reporter.Result(ctx, protocol.StateFailed, u.options.InstalledVersion, err.Error())
+		})
+		return err
+	}
+
+	// The states this process genuinely passed through, in the order the
+	// controller's transition table allows.
+	//
+	// These are not decoration. `downloading → installing` is **not** a legal
+	// transition — the table requires `verifying` and `staged` between them —
+	// so the first version of this handoff had every report after the download
+	// silently refused, and the job sat at `downloading` while the host
+	// finished updating. Each one is also true: this process verified the
+	// digest against the signed metadata during the download, and a verified
+	// archive on disk is exactly what `staged` means.
+	u.report(ctx, reporter, func() error {
+		return reporter.Progress(ctx, protocol.StateVerifying,
+			"the download matches the digest in the signed release metadata")
+	})
+	u.report(ctx, reporter, func() error {
+		return reporter.Progress(ctx, protocol.StateStaged,
+			fmt.Sprintf("the verified archive is at %s", staged))
+	})
+	u.report(ctx, reporter, func() error {
+		return reporter.Progress(ctx, protocol.StateInstalling,
+			"handing the verified archive to the privileged installer")
+	})
+
+	request := install.UpdateRequest{
+		InstructionID: instruction.InstructionID,
+		Version:       instruction.ToVersion,
+		Platform:      u.options.Platform,
+		ArchivePath:   staged,
+		Metadata:      instruction.Metadata,
+		Signature:     instruction.Signature,
+	}
+	// Reported *before* the request is written, for the same reason
+	// install.Upgrader reports it before calling systemctl: once the request
+	// lands, systemd may restart this service at any moment, and a report
+	// that had not left yet would never leave. A job stuck in `installing` is
+	// one no reconnection can conclude.
+	u.report(ctx, reporter, func() error {
+		return reporter.Progress(ctx, protocol.StateRestarting,
+			"the privileged installer is replacing the binary and restarting the service")
+	})
+
+	if err := install.WriteUpdateRequest(u.options.Paths.UpdateRequest(), request); err != nil {
+		logger.Error("could not hand the update to the privileged installer", "error", err)
+		u.report(ctx, reporter, func() error {
+			return reporter.Result(ctx, protocol.StateFailed, u.options.InstalledVersion, err.Error())
+		})
+		return err
+	}
+	logger.Info("handed the update to the privileged installer",
+		"request", u.options.Paths.UpdateRequest(),
+		"version", instruction.ToVersion,
+	)
+
+	// Deliberately no wait. The install takes a minute and ends by killing
+	// this process, so waiting would mean a timeout that fires only when
+	// something has gone wrong — and the thing that reports *that* is the
+	// replacement agent reading the outcome file, which is a report from a
+	// process that still exists.
 	return nil
 }
 
@@ -603,25 +747,33 @@ func runUpgrade(ctx context.Context, options install.UpgradeOptions) error {
 	return install.NewUpgrader(options).Run(ctx)
 }
 
-// StagingDirFor returns a staging directory inside the agent's own
-// configuration directory when it is writable, and the system temporary
-// directory otherwise.
+// StagingDirFor returns the directory a downloaded archive is staged in.
 //
-// Preferring the configuration directory matters on a host where /tmp is a
-// small tmpfs: a 3 MB archive is fine, but the installer's own extraction
-// happens beside the target binary and an operator debugging a failed update
-// benefits from both being in one place. Falling back rather than failing,
-// because a read-only /etc is a legitimate configuration.
+// The service's **state** directory, and this is not a preference. The
+// archive has to be visible to the privileged installer, which is a different
+// process in a different unit — and hcc-agent.service sets `PrivateTmp=yes`,
+// so anything the agent writes under /tmp is in a namespace root cannot see.
+// A staged archive in a private /tmp produces "cannot stat the staged
+// archive" from a process looking at the same path.
+//
+// Falls back to the system temporary directory only when the state directory
+// is not writable, which on a correct installation it always is: systemd's
+// `StateDirectory=` creates it owned by the service account. The fallback
+// exists so an agent run in the foreground by an operator still works, and
+// the handoff refuses rather than silently staging where root cannot look.
 func StagingDirFor(paths install.Paths) string {
-	directory := paths.ConfigDir()
-	if info, err := os.Stat(directory); err == nil && info.IsDir() {
-		probe, err := os.CreateTemp(directory, ".hcc-write-probe-*")
-		if err == nil {
-			name := probe.Name()
-			_ = probe.Close()
-			_ = os.Remove(name)
-			return directory
+	for _, directory := range []string{paths.StateDir(), paths.ConfigDir()} {
+		if info, err := os.Stat(directory); err != nil || !info.IsDir() {
+			continue
 		}
+		probe, err := os.CreateTemp(directory, ".hcc-write-probe-*")
+		if err != nil {
+			continue
+		}
+		name := probe.Name()
+		_ = probe.Close()
+		_ = os.Remove(name)
+		return directory
 	}
 	return os.TempDir()
 }

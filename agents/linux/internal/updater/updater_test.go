@@ -162,11 +162,39 @@ type harness struct {
 	seenArchive []byte
 }
 
+// fakeSystem is the privileged-operation surface, with a settable uid.
+//
+// The uid is what these tests need it for: [updater.Updater.Apply] chooses
+// between installing directly and handing the archive to the privileged unit
+// based on whether this process is root, and both branches need covering from
+// a `go test` that is neither.
+type fakeSystem struct {
+	euid int
+}
+
+func (f fakeSystem) Geteuid() int         { return f.euid }
+func (f fakeSystem) SystemdPresent() bool { return true }
+func (f fakeSystem) LookupUser(string) (install.UserInfo, error) {
+	return install.UserInfo{}, install.ErrNoSuchUser
+}
+func (f fakeSystem) CreateServiceAccount(context.Context, string) error { return nil }
+func (f fakeSystem) DeleteServiceAccount(context.Context, string) error { return nil }
+func (f fakeSystem) Systemctl(context.Context, ...string) (string, error) {
+	return "active", nil
+}
+func (f fakeSystem) JournalTail(context.Context, string, int) (string, error) { return "", nil }
+func (f fakeSystem) MachineArchitecture() string                              { return "x86_64" }
+func (f fakeSystem) Chown(string, int, int) error                             { return nil }
+
 func newHarness(t *testing.T, mutate func(*updater.Options)) *harness {
 	t.Helper()
 	h := &harness{reporter: &recorder{}, fetchBody: archive, stagingDir: t.TempDir()}
 	options := updater.Options{
-		TrustStore:       trustStore(t),
+		TrustStore: trustStore(t),
+		// Root, so these tests exercise the direct install path with the
+		// injected upgrader. The handoff path an unprivileged agent takes has
+		// its own tests below.
+		System:           fakeSystem{euid: 0},
 		Policy:           updater.Policy{AutoUpdate: true, Channel: "stable"},
 		Platform:         amd64,
 		InstalledVersion: "0.1.0",
@@ -956,5 +984,157 @@ func TestRefusalsAreDistinguishableFromFailures(t *testing.T) {
 	wrapped := fmt.Errorf("context: %w", &updater.Refusal{Reason: "because"})
 	if !updater.IsRefusal(wrapped) {
 		t.Error("a wrapped refusal was not recognised")
+	}
+}
+
+// --- The handoff to the privileged installer --------------------------------
+//
+// An agent running as its own unprivileged service account cannot replace a
+// root-owned binary or restart its own unit. These cover what it does instead,
+// and the properties that make it safe: it does not install, it reports a
+// restart it cannot observe the end of, and it refuses to stage anywhere the
+// privileged side will not look.
+
+// handoffHarness is a non-root updater with a rooted Paths, so the request
+// lands in a temporary directory rather than in /var/lib.
+func handoffHarness(t *testing.T) (*harness, install.Paths) {
+	t.Helper()
+	root := t.TempDir()
+	paths := install.Paths{Root: root}
+	if err := os.MkdirAll(paths.StateDir(), 0o750); err != nil {
+		t.Fatalf("cannot create the state directory: %v", err)
+	}
+	h := newHarness(t, func(options *updater.Options) {
+		options.System = fakeSystem{euid: 996}
+		options.Paths = paths
+		options.StagingDir = paths.StateDir()
+	})
+	return h, paths
+}
+
+func TestAnUnprivilegedAgentHandsTheUpdateToTheInstaller(t *testing.T) {
+	h, paths := handoffHarness(t)
+
+	if err := h.updater.Apply(
+		context.Background(), instructionFor(t, instructionOptions{}), h.reporter,
+	); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	// It did not install anything itself. That is the point: an unprivileged
+	// process that appeared to install a root-owned binary would be a process
+	// doing something it cannot do.
+	if len(h.upgraded) != 0 {
+		t.Errorf("an unprivileged agent called the installer directly: %v", h.upgraded)
+	}
+
+	request, err := install.ReadUpdateRequest(paths.UpdateRequest())
+	if err != nil {
+		t.Fatalf("no usable request was written: %v", err)
+	}
+	if request.Version != "0.1.1" {
+		t.Errorf("request version = %q, want 0.1.1", request.Version)
+	}
+	if request.Platform != amd64 {
+		t.Errorf("request platform = %q, want %q", request.Platform, amd64)
+	}
+	// The signed metadata and its signature, carried verbatim. The privileged
+	// side re-verifies both rather than taking this process's word, which is
+	// what keeps a compromised agent account from choosing what root installs.
+	if request.Metadata == "" || request.Signature == "" {
+		t.Error("the request carries no signed metadata, so root has nothing to verify")
+	}
+	if request.ArchivePath == "" || !strings.HasPrefix(request.ArchivePath, paths.StateDir()) {
+		t.Errorf("archive path %q is not inside %q", request.ArchivePath, paths.StateDir())
+	}
+	// And the staged archive is still there: the privileged side needs it, so
+	// the usual "remove whatever happened" cleanup must not have run.
+	if _, err := os.Stat(request.ArchivePath); err != nil {
+		t.Errorf("the staged archive is gone before root could read it: %v", err)
+	}
+}
+
+func TestTheHandoffReportsRestartingAndNothingAfterIt(t *testing.T) {
+	h, _ := handoffHarness(t)
+
+	if err := h.updater.Apply(
+		context.Background(), instructionFor(t, instructionOptions{}), h.reporter,
+	); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	states := h.reporter.progress
+	if len(states) == 0 {
+		t.Fatal("the handoff reported nothing at all")
+	}
+
+	// The exact sequence, because the controller's transition table rejects
+	// anything else: `downloading → installing` is not legal, and the first
+	// version of this handoff skipped `verifying` and `staged` and had every
+	// report after the download silently refused.
+	want := []string{
+		protocol.StateDownloading,
+		protocol.StateVerifying,
+		protocol.StateStaged,
+		protocol.StateInstalling,
+		protocol.StateRestarting,
+	}
+	if len(states) != len(want) {
+		t.Fatalf("states = %v, want %v", states, want)
+	}
+	for index, state := range want {
+		if states[index] != state {
+			t.Errorf("state %d = %q, want %q (all: %v)", index, states[index], state, states)
+		}
+	}
+
+	last := states[len(states)-1]
+	if last != protocol.StateRestarting {
+		t.Errorf("last reported state = %q, want %q (states: %v)",
+			last, protocol.StateRestarting, states)
+	}
+	// Crucially not `succeeded`. This process cannot see the end of its own
+	// replacement, and claiming success would make a failed install show as a
+	// successful one until somebody checked a version by hand.
+	for _, state := range states {
+		if state == protocol.StateSucceeded {
+			t.Errorf("the handoff claimed success it cannot observe: %v", states)
+		}
+	}
+	if h.reporter.result != "" {
+		t.Errorf("the handoff reported a terminal result %q", h.reporter.result)
+	}
+}
+
+func TestTheHandoffRefusesToStageWhereRootCannotLook(t *testing.T) {
+	// hcc-agent.service sets PrivateTmp=yes, so an archive the agent writes
+	// under /tmp is in a mount namespace the privileged unit cannot see. The
+	// failure without this check is "cannot stat the staged archive" from a
+	// process looking at the same path, which is a mystifying thing to debug.
+	root := t.TempDir()
+	paths := install.Paths{Root: root}
+	if err := os.MkdirAll(paths.StateDir(), 0o750); err != nil {
+		t.Fatalf("cannot create the state directory: %v", err)
+	}
+	h := newHarness(t, func(options *updater.Options) {
+		options.System = fakeSystem{euid: 996}
+		options.Paths = paths
+		options.StagingDir = t.TempDir() // somewhere else entirely
+	})
+
+	err := h.updater.Apply(
+		context.Background(), instructionFor(t, instructionOptions{}), h.reporter,
+	)
+	if err == nil {
+		t.Fatal("staging outside the state directory was accepted")
+	}
+	if !strings.Contains(err.Error(), "StateDirectory") {
+		t.Errorf("the refusal does not name the cause: %v", err)
+	}
+	if _, statErr := os.Stat(paths.UpdateRequest()); statErr == nil {
+		t.Error("a request was written for an archive root cannot read")
+	}
+	if h.reporter.result != protocol.StateFailed {
+		t.Errorf("result = %q, want %q", h.reporter.result, protocol.StateFailed)
 	}
 }

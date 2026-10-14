@@ -1,0 +1,34 @@
+; The trigger for the privileged half of an agent update.
+;
+; THIS FILE IS THE INSTALLED UNIT, embedded into the agent binary and written
+; verbatim to /etc/systemd/system/hcc-agent-update.path.
+;
+; # Why a path unit
+;
+; The unprivileged agent has to ask root to do one bounded thing. The usual
+; answers are a setuid helper (a new attack surface, and one that is hard to
+; get right), polkit rules (per-distribution configuration, and a surprising
+; amount of it), or a D-Bus service (a daemon to write and harden). A path
+; unit needs none of that: systemd already runs as pid 1, already watches
+; paths, and the trigger is a file an administrator can read with `cat`.
+;
+; # PathExists, not PathChanged
+;
+; `PathChanged` fires on a write and would race a partially written file.
+; `PathExists` fires on the file being *there*, and the agent creates it with
+; a write-to-temporary-then-rename, so it appears atomically and complete.
+;
+; PathExists also re-triggers while the file remains, which is why
+; `apply-update` removes the request before it acts rather than after: a
+; crash mid-install must not become an install loop.
+
+[Unit]
+Description=Watch for a Homelab Control Center agent update request
+Documentation=https://github.com/felixstaude/homelab-control-center
+
+[Path]
+PathExists=/var/lib/hcc-agent/update-request.json
+Unit=hcc-agent-update.service
+
+[Install]
+WantedBy=multi-user.target

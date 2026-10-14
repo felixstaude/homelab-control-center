@@ -140,7 +140,15 @@ type Agent struct {
 	// line: losing a progress report costs the interface a stale bar for one
 	// heartbeat, and blocking the updater on the socket would mean a slow
 	// connection could stall an install.
-	outbound chan any
+	//
+	// Each item carries an optional acknowledgement channel, and that is not
+	// decoration. The last report an update makes is `restarting`, and the
+	// very next thing that happens is systemd killing this process — so a
+	// report that had merely been *queued* was never sent, and the first real
+	// run of the end-to-end scenario left the job showing `downloading` for a
+	// host that had already finished updating. The reporter waits for the
+	// write when it needs to know the frame left.
+	outbound chan outboundFrame
 
 	// declinedInstruction remembers the last instruction this agent refused
 	// for want of being allowed to update itself.
@@ -161,6 +169,17 @@ type Agent struct {
 
 	// cancelUpdate stops the running update. Nil when none is running.
 	cancelUpdate atomic.Pointer[context.CancelFunc]
+}
+
+// outboundFrame is one frame the update goroutine wants written, and an
+// optional channel to hear about it on.
+//
+// `sent` is nil for a report whose delivery does not matter — an intermediate
+// progress state, where a drop costs a stale bar for one heartbeat. It is
+// non-nil for the ones where it does: see [Agent.outbound].
+type outboundFrame struct {
+	frame any
+	sent  chan error
 }
 
 // UpdateApplier applies one authorized update instruction.
@@ -289,7 +308,7 @@ func New(cfg config.Config, logger *slog.Logger, opts ...Option) (*Agent, error)
 		// minutes, so this is never close to full in normal operation — and
 		// when it is, dropping a stale progress line is the right loss. See
 		// the field's comment.
-		a.outbound = make(chan any, 8)
+		a.outbound = make(chan outboundFrame, 8)
 	}
 	if a.collector == nil {
 		// The /proc root is the real one. Per-core CPU is off unless the
@@ -615,10 +634,20 @@ func (a *Agent) session(ctx context.Context) (productive bool, err error) {
 			// retroactively shortening this one.
 			timer = a.clock.After(interval)
 
-		case frame := <-a.outbound:
+		case item := <-a.outbound:
 			// The update goroutine's reports, written by the loop so the
 			// socket keeps exactly one writer.
-			if err := connection.Send(ctx, frame); err != nil {
+			err := connection.Send(ctx, item.frame)
+			if item.sent != nil {
+				// Non-blocking: the channel has room for one and the waiter
+				// may already have timed out, in which case nobody is
+				// listening and blocking here would stall the session.
+				select {
+				case item.sent <- err:
+				default:
+				}
+			}
+			if err != nil {
 				return productive, err
 			}
 

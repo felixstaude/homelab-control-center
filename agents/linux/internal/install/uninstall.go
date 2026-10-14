@@ -115,6 +115,44 @@ func (u *Uninstaller) Run(ctx context.Context) error {
 		kept = append(kept, "no unit at "+u.Paths.Unit())
 	}
 
+	// --- The update units --------------------------------------------------
+	//
+	// Removed on an ordinary uninstall, not only on --purge: they are units,
+	// not data, and a path unit left watching for a request file that nothing
+	// will ever write is a thing somebody finds in `systemctl list-units` and
+	// has to work out.
+	if _, err := os.Stat(u.Paths.UpdatePathUnit()); err == nil {
+		actions = append(actions, action{
+			label:  "update trigger",
+			detail: "stop and disable " + UpdatePathUnitName,
+			run: func(ctx context.Context) error {
+				if _, err := u.System.Systemctl(
+					ctx, "disable", "--now", UpdatePathUnitName,
+				); err != nil {
+					u.printf("  ! %v\n", err)
+				}
+				return nil
+			},
+		})
+	}
+	for _, path := range []string{u.Paths.UpdatePathUnit(), u.Paths.UpdateUnit()} {
+		if _, err := os.Stat(path); err != nil {
+			continue
+		}
+		target := path
+		actions = append(actions, action{
+			label:  "update unit",
+			detail: "remove " + target,
+			run: func(ctx context.Context) error {
+				if err := removeIfExists(target); err != nil {
+					return err
+				}
+				_, err := u.System.Systemctl(ctx, "daemon-reload")
+				return err
+			},
+		})
+	}
+
 	// --- The binary -------------------------------------------------------
 	for _, path := range []string{u.Paths.Binary(), u.Paths.PreviousBinary()} {
 		if _, err := os.Stat(path); err != nil {
@@ -125,6 +163,27 @@ func (u *Uninstaller) Run(ctx context.Context) error {
 			label:  "binary",
 			detail: "remove " + target,
 			run:    func(context.Context) error { return removeIfExists(target) },
+		})
+	}
+
+	// --- The state directory ----------------------------------------------
+	//
+	// Removed on an ordinary uninstall too. It holds a staged archive and the
+	// last update's outcome: operational state with no value once the agent
+	// is gone, and nothing an operator would want kept. The credential — the
+	// one thing that *is* worth keeping — lives in the configuration
+	// directory, which is only removed by --purge.
+	if _, err := os.Stat(u.Paths.StateDir()); err == nil {
+		directory := u.Paths.StateDir()
+		actions = append(actions, action{
+			label:  "state",
+			detail: "remove " + directory,
+			run: func(context.Context) error {
+				if err := os.RemoveAll(directory); err != nil {
+					return fmt.Errorf("cannot remove %s: %w", directory, err)
+				}
+				return nil
+			},
 		})
 	}
 

@@ -116,6 +116,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runUninstall(rest, stdout, stderr)
 	case "upgrade":
 		return runUpgrade(rest, stdout, stderr)
+	case "apply-update":
+		return runApplyUpdate(rest, stdout, stderr)
 	case "doctor":
 		return runDoctor(rest, stdout, stderr)
 	case "enroll":
@@ -156,6 +158,10 @@ Operating:
 Lower level:
   hcc-agent enroll     claim this host using a one-time enrollment credential
   hcc-agent run        connect to the controller and stay connected
+  hcc-agent apply-update
+                       install an update the agent staged and verified. Run by
+                       hcc-agent-update.service, not by a person: it takes no
+                       arguments and reads a request at a fixed path.
 
 Install flags:
   --controller URL     base URL of the control plane (required, https)
