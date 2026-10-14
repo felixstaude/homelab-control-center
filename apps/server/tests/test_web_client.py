@@ -17,6 +17,7 @@ does not use.
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Final
 
 import pytest
@@ -200,6 +201,17 @@ class TestItServesNothingElse:
             assert response.status_code == 405, method
 
 
+#: A hang in `wire_bytes` must be a located failure, not a job timeout.
+#:
+#: Calling an ASGI application directly means supplying `receive` and `send`
+#: by hand, and getting that wrong does not raise — it waits. The first CI run
+#: of these tests stalled here and took the whole job's fifteen minutes with
+#: it, reporting only "the operation was canceled" with no indication of which
+#: request or which assertion. Generous enough that a slow runner never trips
+#: it: these responses are a few hundred kilobytes from a local file.
+WIRE_TIMEOUT_SECONDS: Final = 20.0
+
+
 async def wire_bytes(app: FastAPI, path: str, *, accept_encoding: str | None) -> tuple[int, str]:
     """How many body bytes *app* actually sends for *path*, and the encoding.
 
@@ -226,9 +238,28 @@ async def wire_bytes(app: FastAPI, path: str, *, accept_encoding: str | None) ->
     }
     sent = 0
     encoding = "identity"
+    delivered = False
 
     async def receive() -> dict[str, object]:
-        return {"type": "http.request", "body": b"", "more_body": False}
+        """The request once, then never again.
+
+        ``FileResponse`` runs a disconnect listener alongside the send, and
+        that listener is a ``while True: await receive()`` loop. A stub that
+        returns a message on every call never yields to the event loop, so the
+        loop starves the task actually sending the response — and the request
+        hangs rather than failing.
+
+        That is not hypothetical: it passed on a 20-core workstation and
+        livelocked a 2-core CI runner until the job hit its timeout. Awaiting
+        an event nobody sets is the correct stub; the task group cancels this
+        when the response completes.
+        """
+        nonlocal delivered
+        if not delivered:
+            delivered = True
+            return {"type": "http.request", "body": b"", "more_body": False}
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable: the task group cancels this")
 
     async def send(message: dict[str, object]) -> None:
         nonlocal sent, encoding
@@ -243,7 +274,17 @@ async def wire_bytes(app: FastAPI, path: str, *, accept_encoding: str | None) ->
             assert isinstance(body, bytes)
             sent += len(body)
 
-    await app(scope, receive, send)  # type: ignore[arg-type]
+    try:
+        async with asyncio.timeout(WIRE_TIMEOUT_SECONDS):
+            await app(scope, receive, send)  # type: ignore[arg-type]
+    except TimeoutError:  # pragma: no cover - a regression, not a path
+        pytest.fail(
+            f"GET {path} (accept-encoding: {accept_encoding}) did not finish in "
+            f"{WIRE_TIMEOUT_SECONDS}s. {sent} body bytes had been sent with "
+            f"content-encoding {encoding!r}. Something in the ASGI handshake "
+            f"this helper performs by hand is waiting for a message it will "
+            f"not get."
+        )
     return sent, encoding
 
 

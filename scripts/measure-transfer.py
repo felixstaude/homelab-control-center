@@ -105,9 +105,22 @@ async def wire_bytes(app: object, path: str, *, accept_encoding: str | None) -> 
     }
     sent = 0
     encoding = "identity"
+    delivered = False
 
     async def receive() -> dict[str, object]:
-        return {"type": "http.request", "body": b"", "more_body": False}
+        # The request once, then an await that never completes.
+        #
+        # `FileResponse` runs a disconnect listener alongside the send, and it
+        # is a `while True: await receive()` loop. A stub returning a message
+        # every time never yields to the event loop, so that loop starves the
+        # task sending the response and the request hangs instead of failing.
+        # The task group cancels this when the response completes.
+        nonlocal delivered
+        if not delivered:
+            delivered = True
+            return {"type": "http.request", "body": b"", "more_body": False}
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable: the task group cancels this")
 
     async def send(message: dict[str, object]) -> None:
         nonlocal sent, encoding
