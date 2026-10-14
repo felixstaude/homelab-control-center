@@ -307,14 +307,13 @@ class TestTheGeneratorAgreesWithTheReader:
     ``artifacts.json`` with the real script and parse it with the real reader.
     """
 
-    def test_a_generated_manifest_parses(self, tmp_path: Path) -> None:
-        import subprocess
-        import sys
-
-        artifacts = {
+    @staticmethod
+    def _artifacts(version: str = "0.4.0") -> dict[str, Any]:
+        """A synthetic ``artifacts.json`` in the shape the build script writes."""
+        return {
             "schema_version": 1,
             "product": "hcc-agent",
-            "version": "0.4.0",
+            "version": version,
             "commit": "0" * 40,
             "built_at": "2026-10-14T00:00:00Z",
             "source_date_epoch": 1760000000,
@@ -322,7 +321,7 @@ class TestTheGeneratorAgreesWithTheReader:
             "reproducible": True,
             "artifacts": [
                 {
-                    "name": f"hcc-agent_0.4.0_linux_{architecture}.tar.gz",
+                    "name": f"hcc-agent_{version}_linux_{architecture}.tar.gz",
                     "kind": "archive",
                     "os": "linux",
                     "arch": architecture,
@@ -340,11 +339,168 @@ class TestTheGeneratorAgreesWithTheReader:
             "checksums": {"name": "checksums.txt", "sha256": DIGEST},
             "sbom": {"name": "x.spdx.json", "format": "SPDX-2.3", "sha256": DIGEST},
         }
-        artifacts_path = tmp_path / "artifacts.json"
-        artifacts_path.write_text(json.dumps(artifacts), encoding="utf-8")
-        output = tmp_path / "agent-releases.json"
 
+    @staticmethod
+    def _generate(tmp_path: Path, artifacts: dict[str, Any], *extra: str) -> Any:
+        """Run the real build script on *artifacts*, returning the process."""
+        import subprocess
+        import sys
+
+        artifacts_path = tmp_path / f"artifacts-{artifacts['version']}.json"
+        artifacts_path.write_text(json.dumps(artifacts), encoding="utf-8")
         # Four directories up from this file: tests/ → server/ → apps/ → root.
+        repository = Path(__file__).resolve().parents[3]
+        return subprocess.run(
+            [
+                sys.executable,
+                str(repository / "scripts" / "build-release-manifest.py"),
+                "--artifacts",
+                str(artifacts_path),
+                "--base-url",
+                f"https://example.test/releases/download/v{artifacts['version']}",
+                "--output",
+                str(tmp_path / "agent-releases.json"),
+                "--protocol-versions",
+                "1,2",
+                *extra,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_a_generated_manifest_parses(self, tmp_path: Path) -> None:
+        result = self._generate(tmp_path, self._artifacts())
+        assert result.returncode == 0, result.stderr
+
+        manifest = read_release_manifest(tmp_path / "agent-releases.json")
+
+        assert manifest.schema_version == MANIFEST_SCHEMA_VERSION
+        assert manifest.recommended == "0.4.0"
+        assert manifest.minimum_supported == "0.4.0"
+        # The channel table is what update planning reads, and a generated
+        # manifest with an empty one would offer nothing to anybody.
+        assert manifest.channels == {"stable": "0.4.0"}
+        assert manifest.releases["0.4.0"].protocol_versions == (1, 2)
+        release = manifest.recommended_release()
+        assert release is not None
+        assert set(release) == set(SUPPORTED_PLATFORMS)
+        assert release["linux/arm"].tier == "best-effort"
+        assert release["linux/amd64"].url.endswith("hcc-agent_0.4.0_linux_amd64.tar.gz")
+
+    def test_a_beta_release_does_not_become_the_recommendation(self, tmp_path: Path) -> None:
+        """A pre-release must not be what a fresh host is told to install.
+
+        `recommended` is the install command the interface renders. A beta that
+        moved it would hand a pre-release to every new installation, including
+        every one that never opted into one.
+        """
+        assert self._generate(tmp_path, self._artifacts("0.4.0")).returncode == 0
+        result = self._generate(
+            tmp_path,
+            self._artifacts("0.5.0-beta.1"),
+            "--channel",
+            "beta",
+            "--merge-into",
+            str(tmp_path / "agent-releases.json"),
+        )
+        assert result.returncode == 0, result.stderr
+
+        manifest = read_release_manifest(tmp_path / "agent-releases.json")
+
+        assert manifest.recommended == "0.4.0"
+        assert manifest.channels == {"stable": "0.4.0", "beta": "0.5.0-beta.1"}
+        assert set(manifest.releases) == {"0.4.0", "0.5.0-beta.1"}
+
+    def test_a_first_release_in_a_prerelease_channel_is_refused(self, tmp_path: Path) -> None:
+        """Because there would be nothing for `recommended` to name.
+
+        The reader refuses a `recommended` with no release entry, so the
+        alternative to this refusal is a manifest that cannot be loaded —
+        caught at the first request instead of at build time.
+        """
+        result = self._generate(tmp_path, self._artifacts("0.5.0-beta.1"), "--channel", "beta")
+
+        assert result.returncode != 0
+        assert "Publish a stable release first" in result.stderr
+
+    def test_merging_into_a_v1_manifest_upconverts_it(self, tmp_path: Path) -> None:
+        """A manifest published by an older release is a legitimate input.
+
+        Its releases become stable entries declaring nothing, which is what
+        they claimed. They therefore will not be chosen for an automatic
+        update — nobody recorded what protocol they speak — and that is the
+        conservative reading rather than a loss.
+        """
+        output = tmp_path / "agent-releases.json"
+        output.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "recommended": "0.3.0",
+                    "minimum_supported": "0.2.0",
+                    "releases": {
+                        "0.3.0": {
+                            "linux/amd64": {
+                                "archive": "hcc-agent_0.3.0_linux_amd64.tar.gz",
+                                "url": "https://example.test/hcc-agent_0.3.0_linux_amd64.tar.gz",
+                                "sha256": DIGEST,
+                                "size_bytes": 10,
+                                "tier": "supported",
+                            }
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        result = self._generate(tmp_path, self._artifacts("0.4.0"), "--merge-into", str(output))
+        assert result.returncode == 0, result.stderr
+
+        manifest = read_release_manifest(output)
+
+        assert manifest.schema_version == MANIFEST_SCHEMA_VERSION
+        assert manifest.recommended == "0.4.0"
+        # Not raised to 0.4.0: a new release does not by itself stop the
+        # controller working with the agents already out there.
+        assert manifest.minimum_supported == "0.2.0"
+        assert manifest.releases["0.3.0"].channel == "stable"
+        assert manifest.releases["0.3.0"].protocol_versions == ()
+        assert manifest.releases["0.4.0"].protocol_versions == (1, 2)
+
+    def test_the_compatibility_constraints_survive_the_round_trip(self, tmp_path: Path) -> None:
+        result = self._generate(
+            tmp_path,
+            self._artifacts(),
+            "--min-controller",
+            "0.1.0",
+            "--schema-requirement",
+            "0010_update_management",
+            "--notes-url",
+            "https://example.test/notes",
+        )
+        assert result.returncode == 0, result.stderr
+
+        entry = read_release_manifest(tmp_path / "agent-releases.json").releases["0.4.0"]
+
+        assert entry.min_controller == "0.1.0"
+        assert entry.schema_requirement == "0010_update_management"
+        assert entry.notes_url == "https://example.test/notes"
+        assert entry.released_at is not None
+
+    def test_an_empty_protocol_version_list_is_refused(self, tmp_path: Path) -> None:
+        """Empty means "unknown", which blocks every automatic update.
+
+        A release built that way installs fine by hand and is then silently
+        never picked up by a host with an automatic policy: everything works,
+        nothing happens. Refused where it is cheap to notice.
+        """
+        import subprocess
+        import sys
+
+        artifacts_path = tmp_path / "artifacts.json"
+        artifacts_path.write_text(json.dumps(self._artifacts()), encoding="utf-8")
         repository = Path(__file__).resolve().parents[3]
         result = subprocess.run(
             [
@@ -353,25 +509,31 @@ class TestTheGeneratorAgreesWithTheReader:
                 "--artifacts",
                 str(artifacts_path),
                 "--base-url",
-                "https://example.test/releases/download/v0.4.0",
+                "https://example.test/releases",
                 "--output",
-                str(output),
+                str(tmp_path / "out.json"),
+                "--protocol-versions",
+                " , ",
             ],
             capture_output=True,
             text=True,
             check=False,
         )
-        assert result.returncode == 0, result.stderr
 
-        manifest = read_release_manifest(output)
+        assert result.returncode != 0
+        assert "blocks every automatic update" in result.stderr
 
-        assert manifest.recommended == "0.4.0"
-        assert manifest.minimum_supported == "0.4.0"
-        release = manifest.recommended_release()
-        assert release is not None
-        assert set(release) == set(SUPPORTED_PLATFORMS)
-        assert release["linux/arm"].tier == "best-effort"
-        assert release["linux/amd64"].url.endswith("hcc-agent_0.4.0_linux_amd64.tar.gz")
+    def test_the_generated_manifest_is_unsigned(self, tmp_path: Path) -> None:
+        """Signing is a separate tool with a key this script never sees.
+
+        A build machine that could sign would make the signature worth no more
+        than the build machine. The script says so on its way out, because an
+        unsigned manifest is a manifest no automatic update will use.
+        """
+        result = self._generate(tmp_path, self._artifacts())
+
+        assert not (tmp_path / "agent-releases.json.sig").exists()
+        assert "sign-release.py" in result.stdout
 
     def test_the_generator_refuses_a_plaintext_base_url(self, tmp_path: Path) -> None:
         import subprocess
@@ -396,6 +558,8 @@ class TestTheGeneratorAgreesWithTheReader:
                 "http://mirror.example.test/releases",
                 "--output",
                 str(tmp_path / "out.json"),
+                "--protocol-versions",
+                "2",
             ],
             capture_output=True,
             text=True,

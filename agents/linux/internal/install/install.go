@@ -571,6 +571,36 @@ func EnvironmentFile(controllerURL, caPath string) []byte {
 	builder.WriteString(config.EnvLogLevel + "=info\n")
 	builder.WriteString("# text | json — journald captures either.\n")
 	builder.WriteString(config.EnvLogFormat + "=text\n")
+
+	// Written commented out, and set to false in the one place it is written
+	// at all. An installer that enabled automatic updates would be an
+	// installer that signed the host up to have its root-owned binary
+	// replaced without anybody saying so — the setting is discoverable here,
+	// and turning it on is a decision somebody makes about this host.
+	builder.WriteString("\n")
+	builder.WriteString("# --- Automatic updates (off) -------------------------------------\n")
+	builder.WriteString("#\n")
+	builder.WriteString("# With this false, the controller may still show that an update is\n")
+	builder.WriteString("# available and an administrator may still start one — this governs\n")
+	builder.WriteString("# only whether THIS host acts on an instruction unattended.\n")
+	builder.WriteString("#\n")
+	builder.WriteString("# An update is installed only when all of these hold: this is true,\n")
+	builder.WriteString("# the controller's policy for this host permits the step, and the\n")
+	builder.WriteString("# release metadata carries a valid publisher signature. The host's\n")
+	builder.WriteString("# half cannot be changed from the controller.\n")
+	builder.WriteString(config.EnvAutoUpdate + "=false\n")
+	builder.WriteString("\n")
+	builder.WriteString("# The most instability this host accepts: stable | beta | alpha.\n")
+	builder.WriteString("# A host on beta still receives newer stable releases.\n")
+	builder.WriteString("#" + config.EnvUpdateChannel + "=stable\n")
+	builder.WriteString("\n")
+	builder.WriteString("# Hold this host at one exact version, whatever is published.\n")
+	builder.WriteString("#" + config.EnvPinnedVersion + "=\n")
+	builder.WriteString("\n")
+	builder.WriteString("# Extra publisher keys to trust, base64 Ed25519, comma-separated.\n")
+	builder.WriteString("# Added to the key this build was stamped with, not instead of it.\n")
+	builder.WriteString("# Only needed when you build and sign your own agents.\n")
+	builder.WriteString("#" + config.EnvReleaseKeys + "=\n")
 	return []byte(builder.String())
 }
 

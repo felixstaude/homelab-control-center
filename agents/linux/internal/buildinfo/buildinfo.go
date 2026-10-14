@@ -19,7 +19,41 @@ var (
 	version   = ""
 	commit    = ""
 	buildDate = ""
+
+	// releaseKeys is the publisher's Ed25519 public key or keys, base64,
+	// comma-separated.
+	//
+	// Stamped at link time rather than read from a file, because this is the
+	// agent's trust anchor for automatic updates: a key that lives in
+	// configuration is a key the configuration can be made to change, and
+	// the whole point of the detached signature is that nothing the agent
+	// talks to over the network gets to decide what it will install.
+	//
+	// **Empty is the honest default and it refuses everything.** A
+	// development build, or a build of this repository by anybody who is not
+	// the publisher, trusts no key and so declines every update instruction
+	// with "no publisher key is trusted by this build". That is correct: such
+	// a binary genuinely cannot tell a real release from a forged one.
+	releaseKeys = ""
 )
+
+// ReleaseKeys returns the publisher keys this build trusts.
+//
+// Empty for any build that was not stamped with one, which includes every
+// development build. The caller adds whatever an operator configured; see
+// config.ReleaseKeys for why that is an addition rather than a replacement.
+func ReleaseKeys() []string {
+	if strings.TrimSpace(releaseKeys) == "" {
+		return nil
+	}
+	var keys []string
+	for _, key := range strings.Split(releaseKeys, ",") {
+		if trimmed := strings.TrimSpace(key); trimmed != "" {
+			keys = append(keys, trimmed)
+		}
+	}
+	return keys
+}
 
 // Info describes the running binary.
 type Info struct {
