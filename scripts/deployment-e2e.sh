@@ -189,6 +189,30 @@ wait_for() {
   return 1
 }
 
+# --- Timings -----------------------------------------------------------------
+#
+# Reported, never asserted. A CI runner's speed varies by a factor of several
+# between runs, so a threshold here would fail for the one reason that says
+# nothing about the deployment. The ceiling that *is* enforced is `wait_for`'s
+# own deadline: the run fails if the controller never answers at all.
+#
+# They are collected because "one command and you have a controller" is a claim
+# this repository makes, and how long that command takes is the first thing
+# somebody notices about it. docs/PERFORMANCE.md quotes these.
+TIMINGS=""
+
+record_timing() {
+  TIMINGS="$TIMINGS$(printf '  %-50s %s' "$1" "$2")
+"
+}
+
+report_timings() {
+  [ -n "$TIMINGS" ] || return 0
+  info "== Timings on this runner =="
+  dim "  Measured, not asserted — a runner's speed varies between runs."
+  printf '%s' "$TIMINGS"
+}
+
 # ===========================================================================
 info "== 1. Preconditions =="
 
@@ -212,6 +236,7 @@ fi
 # ===========================================================================
 info "== 2. Build and start =="
 
+up_started="$SECONDS"
 if timeout 900 env HCC_PUBLIC_ORIGIN="$BASE" HCC_BIND_PORT="$PORT" \
      HCC_VERSION="deployment-e2e" HCC_COMMIT="$RUN_ID" \
      $COMPOSE -p "$PROJECT" \
@@ -225,6 +250,8 @@ else
   cat "$WORK/up.log"
   die "docker compose up failed"
 fi
+up_returned="$SECONDS"
+record_timing "build the image and start the stack" "$((up_returned - up_started))s"
 dim "$(tail -5 "$WORK/up.log")"
 
 # The generated credential. Checked for shape rather than value: this is the
@@ -258,12 +285,49 @@ generated_before="$(cat "$secret")"
 
 wait_for "the control plane" "$BASE/healthz" 180 || die "the controller never answered"
 ok "/healthz answers"
+# From `up` returning to the controller answering: PostgreSQL's own start, the
+# migrations, and the application's. This is the part of the wait that is the
+# deployment's rather than the image build's.
+record_timing "from compose-up returning to /healthz answering" "$((SECONDS - up_returned))s"
 
 ready="$(curl -sS --max-time 5 "$BASE/readyz")"
 if printf '%s' "$ready" | grep -q '"status":"ready"'; then
   ok "/readyz reports the database reachable, so the migrations ran"
 else
   bad "/readyz is not ready: $ready"
+fi
+record_timing "one command to a ready controller, total" "$((SECONDS - up_started))s"
+
+# What an operator downloads or builds, once. Reported because "a Python image
+# with a built SPA in it" is not a size, and a number nobody checks is how an
+# image quietly grows to two gigabytes.
+#
+# Best-effort: `compose images --format json` emits a list in some versions and
+# one object per line in others, and this is a measurement rather than an
+# assertion, so an unparseable answer omits the line instead of failing the run.
+image_size="$(compose images --format json 2>/dev/null | python3 -c "
+import json, sys
+
+rows = []
+text = sys.stdin.read().strip()
+try:
+    loaded = json.loads(text)
+    rows = loaded if isinstance(loaded, list) else [loaded]
+except json.JSONDecodeError:
+    for line in text.splitlines():
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError:
+            pass
+
+for row in rows:
+    size = row.get('Size')
+    if 'hcc' in str(row.get('Repository', '')) and isinstance(size, (int, float)) and size > 0:
+        print(f'{size / 1e6:.0f} MB')
+        break
+" 2>/dev/null || true)"
+if [ -n "$image_size" ]; then
+  record_timing "the controller image" "$image_size"
 fi
 
 # ===========================================================================
@@ -445,10 +509,14 @@ fi
 # ===========================================================================
 info "== 8. Data survives a restart =="
 
+restart_started="$SECONDS"
 compose restart hcc >/dev/null 2>&1 || die "could not restart the controller"
 wait_for "the control plane after a restart" "$BASE/healthz" 120 \
   || die "the controller did not come back"
 ok "the controller restarted"
+# The upgrade wait: this is what an operator sits through after `up -d` on a
+# new image, with the database already up and the migrations already applied.
+record_timing "restart the controller and answer again" "$((SECONDS - restart_started))s"
 
 # The migrations run on every start. A second run must be a no-op rather than
 # an error, which is what makes `up -d` after an upgrade safe.
@@ -628,6 +696,9 @@ else
     bad "it was refused without naming the variable: $(tail -2 "$WORK/noorigin.log")"
   fi
 fi
+
+# ===========================================================================
+report_timings
 
 # ===========================================================================
 info "== Result =="

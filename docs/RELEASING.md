@@ -211,3 +211,64 @@ private key for a one-maintainer project to store, rotate or lose.
 
 **Unverified:** `gh attestation verify` has never been run against a published
 artifact, because none exists.
+
+---
+
+## 8. The path to the first release
+
+Nothing has ever been released. This section is what would have to be true
+first, separated into what already is and what is not, because "nearly ready"
+is not a state anybody can act on.
+
+### What is already true, with the evidence
+
+| Requirement | Evidence |
+| --- | --- |
+| Three architectures build reproducibly | `check-reproducible` in CI on every change: two builds, byte-identical |
+| The artifact set can be checked rather than trusted | `verify-artifacts.sh`, 33 checks, plus a 19-scenario self-test that each refusal is caught by the check aimed at it |
+| Every binary actually runs | `release-prepare.yml` executes all three under `qemu-user-static` |
+| An SBOM and a machine-readable manifest exist | SPDX 2.3 and `artifacts.json`, both produced by the build and checked by the verifier |
+| The agent installs, starts, connects and collects | The installation matrix: real systemd as pid 1, real TLS with a real internal CA, 61 assertions, on Debian 13, Ubuntu 24.04 and Fedora 42 in CI |
+| It uninstalls and upgrades, and rolls back a failed upgrade | Same matrix; the rollback stage asserts on the specific message, which is how a vacuous pass was found |
+| The controller deploys from one command | `deployment-e2e.sh`, 44 assertions against real Docker Compose in CI: build, start, migrate, bootstrap, sign in, serve the client, restart, survive |
+| A backup can be restored | Same scenario, including a restore into a populated database |
+| The deployment degrades honestly without a release | `/api/v1/agent-releases` returns `available: false` with a reason, and the interface shows how to build from source rather than a download that would 404 |
+| It has been reviewed as an attacker would | [`docs/security/2026-10-14-installation-platform-review.md`](security/2026-10-14-installation-platform-review.md): six findings, four fixed, two accepted with reasoning |
+
+### What is not, in the order it blocks
+
+1. **`release-prepare.yml` has never run on a tag.** Its `attest` job is gated
+   on `github.ref_type == 'tag'`, so the Sigstore path — the one step that
+   needs `id-token: write` — is entirely unexercised. Everything before it runs
+   on every change; this does not. **First action for a human:** push a
+   throwaway pre-release tag, read the run, delete the tag. Until then, no
+   claim should be made about attestation working.
+2. **No image is published**, so `compose.yaml`'s `image:` names a tag that
+   does not exist and the documented default is the build overlay. Publishing
+   it is a registry push, and a push is irreversible in the sense that matters:
+   somebody can pull it.
+3. **No release manifest is shipped**, because a manifest can only name real
+   URLs and digests. `scripts/build-release-manifest.py` produces it from a
+   built artifact set; it has to run *after* step 1 and ship in the image from
+   step 2, which is the one ordering constraint in this list.
+4. **`gh attestation verify` has never verified anything**, which follows from
+   step 1 and is worth stating separately because §7 tells a user to run it.
+5. **No version-to-version upgrade has happened**, because there is only one
+   version. The *mechanism* is verified — migrations on start, a second start
+   being a no-op, data surviving a restart — but an actual 0.1.0 → 0.1.1 has
+   not been performed, and it is the thing most likely to break first.
+6. **No ARM hardware has run the agent.** `arm64` is labelled `supported` on
+   the strength of emulation, which §6 says plainly. An alpha can ship with
+   that label; it should not ship with a stronger one.
+
+### What an alpha would honestly be
+
+Everything above says the same thing: the machinery is built and exercised, and
+the act of publishing has deliberately never been performed. That makes the
+first release a *procedural* step rather than an engineering one — which is the
+position worth being in, and is not the same as being finished.
+
+The honest framing for `v0.1.0-alpha.1`: a control plane and agent that install
+and run on three distributions, with a verifiable artifact set, no published
+precedent for the upgrade path, and amd64 as the only architecture anybody has
+run on real hardware.
