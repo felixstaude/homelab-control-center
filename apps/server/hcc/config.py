@@ -319,6 +319,32 @@ class Settings(BaseSettings):
     # one, which is why absence and breakage are different states here.
     agent_release_manifest: Path | None = None
 
+    # Publisher keys whose signatures over the release manifest this
+    # controller will accept, base64 raw Ed25519.
+    #
+    # Set as a JSON array, matching `HCC_CORS_ORIGINS` — pydantic-settings
+    # treats a tuple field as complex and JSON-parses it from the
+    # environment, so `HCC_RELEASE_SIGNING_KEYS=["AAAA…"]`. Comma-splitting
+    # would need a custom parser and a second convention for list settings in
+    # one file.
+    #
+    # **A public key is configuration, not a secret.** It is safe in
+    # `docker inspect`, in a committed `.env.example` and in a support ticket —
+    # the whole point of the scheme is that knowing it lets you *verify* and
+    # not sign. So it is an ordinary setting rather than a file like the
+    # database password, and the deployment documentation can print it.
+    #
+    # Empty by default, which means the controller reports the manifest's
+    # signature as `untrusted_key` rather than `valid`. That is honest: this
+    # build has no key stamped in because nothing has been published or
+    # signed. The *agent* carries its own copy and is the party whose
+    # verification is load-bearing; this one exists so the interface can tell
+    # an administrator whether the metadata it is serving is authentic.
+    #
+    # A list rather than one value, so a key can be rotated by trusting both
+    # for a window rather than by a flag day across a fleet.
+    release_signing_keys: tuple[str, ...] = ()
+
     # How long a recorded connection may go without a heartbeat before the
     # interface reports it as stale rather than connected. Three heartbeat
     # intervals, so one dropped heartbeat does not flap the status while a

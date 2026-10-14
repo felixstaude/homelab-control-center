@@ -264,6 +264,15 @@ export type AuditEvent = {
   outcome: string;
   actor: AuditActor | null;
   target: AuditActor | null;
+  /**
+   * The host the action was about, or `null`.
+   *
+   * Separate from `target`, which is an *account*: an event can have one, the
+   * other or neither. Collapsing them would mean rendering a host id in a
+   * field labelled as a username — and update actions are host-targeted,
+   * which makes this the field somebody reading the trail most needs.
+   */
+  target_host_id: string | null;
   request_id: string | null;
   details: Record<string, unknown> | null;
 };

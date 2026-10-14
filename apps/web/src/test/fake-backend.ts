@@ -110,6 +110,9 @@ export function makeAuditEvent(overrides: Partial<AuditEvent> = {}): AuditEvent 
       username: 'someone',
       display_name: null,
     },
+    // Null by default: the default event is `user.created`, which has an
+    // account target and no host. A host-targeted event overrides it.
+    target_host_id: null,
     request_id: 'test-request',
     details: { role: 'viewer' },
     ...overrides,

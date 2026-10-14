@@ -274,6 +274,18 @@
               }
             ],
             "description": "Which account it acted on, or null where the action has no target."
+          },
+          "target_host_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Which host it acted on, or null. Separate from `target`, which is an account: an event can have one, the other or neither, and collapsing them would mean rendering a host id in a field labelled as a username.",
+            "title": "Target Host Id"
           }
         },
         "required": [
@@ -328,6 +340,48 @@
           "limit"
         ],
         "title": "AuditListResponse",
+        "type": "object"
+      },
+      "BlockerResponse": {
+        "description": "One reason a release cannot be installed on a host.",
+        "properties": {
+          "code": {
+            "description": "protocol_mismatch | protocol_undeclared | controller_too_old | schema_too_old | platform_unavailable | channel_not_permitted | downgrade_not_authorized",
+            "title": "Code",
+            "type": "string"
+          },
+          "detail": {
+            "description": "A sentence naming what is wrong and often what to do.",
+            "title": "Detail",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "detail"
+        ],
+        "title": "BlockerResponse",
+        "type": "object"
+      },
+      "CancelUpdateRequest": {
+        "additionalProperties": false,
+        "description": "Stop an update that has not got too far.",
+        "properties": {
+          "reason": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "For the history.",
+            "title": "Reason"
+          }
+        },
+        "title": "CancelUpdateRequest",
         "type": "object"
       },
       "ConfigSyncResponse": {
@@ -711,6 +765,127 @@
           "error"
         ],
         "title": "ErrorResponse",
+        "type": "object"
+      },
+      "FleetOverviewResponse": {
+        "description": "The dashboard's numbers.",
+        "properties": {
+          "blocked": {
+            "description": "A newer release exists and something stops it. Still an update.",
+            "title": "Blocked",
+            "type": "integer"
+          },
+          "channels": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Channels",
+            "type": "array"
+          },
+          "controller_schema_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Controller Schema Revision"
+          },
+          "controller_version": {
+            "title": "Controller Version",
+            "type": "string"
+          },
+          "failed_recently": {
+            "title": "Failed Recently",
+            "type": "integer"
+          },
+          "hosts_with_automatic_updates": {
+            "title": "Hosts With Automatic Updates",
+            "type": "integer"
+          },
+          "metadata_available": {
+            "description": "Whether release metadata is configured. Not the same as 'no updates'.",
+            "title": "Metadata Available",
+            "type": "boolean"
+          },
+          "metadata_detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metadata Detail"
+          },
+          "metadata_signature": {
+            "description": "valid | absent | untrusted_key | invalid | malformed | unsupported_algorithm. An automatic update needs 'valid'.",
+            "title": "Metadata Signature",
+            "type": "string"
+          },
+          "metadata_signature_detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metadata Signature Detail"
+          },
+          "needs_attention": {
+            "description": "Unsupported or unreadable versions \u2014 hosts somebody has to look at.",
+            "title": "Needs Attention",
+            "type": "integer"
+          },
+          "open_jobs": {
+            "title": "Open Jobs",
+            "type": "integer"
+          },
+          "total_hosts": {
+            "title": "Total Hosts",
+            "type": "integer"
+          },
+          "up_to_date": {
+            "title": "Up To Date",
+            "type": "integer"
+          },
+          "update_available": {
+            "title": "Update Available",
+            "type": "integer"
+          },
+          "version_distribution": {
+            "description": "Newest first. Unparseable versions last and visible rather than hidden.",
+            "items": {
+              "$ref": "#/components/schemas/VersionCountResponse"
+            },
+            "title": "Version Distribution",
+            "type": "array"
+          }
+        },
+        "required": [
+          "total_hosts",
+          "up_to_date",
+          "update_available",
+          "blocked",
+          "needs_attention",
+          "version_distribution",
+          "hosts_with_automatic_updates",
+          "open_jobs",
+          "failed_recently",
+          "controller_version",
+          "controller_schema_revision",
+          "metadata_available",
+          "metadata_detail",
+          "metadata_signature",
+          "metadata_signature_detail",
+          "channels"
+        ],
+        "title": "FleetOverviewResponse",
         "type": "object"
       },
       "GlobalDefaultResponse": {
@@ -1178,6 +1353,104 @@
         "title": "HostUpdateRequest",
         "type": "object"
       },
+      "HostUpdateStatusResponse": {
+        "description": "Everything the interface shows for one host.",
+        "properties": {
+          "automatic": {
+            "description": "Whether this host installs anything by itself.",
+            "title": "Automatic",
+            "type": "boolean"
+          },
+          "channel": {
+            "title": "Channel",
+            "type": "string"
+          },
+          "host_id": {
+            "format": "uuid",
+            "title": "Host Id",
+            "type": "string"
+          },
+          "host_name": {
+            "title": "Host Name",
+            "type": "string"
+          },
+          "installed_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Installed Version"
+          },
+          "last_job": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UpdateJobResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "maintenance_window": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MaintenanceWindowResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "open_job": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UpdateJobResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pinned_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pinned Version"
+          },
+          "plan": {
+            "$ref": "#/components/schemas/UpdatePlanResponse"
+          },
+          "policy": {
+            "description": "manual | notify | patch | minor | pinned",
+            "title": "Policy",
+            "type": "string"
+          }
+        },
+        "required": [
+          "host_id",
+          "host_name",
+          "installed_version",
+          "plan",
+          "policy",
+          "automatic",
+          "channel",
+          "pinned_version",
+          "maintenance_window",
+          "open_job",
+          "last_job"
+        ],
+        "title": "HostUpdateStatusResponse",
+        "type": "object"
+      },
       "LatestResponse": {
         "description": "A host's current values.\n\nEmpty when the host has produced nothing recent \u2014 not a list of zeroes.\nThe interface renders \"no data\", which is the honest answer and is\ndistinguishable from a measurement of zero.",
         "properties": {
@@ -1276,6 +1549,86 @@
           }
         },
         "title": "LogoutResponse",
+        "type": "object"
+      },
+      "MaintenanceWindowRequest": {
+        "additionalProperties": false,
+        "description": "When this host may be interrupted.",
+        "properties": {
+          "end": {
+            "description": "Local wall-clock HH:MM. Equal to start means all day.",
+            "title": "End",
+            "type": "string"
+          },
+          "start": {
+            "description": "Local wall-clock HH:MM.",
+            "title": "Start",
+            "type": "string"
+          },
+          "timezone": {
+            "description": "IANA zone name, e.g. Europe/Berlin. Required: 02:00 means 02:00 somewhere.",
+            "maxLength": 64,
+            "title": "Timezone",
+            "type": "string"
+          },
+          "weekdays": {
+            "description": "0 = Sunday \u2026 6 = Saturday. Empty means every day.",
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 7,
+            "title": "Weekdays",
+            "type": "array"
+          }
+        },
+        "required": [
+          "timezone",
+          "start",
+          "end"
+        ],
+        "title": "MaintenanceWindowRequest",
+        "type": "object"
+      },
+      "MaintenanceWindowResponse": {
+        "description": "When a host is willing to be interrupted.",
+        "properties": {
+          "description": {
+            "description": "One line for display, naming the zone.",
+            "title": "Description",
+            "type": "string"
+          },
+          "end": {
+            "description": "Local wall-clock HH:MM. Equal to start means all day.",
+            "title": "End",
+            "type": "string"
+          },
+          "start": {
+            "description": "Local wall-clock HH:MM.",
+            "title": "Start",
+            "type": "string"
+          },
+          "timezone": {
+            "description": "IANA zone name. Always present, never implied.",
+            "title": "Timezone",
+            "type": "string"
+          },
+          "weekdays": {
+            "description": "0 = Sunday \u2026 6 = Saturday. Empty means every day.",
+            "items": {
+              "type": "integer"
+            },
+            "title": "Weekdays",
+            "type": "array"
+          }
+        },
+        "required": [
+          "timezone",
+          "weekdays",
+          "start",
+          "end",
+          "description"
+        ],
+        "title": "MaintenanceWindowResponse",
         "type": "object"
       },
       "MetricResponse": {
@@ -2142,6 +2495,33 @@
         "title": "SetupStatus",
         "type": "object"
       },
+      "StartUpdateRequest": {
+        "additionalProperties": false,
+        "description": "Install a release on one host.",
+        "properties": {
+          "allow_downgrade": {
+            "default": false,
+            "description": "Authorize going backwards. Audited separately from an ordinary upgrade, because 'when did we last roll a host back' is a question somebody asks.",
+            "title": "Allow Downgrade",
+            "type": "boolean"
+          },
+          "target_version": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What to install. Null means whatever the plan recommends, which is the normal case; naming a version installs something other than the newest and is still checked against compatibility.",
+            "title": "Target Version"
+          }
+        },
+        "title": "StartUpdateRequest",
+        "type": "object"
+      },
       "StoredSettingResponse": {
         "description": "One layer's stored opinion. ``null`` means that layer inherits.",
         "properties": {
@@ -2176,6 +2556,357 @@
           "schedule"
         ],
         "title": "StoredSettingResponse",
+        "type": "object"
+      },
+      "UpdateEventResponse": {
+        "description": "One state transition.",
+        "properties": {
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "sequence": {
+            "description": "The log's own ordering. Not a timestamp: several transitions can share one, because PostgreSQL's now() is the transaction time.",
+            "title": "Sequence",
+            "type": "integer"
+          },
+          "source": {
+            "description": "controller | agent",
+            "title": "Source",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sequence",
+          "state",
+          "detail",
+          "source",
+          "created_at"
+        ],
+        "title": "UpdateEventResponse",
+        "type": "object"
+      },
+      "UpdateHistoryResponse": {
+        "description": "A page of update attempts, newest first.",
+        "properties": {
+          "jobs": {
+            "items": {
+              "$ref": "#/components/schemas/UpdateJobResponse"
+            },
+            "title": "Jobs",
+            "type": "array"
+          },
+          "next_before": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Pass as `before` for the next page, or null at the end. Keyset rather than an offset: a fleet's history grows without bound.",
+            "title": "Next Before"
+          }
+        },
+        "required": [
+          "jobs"
+        ],
+        "title": "UpdateHistoryResponse",
+        "type": "object"
+      },
+      "UpdateJobResponse": {
+        "description": "One update attempt.",
+        "properties": {
+          "attempt": {
+            "title": "Attempt",
+            "type": "integer"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why it failed. Never a stack trace.",
+            "title": "Error"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "from_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "From Version"
+          },
+          "host_id": {
+            "format": "uuid",
+            "title": "Host Id",
+            "type": "string"
+          },
+          "job_id": {
+            "format": "uuid",
+            "title": "Job Id",
+            "type": "string"
+          },
+          "requested_by_user_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null for a policy or rollout decision.",
+            "title": "Requested By User Id"
+          },
+          "resulting_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the host reported after the attempt. Can differ from `to_version`, and the difference is the interesting case.",
+            "title": "Resulting Version"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "state": {
+            "description": "See the update state machine.",
+            "title": "State",
+            "type": "string"
+          },
+          "to_version": {
+            "title": "To Version",
+            "type": "string"
+          },
+          "trigger": {
+            "description": "manual | policy | rollout",
+            "title": "Trigger",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id",
+          "host_id",
+          "state",
+          "trigger",
+          "from_version",
+          "to_version",
+          "attempt",
+          "created_at",
+          "started_at",
+          "finished_at"
+        ],
+        "title": "UpdateJobResponse",
+        "type": "object"
+      },
+      "UpdatePlanResponse": {
+        "description": "What should happen to one host, and why not.",
+        "properties": {
+          "blockers": {
+            "items": {
+              "$ref": "#/components/schemas/BlockerResponse"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A sentence, when the outcome needs one.",
+            "title": "Detail"
+          },
+          "download_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where the target's archive for this host's architecture is published. Public release metadata, not a credentialled URL.",
+            "title": "Download Url"
+          },
+          "expected_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The target archive's digest, from the release metadata.",
+            "title": "Expected Sha256"
+          },
+          "installed_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the host reports running, when it is parseable.",
+            "title": "Installed Version"
+          },
+          "outcome": {
+            "description": "up_to_date | update_available | update_available_incompatible | downgrade | pinned | unknown_version | unsupported | metadata_unavailable",
+            "title": "Outcome",
+            "type": "string"
+          },
+          "step": {
+            "description": "major | minor | patch | prerelease | none",
+            "title": "Step",
+            "type": "string"
+          },
+          "target_channel": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The channel the target is in.",
+            "title": "Target Channel"
+          },
+          "target_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What it would move to. Null when there is nothing.",
+            "title": "Target Version"
+          }
+        },
+        "required": [
+          "outcome",
+          "step"
+        ],
+        "title": "UpdatePlanResponse",
+        "type": "object"
+      },
+      "UpdatePolicyRequest": {
+        "additionalProperties": false,
+        "description": "What a host is allowed to do by itself.",
+        "properties": {
+          "channel": {
+            "default": "stable",
+            "description": "The most instability this host accepts.",
+            "enum": [
+              "stable",
+              "beta",
+              "alpha"
+            ],
+            "title": "Channel",
+            "type": "string"
+          },
+          "maintenance_window": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MaintenanceWindowRequest"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null means any time."
+          },
+          "pinned_version": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Required with the `pinned` policy, and forbidden without it.",
+            "title": "Pinned Version"
+          },
+          "policy": {
+            "description": "manual: nothing automatic. notify: surfaced, not installed. patch/minor: install compatible releases of that size. pinned: hold at `pinned_version`. There is deliberately no 'major'.",
+            "enum": [
+              "manual",
+              "notify",
+              "patch",
+              "minor",
+              "pinned"
+            ],
+            "title": "Policy",
+            "type": "string"
+          }
+        },
+        "required": [
+          "policy"
+        ],
+        "title": "UpdatePolicyRequest",
         "type": "object"
       },
       "UserCreateRequest": {
@@ -2380,6 +3111,25 @@
           }
         },
         "title": "UserUpdateRequest",
+        "type": "object"
+      },
+      "VersionCountResponse": {
+        "description": "How many hosts report one version.",
+        "properties": {
+          "hosts": {
+            "title": "Hosts",
+            "type": "integer"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "hosts"
+        ],
+        "title": "VersionCountResponse",
         "type": "object"
       },
       "hcc__api__v1__account__SessionRevocationResponse": {
@@ -4429,6 +5179,185 @@
         ]
       }
     },
+    "/api/v1/hosts/{host_id}/update-policy": {
+      "put": {
+        "description": "Change what this host may do by itself. Audited.\n\nThe audit row records whether the result is automatic, because the moment\na host starts updating itself is the fact somebody will want to find.",
+        "operationId": "set_update_policy_api_v1_hosts__host_id__update_policy_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "host_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Host Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdatePolicyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostUpdateStatusResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "Set a host's update policy",
+        "tags": [
+          "updates"
+        ]
+      }
+    },
+    "/api/v1/hosts/{host_id}/updates": {
+      "get": {
+        "operationId": "host_update_status_api_v1_hosts__host_id__updates_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "host_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Host Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostUpdateStatusResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "One host's update status",
+        "tags": [
+          "updates"
+        ]
+      },
+      "post": {
+        "description": "Queue an update. Administrator only, and audited.\n\nThe host is notified on its next heartbeat and asks for the instruction;\nnothing is pushed to a host that cannot receive it.",
+        "operationId": "start_update_api_v1_hosts__host_id__updates_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "host_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Host Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpdateJobResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "Start an update on one host",
+        "tags": [
+          "updates"
+        ]
+      }
+    },
     "/api/v1/info": {
       "get": {
         "description": "Return metadata about the running control plane.\n\nAuthenticated, not public. The release version and environment name are of\nno use to a legitimate anonymous caller and of obvious use to someone\nmatching the deployment against known vulnerabilities.",
@@ -4666,6 +5595,355 @@
         "summary": "Whether first-run setup is complete",
         "tags": [
           "setup"
+        ]
+      }
+    },
+    "/api/v1/updates/expire": {
+      "post": {
+        "description": "Fail updates whose instruction expired without finishing.\n\nExposed because the scheduler is not implemented yet and an administrator\nneeds a way to clear a host whose agent never came back \u2014 stated rather\nthan implied, so nobody mistakes this endpoint for the mechanism. When the\nreconciliation loop lands this becomes a manual nudge rather than the only\npath.",
+        "operationId": "expire_stale_updates_api_v1_updates_expire_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/UpdateJobResponse"
+                  },
+                  "title": "Response Expire Stale Updates Api V1 Updates Expire Post",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "Expire stale update instructions",
+        "tags": [
+          "updates"
+        ]
+      }
+    },
+    "/api/v1/updates/history": {
+      "get": {
+        "description": "Finished and in-flight attempts, newest first.",
+        "operationId": "update_history_api_v1_updates_history_get",
+        "parameters": [
+          {
+            "description": "One host, or the fleet.",
+            "in": "query",
+            "name": "host_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "One host, or the fleet.",
+              "title": "Host Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "An ISO-8601 instant from a previous page.",
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "An ISO-8601 instant from a previous page.",
+              "title": "Before"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpdateHistoryResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "Update history",
+        "tags": [
+          "updates"
+        ]
+      }
+    },
+    "/api/v1/updates/hosts": {
+      "get": {
+        "description": "Every host's update situation, for the table.\n\nNot paginated, deliberately: the fleet is bounded at 500 connections by\n``MAX_CONNECTIONS`` and this is one row per host with no joins per row.\nPaginating it would add a cursor to a page that wants to be sorted and\nfiltered in the browser.",
+        "operationId": "host_update_statuses_api_v1_updates_hosts_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/HostUpdateStatusResponse"
+                  },
+                  "title": "Response Host Update Statuses Api V1 Updates Hosts Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "Per-host update status",
+        "tags": [
+          "updates"
+        ]
+      }
+    },
+    "/api/v1/updates/jobs/{job_id}/cancel": {
+      "post": {
+        "description": "Stop an update that has not got too far.\n\nRefused from ``installing`` onwards: the binary is being replaced on a\nmachine the controller cannot reach into, so cancelling would be a promise\nit cannot keep. The agent's own rollback is what recovers from there, and\nthe refusal says so.",
+        "operationId": "cancel_update_api_v1_updates_jobs__job_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpdateJobResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "Cancel an update",
+        "tags": [
+          "updates"
+        ]
+      }
+    },
+    "/api/v1/updates/jobs/{job_id}/events": {
+      "get": {
+        "description": "How an update got where it did, oldest first.\n\n\"It reached staged and then failed\" and \"it never got past queued\" are\ndifferent problems with the same final state, and this is where that\ndifference lives.",
+        "operationId": "update_events_api_v1_updates_jobs__job_id__events_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/UpdateEventResponse"
+                  },
+                  "title": "Response Update Events Api V1 Updates Jobs  Job Id  Events Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "One update's transitions",
+        "tags": [
+          "updates"
+        ]
+      }
+    },
+    "/api/v1/updates/overview": {
+      "get": {
+        "description": "What the fleet is running, and what is available.\n\nAvailable to every authenticated role: a viewer who cannot see that the\nfleet is two versions behind cannot do their job.",
+        "operationId": "fleet_overview_api_v1_updates_overview_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FleetOverviewResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "Fleet update status",
+        "tags": [
+          "updates"
         ]
       }
     },
