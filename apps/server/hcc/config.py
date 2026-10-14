@@ -420,6 +420,34 @@ class Settings(BaseSettings):
         description="How often partition maintenance, rollups and retention run. 0 disables.",
     )
 
+    # --- Automatic update policies ----------------------------------------
+    # How often every host's automatic update policy is evaluated.
+    #
+    # Five minutes, the same cadence as metric maintenance and for a similar
+    # reason: the thing being watched changes on the order of minutes — a new
+    # manifest after a controller upgrade, a maintenance window opening — and
+    # a tighter interval would walk the fleet for nothing.
+    #
+    # The interval is also the **precision of a maintenance window**. A window
+    # of 02:00 to 04:00 evaluated every five minutes starts an update within
+    # minutes of 02:00, which is what somebody who wrote "02:00" meant. A
+    # window shorter than this interval might be missed entirely, which is why
+    # the interface's hint recommends at least an hour.
+    #
+    # Zero disables it, and then an automatic policy does nothing: no host
+    # updates itself, whatever its policy says. The startup log says so when
+    # it is off, because a deployment where automatic updates are configured
+    # and silently never happen is the worst available state.
+    update_policy_interval_seconds: int = Field(
+        default=300,
+        ge=0,
+        le=86400,
+        description=(
+            "How often automatic update policies are evaluated and expired "
+            "instructions are swept. 0 disables automatic updates entirely."
+        ),
+    )
+
     # --- Security headers -------------------------------------------------
     # A strict Content-Security-Policy breaks the Vite dev server, which needs
     # inline scripts and a websocket for hot reload. Enabled in production,

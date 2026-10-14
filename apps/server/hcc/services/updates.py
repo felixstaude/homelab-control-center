@@ -76,10 +76,13 @@ from hcc.models.updates import (
 from hcc.services.hosts import HOST_LOCK_CLASS, HostNotFoundError
 from hcc.updates.compat import Outcome, plan_update, version_distribution
 from hcc.updates.policy import (
+    ALWAYS,
     DEFAULT_POLICY,
+    Action,
     MaintenanceWindow,
     Policy,
     WindowError,
+    decide,
 )
 from hcc.updates.version import try_parse
 
@@ -118,6 +121,40 @@ MAX_HISTORY_LIMIT: Final = 200
 #: update is not limited: an administrator retrying is a human who has decided
 #: to, and the limit exists to bound *automation*, not people.
 MAX_POLICY_ATTEMPTS: Final = 3
+
+
+@dataclass(frozen=True, slots=True)
+class PolicyPassResult:
+    """What one pass of the automatic-policy evaluator did.
+
+    Returned rather than only logged, so a test can assert on the decisions
+    and so the loop in `hcc/app.py` has something to put in one log line
+    instead of one per host. A fleet of ninety hosts where nothing is due
+    should produce one quiet line, not ninety.
+    """
+
+    #: Hosts with an automatic policy that were evaluated.
+    considered: int
+    #: The jobs this pass created.
+    started: list[UpdateJob]
+    #: Hosts with an update due and outside their maintenance window.
+    deferred: int
+    #: Hosts with something an administrator should see and no action to take.
+    notified: int
+    #: Hosts skipped because an update was already in flight.
+    skipped_open: int
+    #: Hosts skipped because this version has already failed too often.
+    exhausted: int
+    #: Hosts where starting raised. Counted rather than fatal: one host must
+    #: not stop the pass.
+    failed_to_start: int
+    #: Jobs whose instruction had expired, failed by this pass.
+    expired: list[UpdateJob]
+
+    @property
+    def did_something(self) -> bool:
+        """Whether this pass is worth a log line above debug."""
+        return bool(self.started or self.expired or self.failed_to_start or self.exhausted)
 
 
 class UpdateServiceError(Exception):
@@ -927,6 +964,210 @@ class UpdateService:
         return job
 
     # --- Housekeeping -----------------------------------------------------
+
+    async def run_policy_pass(
+        self,
+        db: AsyncSession,
+        *,
+        manifest: ReleaseManifest | None,
+        applied_schema_revisions: frozenset[str] = frozenset(),
+        metadata_authentic: bool = False,
+        now: datetime | None = None,
+    ) -> PolicyPassResult:
+        """Evaluate every host's automatic policy once, and act on it.
+
+        This is what makes an automatic policy automatic. Without it the
+        policy table and :func:`hcc.updates.policy.decide` are a decision
+        nothing asks for — which is exactly what they were until this existed,
+        and an administrator who set a host to "automatic patch" would have
+        watched nothing happen.
+
+        ## What it does, in order
+
+        1. **Expires stale instructions.** First, because an expired job holds
+           the host's one open slot and nothing else can start until it is
+           cleared. A pass that evaluated policies before expiring would skip
+           every host whose previous attempt had timed out.
+        2. **Walks enabled hosts** and their policies, one query.
+        3. **Skips a host with an open job.** The schema enforces one open job
+           per host, so starting another would be an `IntegrityError` rather
+           than a decision — and a host already installing something does not
+           need a second opinion.
+        4. **Skips a host that has exhausted its attempts.** See
+           :data:`MAX_POLICY_ATTEMPTS`.
+        5. **Asks `decide`**, which is where the policy's step limit and the
+           maintenance window live, and starts an update when it says to.
+
+        ## Why failures do not stop the pass
+
+        One host whose update cannot be started must not prevent the other
+        ninety-nine from being considered. Each start is attempted
+        independently and its failure is counted and logged; the pass's result
+        says how many.
+
+        ## Why there is no clock of its own
+
+        `now` is a parameter, so a test can put a host inside and outside its
+        maintenance window without waiting for Sunday. The caller in
+        `hcc/app.py` passes nothing and gets the real clock.
+        """
+        moment = now or datetime.now(UTC)
+        expired = await self.expire_stale(db, now=moment)
+        if expired:
+            # Committed before the policy walk, so the slots those jobs held
+            # are actually free for the decisions below. Without this the
+            # expiry and the start would be in one transaction and the
+            # `open_job` query would still see the expired job as open.
+            await db.commit()
+
+        rows = (
+            await db.execute(
+                select(Host, HostUpdatePolicy)
+                .outerjoin(HostUpdatePolicy, HostUpdatePolicy.host_id == Host.id)
+                .where(Host.is_enabled.is_(True))
+            )
+        ).all()
+
+        considered = 0
+        started: list[UpdateJob] = []
+        deferred = 0
+        notified = 0
+        skipped_open = 0
+        exhausted = 0
+        failed_to_start = 0
+
+        for host, policy_row in rows:
+            policy, channel, pin, window = self.resolve_policy(policy_row)
+            if not policy.is_automatic:
+                # Manual, notify-only and pinned hosts are not this pass's
+                # business. `decide` would tell us the same thing; not asking
+                # saves a plan per host on a fleet that is mostly manual,
+                # which is the common configuration.
+                continue
+            considered += 1
+
+            plan = plan_update(
+                manifest,
+                installed_version=host.agent_version,
+                host_platform=host.platform or "",
+                channel=channel,
+                pinned_version=pin,
+                controller_version=self._controller_version,
+                supported_protocol_versions=self._supported_protocol_versions,
+                applied_schema_revisions=applied_schema_revisions,
+                automatic=True,
+                metadata_authentic=metadata_authentic,
+            )
+            decision = decide(plan, policy=policy, window=window or ALWAYS, now=moment)
+
+            if decision.action is Action.NOTHING:
+                continue
+            if decision.action is Action.NOTIFY:
+                notified += 1
+                continue
+            if decision.action is Action.DEFER:
+                # Counted, not recorded. A row per deferred host per pass would
+                # be a table that grows with the product of the fleet size and
+                # the interval, to say "still waiting for Sunday" — and the
+                # interface already derives that from the policy and the
+                # window.
+                deferred += 1
+                continue
+
+            if await self.open_job(db, host.id) is not None:
+                skipped_open += 1
+                continue
+
+            attempts = await self._policy_attempts(db, host.id, plan.target)
+            if attempts >= MAX_POLICY_ATTEMPTS:
+                exhausted += 1
+                logger.info(
+                    "update_policy_attempts_exhausted",
+                    host_id=str(host.id),
+                    to_version=str(plan.target),
+                    attempts=attempts,
+                    limit=MAX_POLICY_ATTEMPTS,
+                )
+                continue
+
+            try:
+                job = await self.start_update(
+                    db,
+                    host.id,
+                    manifest=manifest,
+                    applied_schema_revisions=applied_schema_revisions,
+                    metadata_authentic=metadata_authentic,
+                    trigger=UpdateTrigger.POLICY,
+                    now=moment,
+                )
+            except (UpdateServiceError, IntegrityError):
+                # Logged with its traceback and counted. A host whose update
+                # cannot be started must not stop the other ninety-nine from
+                # being considered, and the two realistic causes — a race with
+                # an administrator starting one by hand, and a plan that
+                # became unactionable between the decision and the start — are
+                # both transient.
+                await db.rollback()
+                failed_to_start += 1
+                logger.exception("update_policy_start_failed", host_id=str(host.id))
+                continue
+
+            await db.commit()
+            started.append(job)
+            logger.info(
+                "update_started_by_policy",
+                host_id=str(host.id),
+                job_id=str(job.id),
+                policy=policy.value,
+                from_version=job.from_version,
+                to_version=job.to_version,
+                reason=decision.reason,
+            )
+
+        return PolicyPassResult(
+            considered=considered,
+            started=started,
+            deferred=deferred,
+            notified=notified,
+            skipped_open=skipped_open,
+            exhausted=exhausted,
+            failed_to_start=failed_to_start,
+            expired=expired,
+        )
+
+    async def _policy_attempts(
+        self, db: AsyncSession, host_id: uuid.UUID, target: object | None
+    ) -> int:
+        """How many times a policy has already tried this version and failed.
+
+        Counted per *target version*, not per host: a new release is a new
+        chance, and a host that gave up on 0.2.0 should still take 0.2.1. The
+        alternative — a per-host counter — would mean one bad release poisoned
+        a host until somebody reset something.
+
+        Manual attempts are not counted. An administrator retrying is a human
+        who has decided to, and :data:`MAX_POLICY_ATTEMPTS` exists to bound
+        automation rather than people.
+        """
+        if target is None:
+            return 0
+        return (
+            await db.execute(
+                select(func.count())
+                .select_from(UpdateJob)
+                .where(
+                    UpdateJob.host_id == host_id,
+                    UpdateJob.to_version == str(target),
+                    UpdateJob.trigger == UpdateTrigger.POLICY.value,
+                    UpdateJob.state.in_(
+                        [
+                            UpdateState.FAILED.value,
+                            UpdateState.ROLLED_BACK.value,
+                        ]
+                    ),
+                )
+            )
+        ).scalar_one()
 
     async def expire_stale(
         self, db: AsyncSession, *, now: datetime | None = None

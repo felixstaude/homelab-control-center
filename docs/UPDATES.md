@@ -14,10 +14,17 @@ refuses to do, and what to look at when an update does not happen.
 > which this controller replaces itself, by design — see
 > [Updating the controller](#updating-the-controller).
 >
-> **Scheduled rollouts are not implemented.** The database carries the tables
-> and the API carries the vocabulary, but nothing yet drives a canary or a
-> batch. [What is not built](#what-is-not-built) says so explicitly rather
-> than leaving an administrator to find out.
+> **Automatic policies and maintenance windows are live.** The controller
+> evaluates every host's policy every five minutes by default, honours its
+> maintenance window, and sweeps expired instructions. Setting
+> `HCC_UPDATE_POLICY_INTERVAL_SECONDS=0` disables all of it, and the
+> controller says so at startup.
+>
+> **Staged rollouts are not implemented.** The database carries the tables and
+> the API carries the vocabulary, but nothing drives a canary or a batch: the
+> policy pass starts every eligible host in one pass.
+> [What is not built](#what-is-not-built) says so explicitly rather than
+> leaving an administrator to find out.
 
 ## Contents
 
@@ -175,6 +182,23 @@ controller's half: it decides whether to *send* an instruction. The host's
 | **Automatic minor** | also minor steps |
 | **Pinned** | holds the host at one version, whatever is published |
 
+Policies are evaluated every `HCC_UPDATE_POLICY_INTERVAL_SECONDS` (default
+300). **Setting it to 0 disables automatic updates entirely**: no host updates
+itself whatever its policy says, and expired instructions are not swept. The
+controller logs a warning at startup when it is off, because a deployment
+where automatic updates are configured and silently never happen is the worst
+available state.
+
+The interval is also the precision of a maintenance window: a window of
+02:00–04:00 starts an update within five minutes of 02:00, and a window
+shorter than the interval may be missed entirely.
+
+A policy makes at most three attempts at a given target version
+(`MAX_POLICY_ATTEMPTS`), counted **per version** so a newer release gets a
+fresh set — one bad release must not poison a host until somebody resets
+something. A manual attempt does not count: an administrator retrying is a
+human who has decided to, and the limit bounds automation rather than people.
+
 **There is deliberately no option to install major versions automatically.**
 A major version is the publisher saying something broke compatibly; a fleet
 that crossed that boundary unattended would be a fleet nobody chose to
@@ -326,10 +350,11 @@ does not reconnect within its timeout. The credential is never touched by an
 upgrade or a rollback — an update that required re-enrolment would not be an
 update path.
 
-A job that reaches `restarting` and never concludes is swept by
-`POST /api/v1/updates/expire`, which fails instructions whose expiry has
-passed. There is no scheduler calling it yet; see
-[What is not built](#what-is-not-built).
+A job that reaches a non-terminal state and never concludes is swept by the
+policy pass, which expires instructions whose expiry has passed **before** it
+evaluates anything — because an expired job holds the host's one open slot and
+nothing else can start until it is cleared. `POST /api/v1/updates/expire` does
+the same thing on demand.
 
 ## Updating the controller
 
@@ -476,17 +501,18 @@ planned either.
 
 Stated here rather than left to be discovered.
 
-- **Scheduled rollouts.** `update_rollouts` and `update_rollout_members`
-  exist in the database and the audit vocabulary has
-  `update.rollout_created` and `update.rollout_controlled`, but **nothing
-  drives a canary, a batch, a pause or a resume.** The tables are the shape
-  the scheduler will need; they are not a feature.
-- **Retry and backoff.** `MAX_POLICY_ATTEMPTS` is enforced when a policy
-  decision is made, but there is no process that re-attempts a failed update
-  later.
-- **A scheduler for anything.** `POST /api/v1/updates/expire` exists and has
-  to be called by something. Nothing calls it. A job whose instruction has
-  expired stays in flight until somebody does.
+- **Staged rollouts.** `update_rollouts` and `update_rollout_members` exist in
+  the database and the audit vocabulary has `update.rollout_created` and
+  `update.rollout_controlled`, but **nothing drives a canary, a batch, a pause
+  or a resume.** The policy pass starts every eligible host at once. The tables
+  are the shape the scheduler will need; they are not a feature.
+- **Backoff between retries.** A policy makes up to
+  `MAX_POLICY_ATTEMPTS` (three) attempts at a given target version, counted
+  per version so a newer release gets a fresh set. There is no *delay* between
+  them beyond the evaluation interval, so three failures happen within about
+  fifteen minutes rather than being spread out.
+- **Canary ordering.** The policy pass starts every eligible host in one pass.
+  It does not stage a fleet: one host, wait, then the rest.
 - **Automatic controller updates.** Not planned. See
   [Updating the controller](#updating-the-controller).
 - **Automatic database rollback.** Not implemented and not promised. A

@@ -216,6 +216,27 @@ Closed by `hcc-agent-update.path` + `hcc-agent-update.service` +
 digest**. 24 tests in `internal/install/handoff_test.go`, most of them
 refusals. [ADR-061](../ARCHITECTURE.md#adr-061-a-path-triggered-root-unit-installs-updates-because-the-agent-is-unprivileged).
 
+### Phase D (partial) — the automatic policy evaluator — complete
+
+`UpdateService.run_policy_pass` plus a task in `hcc/app.py` on
+`HCC_UPDATE_POLICY_INTERVAL_SECONDS` (default 300, 0 disables and logs a
+warning).
+
+Found by writing the documentation: `hcc/updates/policy.py` and
+`MAX_POLICY_ATTEMPTS` were a decision **nothing asked for**. An administrator
+could set a host to "automatic patch" and nothing would ever happen, with no
+error anywhere, and nothing called `expire_stale` either — so an expired job
+held its host's only slot indefinitely.
+
+The pass expires stale instructions *first*, because an expired job holds the
+slot the decision below needs. One host whose start raises does not stop the
+other ninety-nine: each is attempted independently and counted.
+
+17 tests, including both halves of the maintenance-window boundary (a Wednesday
+noon deferred, the same host at 03:00 on Sunday started) and all three
+attempt-limit cases — three failures stop it, a newer version gets a fresh set,
+and a manual attempt does not count.
+
 ### Phase M — CI — complete
 
 `update-e2e` job, 40-minute timeout, `debian:13`, failure artefacts uploaded.
@@ -247,12 +268,13 @@ release, and the fix is a monotonic version floor the agent remembers.
 Stated here and in [`UPDATES.md`](../UPDATES.md#what-is-not-built) so nobody
 has to discover them.
 
-**Phase D — the durable rollout scheduler.** `update_rollouts` and
-`update_rollout_members` exist, the audit vocabulary has
-`update.rollout_created` and `update.rollout_controlled`, and **nothing drives
-a canary, a batch, a pause or a resume.** The tables are the shape the
-scheduler will need. Nothing calls `POST /updates/expire` either, so a job
-whose instruction expired stays in flight.
+**Phase D — staged rollouts.** `update_rollouts` and `update_rollout_members`
+exist, the audit vocabulary has `update.rollout_created` and
+`update.rollout_controlled`, and **nothing drives a canary, a batch, a pause
+or a resume.** The tables are the shape the scheduler will need.
+
+The *policy evaluator* — which is what makes "automatic patch" automatic — is
+built (see Phase D-partial below) and starts every eligible host in one pass.
 
 **Phase H — the assisted controller upgrade.** The Updates page shows the
 running version and the applied schema revision; `UPDATES.md` documents the

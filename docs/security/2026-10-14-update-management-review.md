@@ -44,7 +44,7 @@ the feature.
 | 5 | The agent account can trigger a root install | — | Accepted by design, bounded |
 | 6 | An operator-configured key is added to the stamped trust store | Low | Accepted, documented |
 | 7 | The staged archive is readable by the service group | Low | Accepted |
-| 8 | No scheduler calls `/updates/expire`, so stale jobs persist | Low (availability) | Open, documented |
+| 8 | No scheduler called `/updates/expire`, so stale jobs persisted | Low (availability) | Fixed |
 
 No finding required revoking or rotating anything: no release has been
 published, no signing key exists outside a test run, and no deployment of this
@@ -305,21 +305,29 @@ installer with no login shell. Not world-readable anyway, because there is no
 reason to offer the opportunity to watch for and swap a file whose digest is
 checked.
 
-### 3.8 No scheduler calls `/updates/expire` — open
+### 3.8 No scheduler called `/updates/expire` — fixed
 
-`POST /api/v1/updates/expire` fails jobs whose instruction expiry has passed.
-Nothing calls it. A job that reaches a non-terminal state and whose host never
-comes back stays in flight, which blocks a new update on that host — the
-partial unique index enforces one open job per host.
+**What.** `POST /api/v1/updates/expire` fails jobs whose instruction expiry
+has passed, and nothing called it. A job whose host never came back stayed in
+flight and blocked every later update on that host, because the partial unique
+index enforces one open job per host.
 
-**Severity.** Availability, and recoverable by hand: an administrator can
-cancel a job up to `staged`, and an operator can call the endpoint. Documented
-in [`UPDATES.md`](../UPDATES.md#what-is-not-built) rather than left to be
-discovered.
+The same absence had a larger consequence: `hcc/updates/policy.py` and
+`MAX_POLICY_ATTEMPTS` were a decision nothing asked for. An administrator
+could set a host to "automatic patch" and nothing would ever happen, with no
+error anywhere.
 
-**Why not fixed here.** The scheduler is Phase D of the plan and is not built;
-adding a bare timer for one endpoint would be the smallest useful part of it
-and would have to be removed when the real one arrives.
+**Fix.** `UpdateService.run_policy_pass`, driven by a task in `hcc/app.py` on
+`HCC_UPDATE_POLICY_INTERVAL_SECONDS` (default 300, 0 disables). It expires
+stale instructions **first** — an expired job holds the slot the decision
+below needs — then evaluates every enabled host with an automatic policy and
+starts what `decide` permits. 17 tests, including both halves of the
+maintenance-window boundary and all three attempt-limit cases.
+
+**What it deliberately does not do.** Stage a fleet. Every eligible host is
+started in one pass; canary ordering is Phase D and is not built. On a homelab
+fleet the distinction is small, and pretending otherwise would be the worse
+error.
 
 ---
 

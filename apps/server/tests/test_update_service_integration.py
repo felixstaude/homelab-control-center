@@ -35,6 +35,7 @@ from hcc.models.updates import (
 )
 from hcc.security.audit import AuditContext, AuditService
 from hcc.services.updates import (
+    MAX_POLICY_ATTEMPTS,
     InvalidTransitionError,
     UpdateAlreadyRunningError,
     UpdateNotCancellableError,
@@ -1148,3 +1149,385 @@ class TestEventsAreNeverRewritten:
         # available, queued, downloading, verifying. An event that could be
         # rewritten is not a history.
         assert count == 4
+
+
+class TestTheAutomaticPolicyPass:
+    """The thing that makes an automatic policy automatic.
+
+    Until this existed, `hcc/updates/policy.py` was a decision nothing asked
+    for: an administrator could set a host to "automatic patch" and watch
+    nothing happen, for ever, with no error anywhere. `MAX_POLICY_ATTEMPTS`
+    was declared and unused for the same reason.
+    """
+
+    @staticmethod
+    async def _with_policy(
+        db: AsyncSession,
+        host: Host,
+        policy: Policy,
+        *,
+        window: MaintenanceWindow | None = None,
+    ) -> None:
+        await service().set_policy(
+            db,
+            host.id,
+            policy=policy,
+            channel="stable",
+            pinned_version=None,
+            window=window,
+            context=context(),
+        )
+
+    async def test_a_patch_policy_starts_a_patch_update(self, db_session: AsyncSession) -> None:
+        host = await make_host(db_session)
+        await self._with_policy(db_session, host, Policy.PATCH)
+        updates = service()
+
+        result = await updates.run_policy_pass(
+            db_session,
+            manifest=manifest_with("0.1.0", "0.1.1"),
+            metadata_authentic=True,
+            now=datetime(2026, 10, 14, 12, 0, tzinfo=UTC),
+        )
+
+        assert result.considered == 1
+        assert len(result.started) == 1
+        job = result.started[0]
+        assert job.host_id == host.id
+        assert job.to_version == "0.1.1"
+        # The trigger is what distinguishes this from a human. It is what the
+        # history renders as "Automatic policy" and what the attempt limit
+        # counts.
+        assert job.trigger == UpdateTrigger.POLICY.value
+
+    async def test_a_manual_policy_is_not_considered(self, db_session: AsyncSession) -> None:
+        host = await make_host(db_session)
+        await self._with_policy(db_session, host, Policy.MANUAL)
+
+        result = await service().run_policy_pass(
+            db_session, manifest=manifest_with("0.1.0", "0.1.1"), metadata_authentic=True
+        )
+
+        assert result.considered == 0
+        assert result.started == []
+
+    async def test_a_host_with_no_policy_row_is_not_considered(
+        self, db_session: AsyncSession
+    ) -> None:
+        # The default is manual, and "off by default" has to mean a host
+        # nobody has configured does not update itself.
+        await make_host(db_session)
+
+        result = await service().run_policy_pass(
+            db_session, manifest=manifest_with("0.1.0", "0.1.1"), metadata_authentic=True
+        )
+
+        assert result.considered == 0
+        assert result.started == []
+
+    async def test_a_notify_policy_is_counted_and_starts_nothing(
+        self, db_session: AsyncSession
+    ) -> None:
+        host = await make_host(db_session)
+        await self._with_policy(db_session, host, Policy.NOTIFY)
+
+        result = await service().run_policy_pass(
+            db_session, manifest=manifest_with("0.1.0", "0.1.1"), metadata_authentic=True
+        )
+
+        # Notify is not automatic, so the pass does not evaluate it at all —
+        # there is nothing it could do, and asking would cost a plan per host
+        # on a fleet that is mostly not automatic.
+        assert result.considered == 0
+        assert result.started == []
+
+    async def test_a_minor_step_is_refused_by_a_patch_policy(
+        self, db_session: AsyncSession
+    ) -> None:
+        host = await make_host(db_session)
+        await self._with_policy(db_session, host, Policy.PATCH)
+
+        result = await service().run_policy_pass(
+            db_session, manifest=manifest_with("0.1.0", "0.2.0"), metadata_authentic=True
+        )
+
+        assert result.considered == 1
+        assert result.started == []
+        # Surfaced rather than silent: an administrator should be able to find
+        # out that a minor update is waiting for them.
+        assert result.notified == 1
+
+    async def test_an_unauthenticated_manifest_starts_nothing(
+        self, db_session: AsyncSession
+    ) -> None:
+        # The unattended path is exactly where a signature matters most, and
+        # the pass's default is to refuse.
+        host = await make_host(db_session)
+        await self._with_policy(db_session, host, Policy.MINOR)
+
+        result = await service().run_policy_pass(
+            db_session, manifest=manifest_with("0.1.0", "0.2.0"), metadata_authentic=False
+        )
+
+        assert result.started == []
+        assert result.notified == 1
+
+    async def test_a_host_outside_its_window_is_deferred_not_started(
+        self, db_session: AsyncSession
+    ) -> None:
+        host = await make_host(db_session)
+        await self._with_policy(
+            db_session,
+            host,
+            Policy.PATCH,
+            window=MaintenanceWindow(
+                timezone="UTC", weekdays=(0,), start=time(2, 0), end=time(4, 0)
+            ),
+        )
+
+        # A Wednesday at noon: the wrong day and the wrong time.
+        result = await service().run_policy_pass(
+            db_session,
+            manifest=manifest_with("0.1.0", "0.1.1"),
+            metadata_authentic=True,
+            now=datetime(2026, 10, 14, 12, 0, tzinfo=UTC),
+        )
+
+        assert result.started == []
+        assert result.deferred == 1
+
+    async def test_the_same_host_inside_its_window_is_started(
+        self, db_session: AsyncSession
+    ) -> None:
+        # The other half of the previous test, which is what makes it a test
+        # of the window rather than of the policy.
+        host = await make_host(db_session)
+        await self._with_policy(
+            db_session,
+            host,
+            Policy.PATCH,
+            window=MaintenanceWindow(
+                timezone="UTC", weekdays=(0,), start=time(2, 0), end=time(4, 0)
+            ),
+        )
+
+        # 2026-10-18 is a Sunday; 0 is Sunday, matching cron and the server.
+        result = await service().run_policy_pass(
+            db_session,
+            manifest=manifest_with("0.1.0", "0.1.1"),
+            metadata_authentic=True,
+            now=datetime(2026, 10, 18, 3, 0, tzinfo=UTC),
+        )
+
+        assert len(result.started) == 1
+        assert result.deferred == 0
+
+    async def test_a_host_with_an_open_job_is_skipped(self, db_session: AsyncSession) -> None:
+        host = await make_host(db_session)
+        await self._with_policy(db_session, host, Policy.PATCH)
+        updates = service()
+        await updates.start_update(
+            db_session,
+            host.id,
+            manifest=manifest_with("0.1.0", "0.1.1"),
+            metadata_authentic=True,
+            trigger=UpdateTrigger.MANUAL,
+            context=context(),
+        )
+
+        result = await updates.run_policy_pass(
+            db_session, manifest=manifest_with("0.1.0", "0.1.1"), metadata_authentic=True
+        )
+
+        # The schema enforces one open job per host, so starting another would
+        # be an IntegrityError rather than a decision.
+        assert result.started == []
+        assert result.skipped_open == 1
+
+    async def test_three_failures_for_one_version_stop_the_policy_trying(
+        self, db_session: AsyncSession
+    ) -> None:
+        # An update that has failed three times is failing for a reason
+        # retrying will not fix, and a pass that kept trying would turn one
+        # bad release into a host that restarts its agent every five minutes.
+        host = await make_host(db_session)
+        await self._with_policy(db_session, host, Policy.PATCH)
+        updates = service()
+        manifest = manifest_with("0.1.0", "0.1.1")
+
+        for _ in range(MAX_POLICY_ATTEMPTS):
+            result = await updates.run_policy_pass(
+                db_session, manifest=manifest, metadata_authentic=True
+            )
+            assert len(result.started) == 1, result
+            await updates.record_result(
+                db_session,
+                host_id=host.id,
+                instruction_id=result.started[0].instruction_id,
+                state=UpdateState.FAILED,
+                resulting_version="0.1.0",
+                error="the archive did not extract",
+            )
+            await db_session.commit()
+
+        final = await updates.run_policy_pass(
+            db_session, manifest=manifest, metadata_authentic=True
+        )
+
+        assert final.started == []
+        assert final.exhausted == 1
+
+    async def test_a_newer_release_gets_a_fresh_set_of_attempts(
+        self, db_session: AsyncSession
+    ) -> None:
+        # Counted per target version, not per host. One bad release must not
+        # poison a host until somebody resets something.
+        host = await make_host(db_session)
+        await self._with_policy(db_session, host, Policy.PATCH)
+        updates = service()
+
+        for _ in range(MAX_POLICY_ATTEMPTS):
+            result = await updates.run_policy_pass(
+                db_session, manifest=manifest_with("0.1.0", "0.1.1"), metadata_authentic=True
+            )
+            await updates.record_result(
+                db_session,
+                host_id=host.id,
+                instruction_id=result.started[0].instruction_id,
+                state=UpdateState.FAILED,
+                resulting_version="0.1.0",
+                error="no",
+            )
+            await db_session.commit()
+
+        fresh = await updates.run_policy_pass(
+            db_session,
+            manifest=manifest_with("0.1.0", "0.1.1", "0.1.2"),
+            metadata_authentic=True,
+        )
+
+        assert len(fresh.started) == 1
+        assert fresh.started[0].to_version == "0.1.2"
+
+    async def test_a_manual_attempt_does_not_count_against_the_limit(
+        self, db_session: AsyncSession
+    ) -> None:
+        # An administrator retrying is a human who has decided to. The limit
+        # bounds automation, not people.
+        host = await make_host(db_session)
+        await self._with_policy(db_session, host, Policy.PATCH)
+        updates = service()
+        manifest = manifest_with("0.1.0", "0.1.1")
+
+        for _ in range(MAX_POLICY_ATTEMPTS + 1):
+            job = await updates.start_update(
+                db_session,
+                host.id,
+                manifest=manifest,
+                metadata_authentic=True,
+                trigger=UpdateTrigger.MANUAL,
+                context=context(),
+            )
+            await updates.record_result(
+                db_session,
+                host_id=host.id,
+                instruction_id=job.instruction_id,
+                state=UpdateState.FAILED,
+                resulting_version="0.1.0",
+                error="no",
+            )
+            await db_session.commit()
+
+        result = await updates.run_policy_pass(
+            db_session, manifest=manifest, metadata_authentic=True
+        )
+
+        assert len(result.started) == 1
+        assert result.exhausted == 0
+
+    async def test_the_pass_expires_a_stale_instruction_before_deciding(
+        self, db_session: AsyncSession
+    ) -> None:
+        # Order matters: an expired job holds the host's one open slot, so a
+        # pass that evaluated policies first would skip every host whose
+        # previous attempt had timed out — for ever.
+        host = await make_host(db_session)
+        await self._with_policy(db_session, host, Policy.PATCH)
+        updates = service()
+        started = datetime(2026, 10, 14, 12, 0, tzinfo=UTC)
+        await updates.start_update(
+            db_session,
+            host.id,
+            manifest=manifest_with("0.1.0", "0.1.1"),
+            metadata_authentic=True,
+            trigger=UpdateTrigger.POLICY,
+            now=started,
+        )
+        await db_session.commit()
+
+        result = await updates.run_policy_pass(
+            db_session,
+            manifest=manifest_with("0.1.0", "0.1.1"),
+            metadata_authentic=True,
+            # Well past the instruction's TTL.
+            now=started + timedelta(days=1),
+        )
+
+        assert len(result.expired) == 1
+        # And the freed slot is used in the same pass, which is the point of
+        # doing the expiry first.
+        assert len(result.started) == 1
+        assert result.skipped_open == 0
+
+    async def test_a_disabled_host_is_not_considered(self, db_session: AsyncSession) -> None:
+        host = await make_host(db_session)
+        await self._with_policy(db_session, host, Policy.PATCH)
+        host.is_enabled = False
+        await db_session.flush()
+
+        result = await service().run_policy_pass(
+            db_session, manifest=manifest_with("0.1.0", "0.1.1"), metadata_authentic=True
+        )
+
+        assert result.considered == 0
+        assert result.started == []
+
+    async def test_one_pass_handles_several_hosts(self, db_session: AsyncSession) -> None:
+        for index in range(3):
+            host = await make_host(db_session, name=f"host-{index}")
+            await self._with_policy(db_session, host, Policy.PATCH)
+
+        result = await service().run_policy_pass(
+            db_session, manifest=manifest_with("0.1.0", "0.1.1"), metadata_authentic=True
+        )
+
+        assert result.considered == 3
+        assert len(result.started) == 3
+
+    async def test_a_quiet_pass_reports_that_it_did_nothing(self, db_session: AsyncSession) -> None:
+        # `did_something` is what keeps a fleet with nothing to install from
+        # writing a log line every five minutes for ever.
+        host = await make_host(db_session, version="0.1.1")
+        await self._with_policy(db_session, host, Policy.PATCH)
+
+        result = await service().run_policy_pass(
+            db_session, manifest=manifest_with("0.1.0", "0.1.1"), metadata_authentic=True
+        )
+
+        assert not result.did_something
+        assert result.started == []
+
+    async def test_no_manifest_starts_nothing_and_does_not_raise(
+        self, db_session: AsyncSession
+    ) -> None:
+        # The state of a source checkout. The pass has to be a no-op rather
+        # than an exception every five minutes.
+        host = await make_host(db_session)
+        await self._with_policy(db_session, host, Policy.PATCH)
+
+        result = await service().run_policy_pass(
+            db_session, manifest=None, metadata_authentic=False
+        )
+
+        assert result.started == []
+        assert not result.did_something
