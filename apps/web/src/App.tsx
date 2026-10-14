@@ -11,6 +11,7 @@ import { createQueryClient } from '@/lib/query-client';
 import { AlertsPage } from '@/routes/alerts';
 import { DockerPage } from '@/routes/docker';
 import { HostsPage } from '@/routes/hosts';
+import { UpdatesPage } from '@/routes/updates';
 import { HostDetailPage } from '@/routes/hosts/host-detail';
 import { LoginPage } from '@/routes/login';
 import { LogsPage } from '@/routes/logs';
@@ -103,6 +104,14 @@ export function App() {
                 <Route path="logs" element={<LogsPage />} />
                 <Route path="network" element={<NetworkPage />} />
                 <Route path="alerts" element={<AlertsPage />} />
+                {/*
+                 * Updates is its own section rather than a tab under
+                 * Settings: "what is my fleet running and what is in
+                 * progress" is a question somebody asks while watching, not
+                 * a setting they configure once — and a minutes-long
+                 * operation needs a page that can be left open.
+                 */}
+                <Route path="updates" element={<UpdatesPage />} />
 
                 {/*
                  * Settings is nested, so each section is a URL: linkable,

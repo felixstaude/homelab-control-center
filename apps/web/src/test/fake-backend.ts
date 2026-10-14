@@ -36,8 +36,10 @@ import type {
   AuditEvent,
   ConfigSync,
   CurrentUser,
+  FleetUpdateOverview,
   GlobalDefault,
   Host,
+  HostUpdateStatus,
   LatestValue,
   ManagedUser,
   MetricRangePoint,
@@ -45,6 +47,8 @@ import type {
   ModuleDescriptor,
   OwnSession,
   StoredSetting,
+  UpdateJob,
+  UpdatePlan,
   UserRole,
 } from '@/api/types';
 
@@ -89,6 +93,98 @@ export function makeOwnSession(overrides: Partial<OwnSession> = {}): OwnSession 
     expires_at: '2026-01-02T21:00:00+00:00',
     created_ip: '192.0.2.10',
     user_agent: 'Mozilla/5.0 (X11; Linux x86_64)',
+    ...overrides,
+  };
+}
+
+/**
+ * The overview an unpublished project reports.
+ *
+ * Not "nothing available" dressed up as healthy: `metadata_available` is
+ * false and the signature is `absent`, which is what the server actually
+ * says when no release has been published.
+ */
+export function emptyUpdateOverview(): FleetUpdateOverview {
+  return {
+    total_hosts: 0,
+    up_to_date: 0,
+    update_available: 0,
+    blocked: 0,
+    needs_attention: 0,
+    version_distribution: [],
+    hosts_with_automatic_updates: 0,
+    open_jobs: 0,
+    failed_recently: 0,
+    controller_version: '0.1.0',
+    controller_schema_revision: '0010_update_management',
+    metadata_available: false,
+    metadata_detail:
+      'no release metadata is configured, so this controller does not know what versions exist',
+    metadata_signature: 'absent',
+    metadata_signature_detail:
+      'no signature accompanies the release metadata, so its authenticity cannot be established',
+    channels: ['stable', 'beta', 'alpha'],
+  };
+}
+
+/** An update plan. Defaults to a host that is up to date. */
+export function makeUpdatePlan(overrides: Partial<UpdatePlan> = {}): UpdatePlan {
+  return {
+    outcome: 'up_to_date',
+    installed_version: '0.1.0',
+    target_version: '0.1.0',
+    target_channel: 'stable',
+    step: 'none',
+    blockers: [],
+    detail: null,
+    download_url: null,
+    expected_sha256: null,
+    ...overrides,
+  };
+}
+
+/** One update attempt. */
+export function makeUpdateJob(overrides: Partial<UpdateJob> = {}): UpdateJob {
+  return {
+    job_id: 'job-0001',
+    host_id: 'host-connected',
+    state: 'queued',
+    trigger: 'manual',
+    from_version: '0.1.0',
+    to_version: '0.1.1',
+    resulting_version: null,
+    error: null,
+    attempt: 1,
+    created_at: '2026-10-14T12:00:00+00:00',
+    started_at: null,
+    finished_at: null,
+    requested_by_user_id: 'u-admin',
+    ...overrides,
+  };
+}
+
+/**
+ * One host's update situation.
+ *
+ * Defaults to the safe state: manual policy, no window, nothing in progress.
+ * That is what a host with no policy row reports, and making it the default
+ * means a test has to opt into automation rather than inherit it.
+ */
+export function makeHostUpdateStatus(
+  overrides: Partial<HostUpdateStatus> = {},
+): HostUpdateStatus {
+  return {
+    host_id: 'host-connected',
+    host_name: 'homeserver',
+    installed_version: '0.1.0',
+    plan: makeUpdatePlan(),
+    policy: 'manual',
+    automatic: false,
+    channel: 'stable',
+    pinned_version: null,
+    maintenance_window: null,
+    open_job: null,
+    last_job: null,
     ...overrides,
   };
 }
@@ -405,6 +501,24 @@ export type FakeBackendState = {
    */
   agentReleases: AgentReleasesFixture | null;
 
+  /* --- Update management (Operation Evergreen) --- */
+
+  /**
+   * What `GET /updates/overview` answers.
+   *
+   * `null` is the default, and it produces the honest state of an
+   * unpublished project: no release metadata, an unsigned manifest, and
+   * nothing available. A fake whose default was "an update is waiting" would
+   * make the case every real deployment is in the one nobody tested.
+   */
+  updateOverview: FleetUpdateOverview | null;
+
+  /** What `GET /updates/hosts` answers. */
+  hostUpdateStatuses: HostUpdateStatus[];
+
+  /** What `GET /updates/history` answers. */
+  updateHistory: UpdateJob[];
+
   /* --- Phase 2: monitoring configuration --- */
 
   /**
@@ -548,6 +662,9 @@ export function installFakeBackend(initial: Partial<FakeBackendState> = {}): Fak
     metricSampleCount: {},
     enrollmentCredential: 'TEST-ENROLMENT-CREDENTIAL-0000000000000000',
     agentReleases: null,
+    updateOverview: null,
+    hostUpdateStatuses: [],
+    updateHistory: [],
     ...initial,
   };
 
@@ -804,6 +921,97 @@ export function installFakeBackend(initial: Partial<FakeBackendState> = {}): Fak
       state.session = null;
       clearCookies();
       return json({ status: 'logged_out' });
+    }
+
+    if (path.endsWith('/updates/overview') && method === 'GET') {
+      const refused = requireSession();
+      if (refused) return refused;
+      return json(state.updateOverview ?? emptyUpdateOverview());
+    }
+
+    if (path.endsWith('/updates/hosts') && method === 'GET') {
+      const refused = requireSession();
+      if (refused) return refused;
+      return json(state.hostUpdateStatuses);
+    }
+
+    if (path.includes('/updates/history') && method === 'GET') {
+      const refused = requireSession();
+      if (refused) return refused;
+      return json({ jobs: state.updateHistory, next_before: null });
+    }
+
+    if (path.endsWith('/update-policy') && method === 'PUT') {
+      const refused = requireSession();
+      if (refused) return refused;
+      if (state.session && state.session.role !== 'admin') {
+        return envelope(403, 'insufficient_permissions', 'Administrator role required.');
+      }
+      // `body` is already parsed above, which is also what the recorded
+      // request carries — re-parsing `init.body` here would be a second
+      // source of truth for the same bytes.
+      const policyBody = body as {
+        policy: HostUpdateStatus['policy'];
+        channel: string;
+        pinned_version: string | null;
+        maintenance_window: HostUpdateStatus['maintenance_window'] | null;
+      };
+      const hostId = path.split('/hosts/')[1]?.split('/')[0] ?? '';
+      const existing =
+        state.hostUpdateStatuses.find((entry) => entry.host_id === hostId) ??
+        state.hostUpdateStatuses[0];
+      if (!existing) return envelope(404, 'not_found', 'No such host.');
+      const updated: HostUpdateStatus = {
+        ...existing,
+        policy: policyBody.policy,
+        automatic: policyBody.policy === 'patch' || policyBody.policy === 'minor',
+        channel: policyBody.channel,
+        pinned_version: policyBody.pinned_version,
+        maintenance_window: policyBody.maintenance_window
+          ? {
+              ...policyBody.maintenance_window,
+              description: `${policyBody.maintenance_window.start}-${policyBody.maintenance_window.end} ${policyBody.maintenance_window.timezone}`,
+            }
+          : null,
+      };
+      state.hostUpdateStatuses = state.hostUpdateStatuses.map((entry) =>
+        entry.host_id === updated.host_id ? updated : entry,
+      );
+      return json(updated);
+    }
+
+    if (path.includes('/updates') && path.includes('/hosts/') && method === 'POST') {
+      const refused = requireSession();
+      if (refused) return refused;
+      if (state.session && state.session.role !== 'admin') {
+        return envelope(403, 'insufficient_permissions', 'Administrator role required.');
+      }
+      const hostId = path.split('/hosts/')[1]?.split('/')[0] ?? '';
+      const host = state.hostUpdateStatuses.find((entry) => entry.host_id === hostId);
+      if (!host) return envelope(404, 'not_found', 'No such host.');
+      const job = makeUpdateJob({
+        host_id: hostId,
+        to_version: host.plan.target_version ?? '0.1.1',
+        from_version: host.installed_version,
+        state: 'queued',
+      });
+      state.hostUpdateStatuses = state.hostUpdateStatuses.map((entry) =>
+        entry.host_id === hostId ? { ...entry, open_job: job } : entry,
+      );
+      state.updateHistory = [job, ...state.updateHistory];
+      return json(job, 201);
+    }
+
+    if (path.includes('/updates/jobs/') && path.endsWith('/cancel') && method === 'POST') {
+      const refused = requireSession();
+      if (refused) return refused;
+      if (state.session && state.session.role !== 'admin') {
+        return envelope(403, 'insufficient_permissions', 'Administrator role required.');
+      }
+      state.hostUpdateStatuses = state.hostUpdateStatuses.map((entry) =>
+        entry.open_job ? { ...entry, open_job: null } : entry,
+      );
+      return json(makeUpdateJob({ state: 'cancelled' }));
     }
 
     if (path.endsWith('/agent-releases') && method === 'GET') {
