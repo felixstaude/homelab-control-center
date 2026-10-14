@@ -349,6 +349,14 @@ measure-metrics: ## Measure metric ingestion, storage and query cost (requires m
 # installation — see scripts/measure-metrics.py.
 	@apps/server/.venv/bin/python scripts/measure-metrics.py
 
+.PHONY: measure-transfer
+measure-transfer: ## Measure the bytes the control plane sends a browser (requires a built client)
+# Opens no listener and connects to no database — see scripts/measure-transfer.py.
+	@test -f $(WEB_DIR)/dist/index.html || { \
+		echo "No built client at $(WEB_DIR)/dist."; \
+		echo "Build it first:  cd $(WEB_DIR) && npm run build"; exit 1; }
+	@apps/server/.venv/bin/python scripts/measure-transfer.py
+
 .PHONY: image
 image: ## Build the controller container image
 	@test -n "$(COMPOSE)" || { echo "No container runtime found."; exit 1; }

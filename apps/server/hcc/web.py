@@ -50,12 +50,35 @@ Two rules, and they are opposites for a reason.
   so a cached copy pins a browser to the previous deployment's JavaScript —
   which, after an upgrade that changed the API, is a client talking to a server
   it does not match.
+
+## Compression, and only here
+
+``/assets/*`` is gzipped. Measured, a first load of the login page is 606 kB
+uncompressed and 182 kB compressed, because JavaScript is text and compresses
+about 3.3:1. That is the one transfer every user of the installation makes
+before seeing anything, so it is worth the CPU — which is paid roughly once per
+browser per release, since the same responses are cached for a year.
+
+The compression is attached to **this mount**, not to the application, and that
+is a security boundary rather than an optimisation detail. Compressing a
+response that contains both a secret and attacker-influenced text leaks the
+secret through its length: that is BREACH, and the API's responses are exactly
+the wrong shape for it — session-scoped, carrying a CSRF token, and echoing
+request values back in error messages. Static assets have neither property.
+They are the same bytes for every caller, contain nothing from the request, and
+were written by the build.
+
+The TLS overlay's Caddy already does ``encode zstd gzip``, so that deployment
+was never affected. ``deploy/production/compose.yaml`` has no proxy, and it is
+the documented default — so the compression belongs in the thing that always
+serves the file, not in the thing an operator might add.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Final
 
+from starlette.middleware.gzip import GZipMiddleware
 from starlette.responses import FileResponse, Response
 from starlette.staticfiles import StaticFiles
 
@@ -75,6 +98,24 @@ ASSET_CACHE_SECONDS: Final = 31_536_000
 #: The directory Vite writes hashed bundles into. Mounted separately from the
 #: fallback so it can carry the opposite cache policy.
 ASSET_DIRECTORY: Final = "assets"
+
+#: Below this, compression costs more than it saves.
+#:
+#: A gzip member has about 20 bytes of framing, and a response small enough to
+#: fit in one network segment arrives in one round trip whether it is 300 bytes
+#: or 200. Starlette's own default is 500; this is lower because the asset
+#: directory holds a few genuinely small files — a 2.5 kB lazy chunk compresses
+#: to under a kilobyte — and nothing here is latency-sensitive enough for the
+#: difference to matter in the other direction.
+ASSET_COMPRESSION_MINIMUM_BYTES: Final = 400
+
+#: zlib level 6, which is zlib's own default.
+#:
+#: Not 9: on this bundle level 9 saves about 1% of the transfer for roughly
+#: twice the CPU, and the responses are cached for a year, so the saving is
+#: paid once per browser per release while the CPU is paid on every cache miss.
+#: Level 6 is the point where the curve flattens.
+ASSET_COMPRESSION_LEVEL: Final = 6
 
 #: Paths that must never be answered with the client.
 #:
@@ -128,7 +169,14 @@ def mount_web_client(app: FastAPI, root: Path, *, api_prefix: str) -> None:
     if assets.is_dir():
         app.mount(
             f"/{ASSET_DIRECTORY}",
-            _ImmutableStaticFiles(directory=assets),
+            # Wrapped, not added to the application: see the module docstring.
+            # `GZipMiddleware` honours Accept-Encoding, so a client that does
+            # not ask still gets the bytes verbatim.
+            GZipMiddleware(
+                _ImmutableStaticFiles(directory=assets),
+                minimum_size=ASSET_COMPRESSION_MINIMUM_BYTES,
+                compresslevel=ASSET_COMPRESSION_LEVEL,
+            ),
             name="web-assets",
         )
     else:

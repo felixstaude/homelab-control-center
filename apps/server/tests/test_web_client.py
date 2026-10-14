@@ -17,7 +17,7 @@ does not use.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 import pytest
 from fastapi import FastAPI
@@ -26,7 +26,12 @@ from httpx import ASGITransport, AsyncClient
 from hcc.app import create_app
 from hcc.config import Settings
 from hcc.errors import register_exception_handlers
-from hcc.web import ASSET_CACHE_SECONDS, WebClientMissingError, mount_web_client
+from hcc.web import (
+    ASSET_CACHE_SECONDS,
+    ASSET_DIRECTORY,
+    WebClientMissingError,
+    mount_web_client,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -193,6 +198,214 @@ class TestItServesNothingElse:
         for method in ("post", "put", "patch", "delete"):
             response = await client.request(method.upper(), "/hosts")
             assert response.status_code == 405, method
+
+
+async def wire_bytes(app: FastAPI, path: str, *, accept_encoding: str | None) -> tuple[int, str]:
+    """How many body bytes *app* actually sends for *path*, and the encoding.
+
+    An HTTP client cannot answer this. httpx decompresses transparently, and
+    Starlette omits ``Content-Length`` when it streams a compressed response —
+    so ``len(response.content)`` is the *decoded* size for exactly the large
+    responses whose compression matters most. The ASGI ``http.response.body``
+    events are the only place the real figure appears.
+    """
+    headers = [] if accept_encoding is None else [(b"accept-encoding", accept_encoding.encode())]
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": b"",
+        "root_path": "",
+        "headers": headers,
+        "client": ("127.0.0.1", 50000),
+        "server": ("testserver", 80),
+    }
+    sent = 0
+    encoding = "identity"
+
+    async def receive() -> dict[str, object]:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message: dict[str, object]) -> None:
+        nonlocal sent, encoding
+        if message["type"] == "http.response.start":
+            headers = message["headers"]
+            assert isinstance(headers, list)
+            for key, value in headers:
+                if key.lower() == b"content-encoding":
+                    encoding = value.decode()
+        elif message["type"] == "http.response.body":
+            body = message.get("body", b"")
+            assert isinstance(body, bytes)
+            sent += len(body)
+
+    await app(scope, receive, send)  # type: ignore[arg-type]
+    return sent, encoding
+
+
+#: An asset the size of a real bundle, and about as compressible.
+#:
+#: Minified JavaScript compresses roughly 3.3:1. Random bytes compress 1:1 and
+#: a repeated character compresses about 1000:1, so neither would tell us
+#: anything: the first would make a working middleware look broken and the
+#: second would make a broken threshold look fine. Repeating a realistic
+#: fragment of minified output lands in the right neighbourhood.
+COMPRESSIBLE_ASSET: Final = (
+    "export const t=(e,n)=>{const r={};for(const o of e)r[o.id]=n(o);return r};" * 2000
+)
+
+
+@pytest.fixture
+def compressible_root(tmp_path: Path) -> Path:
+    """A web root whose asset is large enough to be worth compressing."""
+    (tmp_path / "index.html").write_text(INDEX, encoding="utf-8")
+    assets = tmp_path / ASSET_DIRECTORY
+    assets.mkdir()
+    (assets / "index-big123.js").write_text(COMPRESSIBLE_ASSET, encoding="utf-8")
+    # Deliberately under ASSET_COMPRESSION_MINIMUM_BYTES.
+    (assets / "tiny-abc123.js").write_text("export const x=1;\n", encoding="utf-8")
+    return tmp_path
+
+
+@pytest.fixture
+def compressing_app(compressible_root: Path) -> FastAPI:
+    """An application with an API route, a probe, and compressible assets."""
+    app = FastAPI()
+    register_exception_handlers(app)
+
+    @app.get("/api/v1/thing")
+    async def thing() -> dict[str, str]:
+        # Long enough that a compressing middleware would act on it, which is
+        # what makes its *absence* from the compressed set an assertion rather
+        # than an accident of size.
+        return {"ok": "yes", "padding": "a" * 4000}
+
+    @app.get("/healthz")
+    async def healthz() -> dict[str, str]:
+        return {"status": "ok"}
+
+    mount_web_client(app, compressible_root, api_prefix="/api")
+    return app
+
+
+class TestAssetsAreCompressed:
+    """The one transfer every user of the installation makes.
+
+    Before this, the control plane served the built client verbatim: a first
+    load was 606 kB where 181 kB would do. Caddy in the TLS overlay compresses,
+    but that overlay is optional and the plain Compose file is the documented
+    default — so the compression belongs in the thing that always serves the
+    file.
+    """
+
+    async def test_a_large_asset_is_compressed_when_the_client_asks(
+        self, compressing_app: FastAPI
+    ) -> None:
+        sent, encoding = await wire_bytes(
+            compressing_app, "/assets/index-big123.js", accept_encoding="gzip, deflate, br"
+        )
+
+        assert encoding == "gzip"
+        # The real bundle measured 3.31:1. Asserting a floor of 2:1 keeps this
+        # a test of "compression happened" rather than of zlib's tuning, which
+        # is not this project's to guarantee.
+        assert sent * 2 < len(COMPRESSIBLE_ASSET)
+
+    async def test_the_bytes_survive_the_round_trip(self, compressible_root: Path) -> None:
+        # Compression that corrupts is worse than no compression, and a
+        # truncated JavaScript bundle fails in the browser rather than here.
+        app = FastAPI()
+        register_exception_handlers(app)
+        mount_web_client(app, compressible_root, api_prefix="/api")
+
+        async with asgi_client(app) as http:
+            response = await http.get(
+                "/assets/index-big123.js", headers={"accept-encoding": "gzip"}
+            )
+
+        assert response.headers["content-encoding"] == "gzip"
+        # httpx decompresses, so this compares the delivered bytes with the
+        # file on disk.
+        assert response.text == COMPRESSIBLE_ASSET
+
+    async def test_a_client_that_does_not_ask_gets_the_bytes_verbatim(
+        self, compressing_app: FastAPI
+    ) -> None:
+        sent, encoding = await wire_bytes(
+            compressing_app, "/assets/index-big123.js", accept_encoding=None
+        )
+
+        assert encoding == "identity"
+        assert sent == len(COMPRESSIBLE_ASSET)
+
+    async def test_a_small_asset_is_left_alone(self, compressing_app: FastAPI) -> None:
+        # Below the threshold a gzip member's framing costs more than it saves,
+        # and the response fits in one segment either way.
+        _, encoding = await wire_bytes(
+            compressing_app, "/assets/tiny-abc123.js", accept_encoding="gzip"
+        )
+
+        assert encoding == "identity"
+
+    async def test_the_immutable_cache_header_survives_compression(
+        self, compressible_root: Path
+    ) -> None:
+        # The middleware rebuilds the response headers, so the one-year cache
+        # policy is set *inside* what it wraps and has to come back out. Losing
+        # it would make every navigation re-download the bundle, which is the
+        # thing the compression is here to make cheap.
+        app = FastAPI()
+        register_exception_handlers(app)
+        mount_web_client(app, compressible_root, api_prefix="/api")
+
+        async with asgi_client(app) as http:
+            response = await http.get(
+                "/assets/index-big123.js", headers={"accept-encoding": "gzip"}
+            )
+
+        assert response.headers["cache-control"] == (
+            f"public, max-age={ASSET_CACHE_SECONDS}, immutable"
+        )
+
+
+class TestCompressionStopsAtTheAssetMount:
+    """The BREACH boundary, asserted rather than commented.
+
+    Compressing a response that contains both a secret and attacker-influenced
+    text leaks the secret through the response length. The API's responses have
+    exactly that shape — session-scoped, carrying a CSRF token, and echoing
+    request values back in error messages — so the compression is attached to
+    the asset mount and must stay there. These tests fail if somebody moves it
+    onto the application, which is the obvious "improvement" to make.
+    """
+
+    async def test_an_api_response_is_not_compressed(self, compressing_app: FastAPI) -> None:
+        _, encoding = await wire_bytes(
+            compressing_app, "/api/v1/thing", accept_encoding="gzip, deflate, br"
+        )
+
+        assert encoding == "identity"
+
+    async def test_the_document_is_not_compressed(self, compressing_app: FastAPI) -> None:
+        # Also not worth it: index.html is about a kilobyte, and it is the one
+        # file served `no-store`, so it is fetched on every navigation.
+        _, encoding = await wire_bytes(compressing_app, "/", accept_encoding="gzip")
+
+        assert encoding == "identity"
+
+    async def test_a_client_route_is_not_compressed(self, compressing_app: FastAPI) -> None:
+        _, encoding = await wire_bytes(compressing_app, "/hosts", accept_encoding="gzip")
+
+        assert encoding == "identity"
+
+    async def test_a_probe_is_not_compressed(self, compressing_app: FastAPI) -> None:
+        _, encoding = await wire_bytes(compressing_app, "/healthz", accept_encoding="gzip")
+
+        assert encoding == "identity"
 
 
 class TestItRefusesToStartWithoutABuild:

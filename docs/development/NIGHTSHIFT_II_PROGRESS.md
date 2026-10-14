@@ -169,21 +169,29 @@ wants (install it / develop on it / connect a host), `docs/DEPLOYMENT.md`,
 `docs/RELEASING.md`, and the agent README's third copy of the systemd unit
 removed — see defect 14.
 
-### Phase I — performance — not started, deliberately
+### Phase I — performance — complete (`a41d26e`)
 
-The brief puts it after the core work is stable and says to measure before
-optimizing. The core work reached stable late; there is no measurement, so
-there is no optimization. Nothing here was made slower on purpose and nothing
-was made faster on a guess. The one load-bearing performance fact this run
-established is in the table below: the installation matrix completes 61
-assertions against three distributions in CI, which bounds how long the
-install path takes on a cold container.
+Unblocked once CI went fully green at `8a8b6aa`, which is the precondition the
+brief sets. Measured first, in the one place this run created and nobody had
+counted: the control plane now serves the web client, and before Phase E it
+served no client at all.
+
+`scripts/measure-transfer.py` and `make measure-transfer`, with the figures in
+[`docs/PERFORMANCE.md §5`](../PERFORMANCE.md). It found that the SPA was served
+**uncompressed** — a first load was 606 kB where 181 kB would do — and that the
+chart payloads are the larger recurring cost at 237 kB per host page against
+24 kB gzipped. Both are now compressed; see defect 16 and ADR-059.
+
+The bundle itself was left alone, and that is a result rather than a gap. 570 kB
+for an entry chunk holding React, the router, the query client and the icon set
+is unremarkable, the chart library is already lazy-split, and 181 kB over a LAN
+is not worth restructuring an application for.
 
 ---
 
 ## Defects found, and how
 
-Fourteen, listed because the *how* is the useful part.
+Sixteen, listed because the *how* is the useful part.
 
 ### Found by reading, before any test existed
 
@@ -267,6 +275,20 @@ Fourteen, listed because the *how* is the useful part.
     failure. The same README documented only `run`, while the binary had grown
     four more subcommands.
 
+### Found by measuring
+
+16. **The control plane served the web client uncompressed.** Phase E made it
+    responsible for serving the SPA; it had no compression middleware of any
+    kind, so a first load of the sign-in page was 606 kB where 181 kB would
+    do — 3.35x, on the one transfer every user makes before seeing anything.
+    The chart payloads turned out to be worse: 237 kB for a host page's four
+    charts against 24 kB gzipped, and unlike the bundle that is re-fetched
+    every page view rather than cached for a year. The TLS overlay's Caddy
+    does `encode zstd gzip`, so the recommended deployment was unaffected and
+    the default one — which has no proxy — was not. Fixed as an allow-list
+    rather than an application-wide middleware, because BREACH makes
+    `Content-Encoding` a security decision: ADR-059.
+
 ### Fixed in passing
 
 15. **`make help` hid four targets.** Its grep pattern excluded digits, so
@@ -281,8 +303,8 @@ Each command, and what it reported. Re-run rather than trust.
 
 | Command | Result |
 | --- | --- |
-| `make check` | ✓ all gates |
-| `make test-integration` | 1029 passed |
+| `make check` | ✓ all gates, 932 backend unit, 561 frontend |
+| `make test-integration` | 1031 passed |
 | `go test -race ./...` (agents/linux) | ✓ 14 packages |
 | `E2E_REQUIRE_AGENT=1 make e2e` | 154 passed |
 | `./scripts/reliability-e2e.sh` | 24 passed |
@@ -292,6 +314,7 @@ Each command, and what it reported. Re-run rather than trust.
 | `./scripts/install-matrix.sh --image fedora:42` | 61 passed, 0 failed |
 | `./scripts/deployment-e2e.sh` (CI, Docker) | 44 passed, 0 failed |
 | `systemd-analyze verify` on the embedded unit | ✓ |
+| `make measure-transfer` | first load 606 kB → 181 kB |
 
 CI at `fcc0fa8`: completed success, every job green.
 

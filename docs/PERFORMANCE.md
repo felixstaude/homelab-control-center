@@ -209,7 +209,85 @@ Worth recording, because both were invisible to the test suite:
 
 ---
 
-## 5. What has not been measured
+## 5. What the control plane sends a browser: **606 kB a first load, now 181 kB**
+
+Measured in Phase 10, because until Phase 10 nothing had counted it. Serving
+the web client from the control plane was new — development ran Vite on a
+second port and the production deployment served no client at all — so the one
+transfer every user of the installation makes had never been looked at.
+
+```bash
+cd apps/web && npm run build
+make measure-transfer
+```
+
+Byte counts come from the ASGI `http.response.body` events rather than from an
+HTTP client, and that is not pedantry: httpx decompresses transparently and
+Starlette omits `Content-Length` when it streams a compressed response, so
+`len(response.content)` is the *decoded* size for exactly the large responses
+whose compression matters most. Measured through an HTTP client, the two
+biggest chunks in this bundle appeared to compress to precisely their original
+size.
+
+### A first load
+
+What a browser fetches before it can show the sign-in screen. The chart library
+is lazy-loaded, so it is not in this set — `apps/web` already splits it.
+
+| Response | Verbatim | gzip | Saved |
+| --- | --- | --- | --- |
+| `index.html` | 1,217 | 1,217 | — |
+| the stylesheet | 34,863 | 7,624 | 4.57x |
+| the entry chunk | 570,289 | 172,144 | 3.31x |
+| **total** | **606,369** | **180,985** | **3.35x** |
+
+Every asset cold — a whole session with an empty cache — is 969,806 bytes
+verbatim and 286,820 gzipped, 3.38x.
+
+`index.html` is deliberately not compressed. It is about a kilobyte, and it is
+the one file served `no-store`, so it is fetched on every navigation; the saving
+would be around 500 bytes and the response already fits in one segment.
+
+### Metric payloads, which are the recurring cost
+
+A bundle is cached for a year and fetched once per release. A host page
+re-fetches its charts every time somebody opens it, and that turns out to be
+the larger number.
+
+| Response | Verbatim | gzip | Saved |
+| --- | --- | --- | --- |
+| one chart, 600 points, rollup | 59,526 | 6,762 | 8.80x |
+| one chart, 600 points, raw | 59,663 | 3,731 | 15.99x |
+| a host page, 4 charts | 237,134 | 24,355 | 9.74x |
+| the server's cap, 50,000 points | 4,933,874 | 482,446 | 10.23x |
+
+600 points is what `metric-history.tsx` actually requests. These compress an
+order of magnitude — far better than the JavaScript — because an array of
+ISO-8601 timestamps a fixed interval apart is about the most repetitive thing a
+JSON encoder can emit.
+
+### What was changed, and what was deliberately not
+
+`/assets/*` is gzipped at the mount, and the four metric read endpoints are
+gzipped by an allow-list. Nothing else is, and that boundary is a security
+decision rather than a tuning one — see
+[ADR-059](ARCHITECTURE.md#adr-059-compression-is-an-allow-list-because-breach-is-a-length-attack).
+
+No optimization was made to the bundle itself. 570 kB for an entry chunk
+containing React, the router, the query client and the icon set is unremarkable,
+the charts are already split out, and 181 kB over a LAN is not a number worth
+restructuring an application for. Measuring it and leaving it alone is the
+result, not a gap in the work.
+
+### What this does not show
+
+Time. These are byte counts. Load time depends on the link, the round trips and
+the parse, none of which this touches — and no browser-side timing has been
+measured, so this document does not quote any.
+
+---
+
+## 6. What has not been measured
 
 Listed because a performance document that only contains good news is one
 nobody should trust.
@@ -224,10 +302,13 @@ nobody should trust.
 | Ninety days of real data | §4 writes hours. Retention totals are extrapolated per sample. | When an installation has been running that long |
 | Fleet-scale ingestion | §4's samples are written by one process in a loop, so it measures the storage path and not the socket, the scheduler, or a hundred real agents. | Before claiming a host count for collection |
 | Two controller processes | ADR-046 states the degradation rather than measuring it. | When configuration distribution needs a real channel |
+| Browser-side timing | §5 counts bytes. Time to first contentful paint, parse cost and render cost are all unmeasured, so no load-time claim appears anywhere. | Before any claim about how fast the interface feels |
+| Container cold start | How long `compose up` takes to reach a usable sign-in page, migrations included. The deployment scenario asserts that it *does*, not how quickly. | Before the installation documentation quotes a wait |
+| Compression CPU | §5 measures the bytes saved, not the microseconds spent. Assets are cached for a year, so the cost is paid about once per browser per release — argued rather than measured. | If a controller ever serves enough cache misses for it to show |
 
 ---
 
-## 6. The machine these figures came from
+## 7. The machine these figures came from
 
 Figures are comparative, not absolute, and they are worth nothing without
 this:

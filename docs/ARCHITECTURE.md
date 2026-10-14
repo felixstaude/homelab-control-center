@@ -2923,6 +2923,57 @@ in the backup's own manifest rather than only in the documentation.
 
 ---
 
+### ADR-059: Compression is an allow-list, because BREACH is a length attack
+
+**Decision.** Two things are compressed and nothing else is: `/assets/*`, at
+the static mount, and the four metric read endpoints, by an explicit pattern in
+`hcc/compression.py`. There is no application-wide `GZipMiddleware`.
+
+**Why compress at all.** Measured — the numbers are in
+[`PERFORMANCE.md §5`](PERFORMANCE.md#5-what-the-control-plane-sends-a-browser-606-kb-a-first-load-now-181-kb).
+A first load of the sign-in page was 606 kB and is now 181 kB, and a host
+page's four charts are 237 kB uncompressed against 24 kB gzipped. The second
+figure is the one that recurs: assets are cached for a year, chart data is
+re-fetched every time somebody opens a page.
+
+**Why not everything.** Compression and secrecy interact. If a response holds
+both a secret and text the attacker chose, the compressed *length* reveals how
+well the two matched, so an attacker who can trigger the request repeatedly and
+watch the sizes recovers the secret a character at a time. That is BREACH, and
+it makes `Content-Encoding` a security decision rather than a tuning knob.
+
+This application has exactly one response body containing a secret — the
+enrollment credential, which `hcc/api/v1/hosts.py` already documents as "the
+only response in the API that contains a secret". An allow-list keeps it that
+way by construction. A deny-list would be one forgotten entry away from
+compressing the next secret somebody adds, and the failure would be silent;
+`test_compression.py` asserts the pattern cannot be widened by a crafted path
+and that the list has exactly one entry, so growing it is a deliberate change
+to a test rather than an edit nobody reviews.
+
+**Why this is not a new exposure.** `compose.tls.yaml` runs Caddy with
+`encode zstd gzip`, which already compressed every proxied response including
+these. The recommended deployment has had compressed API responses all along;
+this brings the default one — which has no proxy — in line with it. Session
+cookies are `SameSite=Lax` and state-changing requests need a session-bound
+CSRF token with a matching `Origin`
+([ADR-030](#adr-030-csrf-via-a-session-bound-double-submit-token), and
+`hcc/api/v1/auth.py` for the cookie attributes), so an attacker's page cannot
+drive authenticated requests from its own origin — which is the delivery
+mechanism the attack needs.
+
+**Why the asset compression is at the mount, not in the stack.** Same reason,
+expressed structurally: a `GZipMiddleware` added to the application would
+compress the API too, and the next person to read `app.py` would have no way to
+see that this was a decision. Wrapping the mount puts the scope in the same
+place as the thing it applies to.
+
+**Cost.** CPU per cache miss, argued rather than measured: the responses are
+`immutable` for a year, so a browser fetches each one about once per release.
+`PERFORMANCE.md §6` lists it as unmeasured rather than implying otherwise.
+
+---
+
 ## 14. Open design questions
 
 Recorded rather than silently deferred. Each needs an answer before the

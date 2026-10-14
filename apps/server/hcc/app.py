@@ -19,6 +19,7 @@ from hcc.agents.registry import ConnectionRegistry
 from hcc.api import health
 from hcc.api.v1 import router as v1_router
 from hcc.api.v1.router import PUBLIC_V1_PATHS
+from hcc.compression import ScopedGZipMiddleware
 from hcc.config import Settings, get_settings
 from hcc.db import Database
 from hcc.errors import ErrorResponse, register_exception_handlers
@@ -416,6 +417,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             expose_headers=["X-Request-ID", "Retry-After"],
             max_age=600,
         )
+    # Outermost, so it compresses the final body — after the security headers
+    # are on it and after an exception handler has produced one. It compresses
+    # an explicit allow-list of paths and nothing else, which is a security
+    # boundary rather than a tuning choice: see hcc/compression.py.
+    app.add_middleware(ScopedGZipMiddleware)
 
     # Operational probes stay unversioned at the root.
     app.include_router(health.router)
