@@ -122,7 +122,7 @@ Docker socket is therefore never exposed on the network — which is the reason
 the agent exists at all. LAN hosts, rented VPSes and machines behind CGNAT all
 use the same protocol, with no inbound ports anywhere.
 
-Full detail, including all fifty-two architecture decision records:
+Full detail, including all fifty-eight architecture decision records:
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Stack

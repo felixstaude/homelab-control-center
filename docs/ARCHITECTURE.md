@@ -2695,6 +2695,232 @@ affordable. The schema is deliberately compatible: `metric_samples_raw` is a
 plain partitioned table, so converting it to a hypertable later is a migration
 rather than a redesign.
 
+### ADR-053: The agent binary is its own installer; there is no installation script
+
+**Decision.** `hcc-agent` grows `install`, `upgrade`, `uninstall` and `doctor`
+subcommands. No shell script installs the agent, and none will be added. The
+artifact a person verifies with `sha256sum -c` is the artifact that performs
+the installation and then *is* the installed program.
+
+**Why.** The alternative everybody reaches for, `curl … | sudo bash`, fails
+three ways at once:
+
+1. Unaudited code runs as root without ever being seen.
+2. Whatever authenticates the install usually arrives as `-s -- --token XYZ`,
+   which is argv, which `/proc/<pid>/cmdline` makes readable by every local
+   user on the machine.
+3. The whole command lands in `~/.bash_history`, credential included.
+
+A script that is downloaded, verified and read first fixes all three and
+introduces a second problem: you have verified the **script**, which then
+downloads the **binary** — two artifacts to trust where one would do.
+
+Making the binary the installer leaves one artifact and one digest. It also
+moves the work — create a user, place a binary, write a unit, set modes — into
+a language with types and tests rather than forty lines of shell every
+operator retypes slightly differently.
+
+**`--dry-run` is the half that makes this an improvement rather than a
+preference.** It prints every path, every mode, the service account and the
+complete unit file, and changes nothing. That is the audit step a pipe into a
+shell structurally cannot offer, and it costs one flag.
+
+**Cost.** The agent carries installation logic it only runs once, and
+`internal/install` is about 1,400 lines of the agent's source. Bounded by
+being behind a [System](../agents/linux/internal/install/system.go) interface
+with every path rooted, so the ordering, the refusals and the rollback are
+unit-tested without root — and by the installation matrix, which starts the
+real service in a real container because a mocked systemd proves nothing about
+systemd.
+
+### ADR-054: The systemd unit has exactly one copy, embedded in the binary
+
+**Decision.** `agents/linux/internal/install/hcc-agent.service` is the unit,
+embedded with `go:embed` and written verbatim by `install`.
+`agents/linux/deploy/hcc-agent.service` was **deleted** rather than kept as a
+documented copy.
+
+**Why.** Once an installer owns the unit, a second copy exists: one embedded
+in the binary and one for humans to read. Two copies drift, and the one people
+read would be the stale one — so the documentation would describe hardening
+the installer does not apply, or vice versa.
+
+The alternatives, and why not:
+
+* *A generated copy with a drift check*, like the OpenAPI snapshot and the
+  monitoring contracts. Workable, and a third mechanism for a file that has
+  exactly one consumer.
+* *Keep the deploy copy as the canonical one and read it at runtime.*
+  `go:embed` cannot reach outside its package, and a unit read from disk is a
+  unit that can be missing.
+
+`install --dry-run` prints the embedded bytes, so the way to read the unit
+without installing it is to ask the installer — which is also the only way to
+be sure you are reading what would be installed.
+
+**Cost.** The deployment README can no longer show the unit inline; it links
+to the embedded file and names the dry run. A reader browsing the repository
+has to open a file under `internal/`.
+
+**What it enabled.** The move is how `ProcSubset=pid` was found. Reading the
+unit as *the thing about to be installed on every host* rather than as
+documentation prompted the question "what does this directive hide?", and the
+answer was every file the agent reads.
+
+### ADR-055: The controller serves the web client; one origin, one port
+
+**Decision.** The control plane serves the built client from the same port as
+the API. `/api` is the API, `/healthz` and `/readyz` are the probes, and
+everything else is the client. `HCC_WEB_ROOT` is unset in development, where
+Vite serves the client and `cors_origins` names it.
+
+**Why.** The security model already assumed this and had no implementation of
+it. Session cookies are `HttpOnly`, `SameSite=Lax` and `Secure`;
+state-changing requests need a session-bound CSRF token *and* a matching
+`Origin` ([ADR-030](#adr-030-csrf-via-a-session-bound-double-submit-token)); the
+production CORS list is empty because a same-origin client needs no exception.
+
+A second origin for the client would need either a credentialed CORS
+allow-list — the arrangement `_validate_cors_origins` refuses a wildcard for —
+or a second name and a second certificate for one deployment.
+
+**The refusals are the design.** A catch-all that returned `index.html` for
+anything unmatched would answer `/readyz` with a 200 HTML page, so a broken
+deployment would report itself healthy to a monitoring check; and
+`/api/v1/typo` would become a 200 page, so a client bug would look like a
+rendering bug. Paths under the API prefix and the operational probes get the
+application's own JSON 404 instead.
+
+The fallback serves one fixed file and never a path taken from the request,
+which is what makes traversal structurally impossible rather than checked.
+
+**A missing build is a startup failure**, not a mount that is quietly skipped.
+The alternative is a container that answers `/readyz` with "ready" and every
+page with a 404 — healthy, and useless.
+
+**Cost.** The controller is now also a static file server, with two opposite
+cache policies to keep straight: hashed assets immutable for a year, and
+`index.html` `no-store` because it is the file that names them. One process
+serving both means the client cannot be scaled or cached separately, which is
+not a homelab problem.
+
+### ADR-056: The controller is the trust anchor for agent downloads
+
+**Decision.** The controller ships a manifest of the agent releases it was
+built alongside, and the interface renders an install command carrying the
+expected SHA-256 of the archive it tells somebody to download.
+`GET /api/v1/agent-releases` serves it, Administrator-only. The controller
+does **not** fetch checksums at runtime.
+
+**Why.** The administrator is already authenticated to the controller over
+TLS — it is the thing holding their fleet's credentials. So the controller,
+not the download origin, is what should vouch for the binary. Three
+consequences, all of them the point:
+
+1. **No runtime dependency on the download origin for trust.** The controller
+   does not go and look; it already has the digests.
+2. **The digest travels inside the session the administrator is already in.**
+   An attacker who controls the mirror, or the network between the host and
+   it, cannot make a substituted tarball match.
+3. **Air-gapped and mirrored installs work.** Point the manifest's `url` at an
+   internal mirror; the digest still pins the bytes.
+
+`cosign verify-blob` and `gh attestation verify` are documented and are
+deliberately **not** on the critical path: requiring a verification tool on a
+NAS to install a monitoring agent means nobody verifies anything. The
+checksum path needs coreutils.
+
+**Absence is a first-class answer.** No release of this project has been
+published, so the endpoint reports `available: false` with a reason and the
+interface shows the build-from-source path. It does not render a plausible
+download command for a URL that would 404 — a digest beside an invented URL is
+a claim nobody can check, which is worse than no claim.
+
+**What it forced.** Both manifest fields are interpolated into a command
+somebody pastes into a root shell, so both are refused if they contain a
+character that means something to a shell. See
+[the installation-platform review](security/2026-10-14-installation-platform-review.md).
+
+**Cost.** A manifest to generate and ship with every release, and a schema
+version to maintain. `scripts/build-release-manifest.py` derives it from the
+build's own `artifacts.json`, so the digests are never transcribed.
+
+### ADR-057: Migrations run on container start, before the port is bound
+
+**Decision.** The container entrypoint runs `alembic upgrade head` and then
+execs uvicorn. A container that cannot migrate exits non-zero and never serves
+traffic. `HCC_AUTO_MIGRATE=false` exists for an operator who would rather run
+`docker compose run --rm hcc migrate` and watch it.
+
+**Why.** It is what makes `docker compose up -d` an installation rather than
+the first of two steps. An `up -d` that left an empty database and a confusing
+error is not a deployment path.
+
+**Why this is safe here specifically.** One controller process is the rule
+([ADR-046](#adr-046-one-controller-process-stated-rather-than-enforced)), so
+there is no second replica racing the same migration. A deployment that ever
+becomes multi-replica has to move this to a one-shot service — and that is the
+point at which ADR-046 gets superseded, not quietly violated.
+
+**Why before binding and not after.** Migrating in a background task after
+binding produces a deployment that answers requests against a schema it is
+halfway through changing. The port is the signal that the schema is ready.
+
+**Cost.** Startup is as slow as the slowest migration, and a failed migration
+is a container that will not start — which is the intended behaviour and is
+also the failure an operator has to read `docker compose logs` to understand.
+The health check's `start-period` covers it.
+
+### ADR-058: The deployment generates its own database credential, into a file
+
+**Decision.** A one-shot service writes 32 random bytes to
+`./secrets/db_password` on first start and leaves it alone afterwards. Both
+PostgreSQL and the control plane read the **file**. The operator never chooses
+or sees a database password, and `.env` holds no secret.
+
+**Why not ask.** An operator told to invent a password will reuse one or pick
+`postgres`, and a documented default ends up baked into every copy of the
+documentation.
+
+**Why a file and not an environment variable.** A container's configured
+environment appears in `docker inspect`, and `docker inspect` is what people
+paste into issue reports. A file does not.
+
+**Why the application assembles the URL, not the entrypoint.** It was the
+entrypoint, which read the file and exported `HCC_DATABASE_URL` before exec-ing
+the server. That worked for the server and broke the one step
+[ADR-033](#adr-033-the-initial-administrator-is-created-by-a-local-command-not-an-endpoint)
+makes mandatory: `docker compose exec hcc hcc bootstrap-admin` does not run an
+entrypoint, so it saw no URL and failed with "Field required" on a working
+deployment. The assembly is a `mode="before"` validator in `hcc/config.py`, so
+every process in the container gets it — including alembic.
+
+**Three details that are not incidental.**
+
+* The password is base64**url**. It goes into a URL's userinfo, where a `/`
+  changes which host is addressed and the resulting failure is a connection
+  error about DNS. Startup refuses a password outside `[A-Za-z0-9_-]` rather
+  than trusting the generator stayed correct.
+* The file is mode `0644`, not `0600`. Three containers with three different
+  uids read it, so a `0600` file owned by one of them is unreadable by the
+  other two — `0600` there would not be stricter, it would be broken. The
+  protection is the deployment directory and the mount being read-only in both
+  consumers, which is the same guarantee Docker's own `/run/secrets` gives.
+* The mount carries `:ro,z`. Without the SELinux relabel the deployment fails
+  on Fedora, RHEL, CentOS Stream, Rocky and Alma with "Permission denied" on a
+  file that is plainly `0644`.
+
+**There is no application signing secret to manage**, and that is worth
+protecting in review. Sessions are server-side and the cookie carries an
+opaque random token of which only the SHA-256 digest is stored
+([ADR-027](#adr-027-session-tokens-are-hashed-with-sha-256-not-argon2),
+[ADR-028](#adr-028-server-side-sessions-not-jwt)) — nothing is signed, so
+nothing needs a key, so there is no key to rotate or leak.
+
+**Cost.** `./secrets/db_password` is not in the database dump and a restore
+into an existing volume needs it, so it is one more thing to back up — stated
+in the backup's own manifest rather than only in the documentation.
+
 ---
 
 ## 14. Open design questions

@@ -1,6 +1,39 @@
 # Simple installation and agent distribution
 
-**Status: design. None of this is implemented.**
+**Status: implemented, with two amendments.** Items 1–12 of the §7 work
+breakdown landed in Operation Nightshift II; item 13 (`.deb`/`.rpm`) is
+deferred and roadmap 10.6 keeps it. What was built, what was measured and the
+thirteen defects the work found:
+[`development/NIGHTSHIFT_II_PROGRESS.md`](../development/NIGHTSHIFT_II_PROGRESS.md).
+
+The decisions marked **[ADR]** below are now numbered records, as this
+document said they would be once the work landed:
+
+| Here | Record |
+| --- | --- |
+| §3.5 generated database secret | [ADR-058](../ARCHITECTURE.md#adr-058-the-deployment-generates-its-own-database-credential-into-a-file) |
+| §3.6 migrations on container start | [ADR-057](../ARCHITECTURE.md#adr-057-migrations-run-on-container-start-before-the-port-is-bound) |
+| §4.3 the controller as trust anchor | [ADR-056](../ARCHITECTURE.md#adr-056-the-controller-is-the-trust-anchor-for-agent-downloads) |
+| §5.2 the binary is its own installer | [ADR-053](../ARCHITECTURE.md#adr-053-the-agent-binary-is-its-own-installer-there-is-no-installation-script) |
+| §5.6 the unit, now owned by the installer | [ADR-054](../ARCHITECTURE.md#adr-054-the-systemd-unit-has-exactly-one-copy-embedded-in-the-binary) |
+| — (not in this document) the controller serves the client | [ADR-055](../ARCHITECTURE.md#adr-055-the-controller-serves-the-web-client-one-origin-one-port) |
+
+§4.2 proposed Sigstore/cosign keyless signing. What shipped is GitHub's own
+build-provenance attestation, which is Sigstore keyless signing with the same
+property — no private key for a one-maintainer project to store, rotate or
+lose — through a first-party action rather than a third-party one. It has
+**never been run**, because it requires a tag and no release exists.
+
+**The two amendments.** The endpoint is `/api/v1/agent-releases` rather than
+`/api/v1/agents/install-manifest`, because everything under `/api/v1/agents`
+authenticates a per-host agent credential and refuses a browser session — one
+session-gated exception there would make that module's own invariant false for
+one path. And `hcc-agent upgrade` does not call it: it takes `--from` and
+`--sha256`, which the administrator copies from the same page, so the endpoint
+has one caller and one credential type.
+
+The rest of this document is unchanged from the design it was argued over as,
+so that what was decided can be read against what was built.
 
 This document specifies how Homelab Control Center should be installed — the
 controller with Docker Compose, and agents with a single command copied out of
