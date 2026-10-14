@@ -191,7 +191,7 @@ is not worth restructuring an application for.
 
 ## Defects found, and how
 
-Sixteen, listed because the *how* is the useful part.
+Seventeen, listed because the *how* is the useful part.
 
 ### Found by reading, before any test existed
 
@@ -289,6 +289,35 @@ Sixteen, listed because the *how* is the useful part.
     rather than an application-wide middleware, because BREACH makes
     `Content-Encoding` a security decision: ADR-059.
 
+### Found by CI, in this run's own new tests
+
+17. **A hand-written ASGI `receive` stub livelocked the backend job.** The
+    compression tests call the application directly to count the bytes it
+    really sends, which means performing the ASGI handshake by hand. My stub
+    answered *every* `receive()` call — and `FileResponse` runs a disconnect
+    listener that loops on `receive()`, so a stub that always answers is a
+    loop that never yields to the event loop and starves the task sending the
+    response. Sixty tests passed locally in 0.66 s, including pinned to one
+    core; CI's `Server (Python)` job hit its fifteen-minute timeout with the
+    log ending on the test before the first compression test.
+
+    Worth recording because I got the diagnosis wrong twice over. I wrote two
+    reproductions — bare `FileResponse`, then the real GZip-wrapped static
+    mount — and **both completed in under a second**, so I committed the fix
+    saying the hypothesis was disproved and that the real cause was unknown.
+    The next CI run then passed the exact test that had hung, in a 7m45s
+    suite, with that stub as the only change to the code path. The hypothesis
+    was right and my reproductions were too clean to show it: a livelock
+    between two tasks does not reproduce in a fresh event loop with nothing
+    else pending.
+
+    The lasting fix is not the stub. `wire_bytes` now times out after twenty
+    seconds and fails naming the path, the requested encoding and how many
+    bytes had been sent, because the cost of getting this wrong was a job that
+    reported only "the operation was canceled" — and `timeout-minutes: 15`
+    stays exactly where it is, having caught a hang every local run said did
+    not exist.
+
 ### Fixed in passing
 
 15. **`make help` hid four targets.** Its grep pattern excluded digits, so
@@ -304,6 +333,7 @@ Each command, and what it reported. Re-run rather than trust.
 | Command | Result |
 | --- | --- |
 | `make check` | ✓ all gates, 932 backend unit, 561 frontend |
+| CI `Server (Python)` | 1948 passed in 7m45s |
 | `make test-integration` | 1031 passed |
 | `go test -race ./...` (agents/linux) | ✓ 14 packages |
 | `E2E_REQUIRE_AGENT=1 make e2e` | 154 passed |
@@ -316,7 +346,7 @@ Each command, and what it reported. Re-run rather than trust.
 | `systemd-analyze verify` on the embedded unit | ✓ |
 | `make measure-transfer` | first load 606 kB → 181 kB |
 
-CI at `fcc0fa8`: completed success, every job green.
+CI at `946f1dd`: completed success, all twelve jobs green.
 
 ---
 
