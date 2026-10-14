@@ -534,6 +534,81 @@ jobs:
           if-no-files-found: ignore
 
   # ==========================================================================
+  # Controller-driven updates
+  # ==========================================================================
+  update-e2e:
+    name: Update (controller-driven)
+    runs-on: ubuntu-latest
+    # Longer than install-matrix: three agent builds, a container, and an
+    # update whose first step is a thirty-second heartbeat wait.
+    timeout-minutes: 40
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: hcc
+          POSTGRES_PASSWORD: hcc_local_dev
+          POSTGRES_DB: hcc
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U hcc -d hcc"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: apps/server/pyproject.toml
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: agents/linux/go.sum
+
+      - name: Install the backend
+        run: |
+          python -m venv apps/server/.venv
+          apps/server/.venv/bin/pip install --quiet --upgrade pip
+          apps/server/.venv/bin/pip install --quiet -e 'apps/server[dev]'
+
+      - name: A real version-to-version update, on real systemd
+        # Two genuinely different agent builds, a signed release manifest, and
+        # an agent that downloads, verifies, installs and restarts itself
+        # under a controller's authorization.
+        #
+        # This is the only job that can catch the things that matter about
+        # automatic updates, and on its first run it caught four: a download
+        # that did not trust the agent's own CA, a host with updates disabled
+        # going silent instead of declining, a controller offering updates it
+        # had not authenticated, and `restarting` reported after the restart
+        # that kills the reporting process. None of the 1200 unit tests could
+        # have.
+        #
+        # The signing key is generated per run into a temporary directory and
+        # removed on every exit path. Nothing is published and no real host is
+        # touched: automatic updates are enabled inside the container only, by
+        # writing the container's own environment file.
+        run: ./scripts/update-e2e.sh --image debian:13
+
+      - name: Upload failure artefacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: update-e2e-logs
+          path: /tmp/hcc-upd-*.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # ==========================================================================
   # Browser end-to-end
   # ==========================================================================
   e2e:
