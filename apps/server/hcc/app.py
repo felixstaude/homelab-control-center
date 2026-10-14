@@ -15,6 +15,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from hcc import __version__
+from hcc.agents.protocol import SUPPORTED_PROTOCOL_VERSIONS
 from hcc.agents.registry import ConnectionRegistry
 from hcc.api import health
 from hcc.api.v1 import router as v1_router
@@ -39,6 +40,7 @@ from hcc.services.hosts import HostService
 from hcc.services.metrics import MetricsService
 from hcc.services.monitoring import MonitoringConfigService
 from hcc.services.retention import RetentionService, policy_from_settings
+from hcc.services.updates import UpdateService
 from hcc.services.users import UserService
 from hcc.web import mount_web_client
 
@@ -380,6 +382,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # upsert, which is the cost the cache exists to remove.
     app.state.metrics_service = MetricsService()
     app.state.retention_service = RetentionService(policy_from_settings(settings))
+    # Phase 10 / Operation Evergreen. Shares the audit service for the same
+    # reason the monitoring service does: a policy change and the host
+    # mutation beside it land in one transaction and one trail.
+    #
+    # Takes the controller's own version and the protocol versions it speaks,
+    # because both are compatibility inputs to every update plan — and taking
+    # them here rather than importing them keeps the service testable against
+    # a controller version that is not this build's.
+    app.state.update_service = UpdateService(
+        audit=app.state.audit_service,
+        controller_version=__version__,
+        supported_protocol_versions=SUPPORTED_PROTOCOL_VERSIONS,
+    )
     # Per *process*, not per application and not shared across workers. This
     # is the honest statement of a real limitation rather than a cache: the
     # connections a worker holds are its own, and connectivity is derived from
