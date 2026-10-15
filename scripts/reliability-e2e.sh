@@ -146,6 +146,14 @@ stop_controller() {
 
 cleanup() {
   local status=$?
+  # First, because it is a detached loop that would otherwise outlive a
+  # failed run and keep rewriting a directory this function is about to
+  # remove. A background process left spinning by a test is not a tidiness
+  # problem: it starves the next run and makes a green suite look flaky.
+  if [[ -n "${TICKER_PID:-}" ]] && kill -0 "$TICKER_PID" 2>/dev/null; then
+    kill "$TICKER_PID" 2>/dev/null || true
+    wait "$TICKER_PID" 2>/dev/null || true
+  fi
   if [[ -n "$AGENT_PID" ]] && kill -0 "$AGENT_PID" 2>/dev/null; then
     kill "$AGENT_PID" 2>/dev/null || true
     wait "$AGENT_PID" 2>/dev/null || true
@@ -473,7 +481,321 @@ else
 fi
 
 # ===========================================================================
-info "== 5. What survived =="
+# Failure injection: what an operator sees when a source disappears
+# ===========================================================================
+#
+# Sections 1 to 4 break the *transport* — the controller, the agent process,
+# the database connections. These two break the **measured thing**: a disk is
+# pulled out, an interface goes away, the file a collector reads stops
+# existing. Those are the failures a homelab actually has, and the Go tests
+# cannot prove what happens to them because the interesting part is two
+# processes away: whether the controller hears about it, and whether an
+# operator can find out.
+#
+# Safety: nothing real is touched. The agent is restarted against a synthetic
+# /proc and /sys under its own mktemp directory, so "removing a disk" is a
+# line deleted from a file this script wrote. The real machine's devices are
+# never enumerated, let alone altered.
+#
+# The synthetic root is a symlink farm for everything except the two files
+# under test, so a break is *targeted*: `cpu` and `memory` read the real
+# kernel through the symlinks and keep working, which is what makes "one
+# module failed and the others did not" an assertion rather than a hope.
+
+FAKE_ROOT="$AGENT_STATE_DIR/fakeroot"
+
+build_fake_root() {
+  mkdir -p "$FAKE_ROOT/proc/net" "$FAKE_ROOT/sys/block" "$FAKE_ROOT/sys/class/net"
+  # Everything the other collectors need, by symlink. /proc/self resolves in
+  # the *reading* process, so the agent sees its own mount table — which is
+  # the real one, deliberately: the filesystem module is not under test here
+  # and must keep working to prove the breakage is targeted.
+  for entry in stat meminfo loadavg uptime self; do
+    ln -sfn "/proc/$entry" "$FAKE_ROOT/proc/$entry"
+  done
+  mkdir -p "$FAKE_ROOT/sys/block/vda" "$FAKE_ROOT/sys/block/vdb"
+  for iface in eth0 eth1; do
+    mkdir -p "$FAKE_ROOT/sys/class/net/$iface"
+    printf 'up\n' >"$FAKE_ROOT/sys/class/net/$iface/operstate"
+    printf '1000\n' >"$FAKE_ROOT/sys/class/net/$iface/speed"
+  done
+}
+
+# write_counters <tick> [devices] [interfaces]
+#
+# Monotonic counters that advance with `tick`, so consecutive collections
+# produce real rates rather than zeroes. Device and interface lists are
+# space-separated; omitting one from the list is how this script "removes"
+# it.
+write_counters() {
+  local tick="$1" devices="${2:-vda vdb}" interfaces="${3:-eth0 eth1}"
+  local major=252 index=0
+  : >"$FAKE_ROOT/proc/diskstats.tmp"
+  for device in $devices; do
+    # reads sectors-read writes sectors-written io_ticks, all climbing.
+    printf '%4d %7d %s %d 0 %d %d %d 0 %d %d 0 %d %d\n' \
+      "$major" "$index" "$device" \
+      $((1000 + tick * 10)) $((20000 + tick * 2048)) $((400 + tick * 2)) \
+      $((500 + tick * 5)) $((8000 + tick * 1024)) $((200 + tick)) \
+      $((600 + tick * 20)) $((600 + tick * 20)) \
+      >>"$FAKE_ROOT/proc/diskstats.tmp"
+    index=$((index + 1))
+  done
+  # Written then renamed: a collector reading a half-written counter file
+  # would see a short line and the test would fail for a reason that has
+  # nothing to do with what it is testing.
+  mv "$FAKE_ROOT/proc/diskstats.tmp" "$FAKE_ROOT/proc/diskstats"
+
+  {
+    printf 'Inter-|   Receive                                                |  Transmit\n'
+    printf ' face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n'
+    for iface in $interfaces; do
+      printf '%6s: %d %d 0 0 0 0 0 0 %d %d 0 0 0 0 0 0\n' \
+        "$iface" $((1000000 + tick * 125000)) $((1000 + tick * 200)) \
+        $((500000 + tick * 62500)) $((500 + tick * 100))
+    done
+  } >"$FAKE_ROOT/proc/net/dev.tmp"
+  mv "$FAKE_ROOT/proc/net/dev.tmp" "$FAKE_ROOT/proc/net/dev"
+}
+
+# Advance the counters in the background until told to stop. Real collection
+# needs the numbers to keep moving: a static file produces one rate of zero
+# and then nothing interesting.
+TICKER_PID=""
+TICKER_DEVICES="vda vdb"
+TICKER_INTERFACES="eth0 eth1"
+start_ticker() {
+  local tick=1
+  while :; do
+    # Read the lists from files rather than from variables: this runs in a
+    # subshell, so a later assignment in the parent would never reach it.
+    write_counters "$tick" \
+      "$(cat "$AGENT_STATE_DIR/devices")" "$(cat "$AGENT_STATE_DIR/interfaces")"
+    tick=$((tick + 1))
+    sleep 0.5
+  done &
+  TICKER_PID=$!
+}
+stop_ticker() {
+  if [[ -n "$TICKER_PID" ]] && kill -0 "$TICKER_PID" 2>/dev/null; then
+    kill "$TICKER_PID" 2>/dev/null || true
+    wait "$TICKER_PID" 2>/dev/null || true
+  fi
+  TICKER_PID=""
+}
+
+# series_id <module> <metric> <label-key> <label-value>
+series_id() {
+  query "SELECT id FROM metric_series
+         WHERE module = '$1' AND metric = '$2' AND labels ->> '$3' = '$4'" | head -1
+}
+
+# await_series <module> <metric> <label-key> <label-value> [timeout]
+#
+# Waits for one *named* series and prints its id. Named rather than counted:
+# a count over both modules is satisfied by `network` alone — it produces ten
+# series per interface — and would pass long before `diskio` had taken the
+# two snapshots a rate needs. That is exactly the way the first version of
+# this section went green and then could not resolve the ids it wanted.
+await_series() {
+  local module="$1" metric="$2" key="$3" value="$4" timeout="${5:-60}"
+  local deadline=$((SECONDS + timeout)) identifier=""
+  while ((SECONDS < deadline)); do
+    identifier="$(series_id "$module" "$metric" "$key" "$value" || true)"
+    if [[ -n "$identifier" ]]; then
+      printf '%s' "$identifier"
+      return 0
+    fi
+    sleep 0.5
+  done
+  return 1
+}
+
+health_of() {
+  query "SELECT consecutive_failures, coalesce(last_error, ''),
+                coalesce(last_success_at::text, '')
+         FROM host_module_health WHERE module_id = '$1'" | head -1
+}
+
+# ===========================================================================
+info "== 5. A disk is pulled out and an interface goes away =="
+
+stop_agent_process() {
+  if [[ -n "$AGENT_PID" ]] && kill -0 "$AGENT_PID" 2>/dev/null; then
+    kill "$AGENT_PID" 2>/dev/null || true
+    wait "$AGENT_PID" 2>/dev/null || true
+  fi
+  AGENT_PID=""
+}
+
+build_fake_root
+printf '%s' "$TICKER_DEVICES" >"$AGENT_STATE_DIR/devices"
+printf '%s' "$TICKER_INTERFACES" >"$AGENT_STATE_DIR/interfaces"
+write_counters 0
+start_ticker
+
+stop_agent_process
+agent_env+=(
+  "HCC_AGENT_PROC_ROOT=$FAKE_ROOT/proc"
+  "HCC_AGENT_SYS_ROOT=$FAKE_ROOT/sys"
+)
+start_agent
+api PUT "/hosts/$HOST_ID/monitoring/modules/diskio" \
+  "{\"enabled\":true,\"schedule\":{\"kind\":\"interval\",\"interval_seconds\":$COLLECT_INTERVAL}}" \
+  >/dev/null
+api PUT "/hosts/$HOST_ID/monitoring/modules/network" \
+  "{\"enabled\":true,\"schedule\":{\"kind\":\"interval\",\"interval_seconds\":$COLLECT_INTERVAL}}" \
+  >/dev/null
+
+kept_disk="$(await_series diskio read_bytes device vda)" \
+  || die "vda never reported; check $FAKE_ROOT/proc/diskstats"
+gone_disk="$(await_series diskio read_bytes device vdb)" \
+  || die "vdb never reported; check $FAKE_ROOT/proc/diskstats"
+kept_iface="$(await_series network receive_bytes interface eth0)" \
+  || die "eth0 never reported; check $FAKE_ROOT/proc/net/dev"
+gone_iface="$(await_series network receive_bytes interface eth1)" \
+  || die "eth1 never reported; check $FAKE_ROOT/proc/net/dev"
+ok "all four synthetic devices and interfaces are reporting"
+
+# The removal. The boundary is the controller's clock, read from the database
+# so that it is the same clock the samples are compared against.
+boundary="$(query "SELECT now()" | head -1)"
+printf 'vda' >"$AGENT_STATE_DIR/devices"
+printf 'eth0' >"$AGENT_STATE_DIR/interfaces"
+rm -rf "$FAKE_ROOT/sys/block/vdb" "$FAKE_ROOT/sys/class/net/eth1"
+green "  · vdb and eth1 removed at $boundary"
+
+# Long enough for several collections at the one-second interval, so "no new
+# samples" is a statement about a window with many opportunities in it.
+sleep 8
+
+for pair in "the surviving disk:$kept_disk" "the surviving interface:$kept_iface"; do
+  label="${pair%%:*}"
+  identifier="${pair##*:}"
+  after="$(query "SELECT count(*) FROM metric_samples_raw
+                  WHERE series_id = $identifier AND recorded_at > '$boundary'")"
+  if [[ "$after" =~ ^[0-9]+$ ]] && ((after > 0)); then
+    ok "$label kept reporting ($after samples since the removal)"
+  else
+    bad "$label stopped when its neighbour was removed"
+  fi
+done
+
+for pair in "the removed disk:$gone_disk" "the removed interface:$gone_iface"; do
+  label="${pair%%:*}"
+  identifier="${pair##*:}"
+  after="$(query "SELECT count(*) FROM metric_samples_raw
+                  WHERE series_id = $identifier AND recorded_at > '$boundary'")"
+  # Zero, not "near zero". A device that is gone is not idle, and a single
+  # zero-valued sample would render as a flat line through the removal —
+  # which reads as "the disk is fine and doing nothing".
+  if [[ "$after" == "0" ]]; then
+    ok "$label reported nothing after it went away"
+  else
+    bad "$label reported $after samples after it was removed"
+  fi
+done
+
+# And nothing nonsensical was stored by the transition. A removal that
+# produced a huge positive delta would pass both counts above.
+absurd="$(query "
+  SELECT count(*) FROM metric_samples_raw s
+  JOIN metric_series e ON e.id = s.series_id
+  WHERE e.module IN ('diskio','network')
+    AND (s.value < 0 OR s.value > 1e12)")"
+if [[ "$absurd" == "0" ]]; then
+  ok "no negative or absurd rate was produced by the removals"
+else
+  bad "$absurd implausible rates were stored across the removals"
+fi
+
+# ===========================================================================
+info "== 6. The file a collector reads stops existing =="
+
+# The failure the controller used to lose. `TelemetryEntry.error` has always
+# carried the reason; until Phase M `ingest` read `entry.samples` and nothing
+# else, so an operator saw an enabled module, a connected agent, no data and
+# no explanation.
+
+rm -f "$FAKE_ROOT/proc/diskstats"
+# The ticker would put it straight back.
+stop_ticker
+green "  · /proc/diskstats removed from the agent's view"
+
+deadline=$((SECONDS + 40))
+failures=""
+while ((SECONDS < deadline)); do
+  row="$(health_of diskio || true)"
+  failures="$(printf '%s' "$row" | cut -f1)"
+  if [[ "$failures" =~ ^[0-9]+$ ]] && ((failures > 0)); then break; fi
+  sleep 1
+done
+reason="$(printf '%s' "$row" | cut -f2)"
+if [[ "$failures" =~ ^[0-9]+$ ]] && ((failures > 0)); then
+  ok "the controller recorded the failure ($failures collections)"
+else
+  bad "the controller never heard that diskio was failing"
+fi
+if [[ "$reason" == *diskstats* ]]; then
+  ok "and kept the agent's own reason: $reason"
+else
+  bad "the reason was lost or replaced: '$reason'"
+fi
+
+# The other module is unaffected. This is what makes the breakage targeted
+# rather than "the agent fell over", which would make every assertion above
+# true for the wrong reason.
+network_row="$(health_of network || true)"
+network_failures="$(printf '%s' "$network_row" | cut -f1)"
+if [[ "$network_failures" == "0" ]]; then
+  ok "network is still collecting while diskio fails"
+else
+  bad "network reported $network_failures failures too; the agent is not well"
+fi
+
+# And an operator can see it, through the API rather than the database.
+status="$(api GET "/hosts/$HOST_ID/metrics/status")"
+api_reason="$("$VENV/bin/python" -c "
+import json, sys
+document = json.load(sys.stdin)
+for module in document['modules']:
+    if module['module'] == 'diskio':
+        print(module['last_error'] or '')
+        break
+" <<<"$status")"
+if [[ "$api_reason" == *diskstats* ]]; then
+  ok "the metrics status endpoint reports it: $api_reason"
+else
+  bad "the API did not report the failure: '$api_reason'"
+fi
+
+# Recovery. The count resets and the error is *kept*, because "this module
+# fails and recovers every few minutes" is a real condition that a schema
+# clearing its own evidence could not express.
+write_counters 99
+start_ticker
+deadline=$((SECONDS + 40))
+recovered=""
+while ((SECONDS < deadline)); do
+  row="$(health_of diskio || true)"
+  recovered="$(printf '%s' "$row" | cut -f1)"
+  [[ "$recovered" == "0" ]] && break
+  sleep 1
+done
+if [[ "$recovered" == "0" ]]; then
+  ok "the failure count reset once collection resumed"
+else
+  bad "the failure count did not reset after recovery (last saw '$recovered')"
+fi
+if [[ "$(printf '%s' "$row" | cut -f2)" == *diskstats* ]]; then
+  ok "and the last error survived the recovery, as a dated fact"
+else
+  bad "recovery erased the evidence that it had been failing"
+fi
+stop_ticker
+
+# ===========================================================================
+info "== 7. What survived =="
 
 # Both counts in **one** query, which is not a tidiness point.
 #

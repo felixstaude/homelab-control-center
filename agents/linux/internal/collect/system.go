@@ -59,7 +59,7 @@ func (l *Load) Collect(_ context.Context) ([]Sample, error) {
 	path := filepath.Join(l.ProcRoot, "loadavg")
 	raw, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
-		return nil, fmt.Errorf("cannot read %s: %w", path, err)
+		return nil, err
 	}
 
 	fields := strings.Fields(string(raw))
@@ -137,7 +137,7 @@ func (u *Uptime) Collect(_ context.Context) ([]Sample, error) {
 	path := filepath.Join(u.ProcRoot, "uptime")
 	raw, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
-		return nil, fmt.Errorf("cannot read %s: %w", path, err)
+		return nil, err
 	}
 
 	fields := strings.Fields(string(raw))

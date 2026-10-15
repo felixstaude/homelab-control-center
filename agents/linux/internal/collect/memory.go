@@ -238,7 +238,7 @@ func (s *Swap) Collect(_ context.Context) ([]Sample, error) {
 func readMeminfo(path string) (map[string]float64, error) {
 	file, err := os.Open(path) //nolint:gosec // a path under the configured proc root
 	if err != nil {
-		return nil, fmt.Errorf("cannot read %s: %w", path, err)
+		return nil, err
 	}
 	defer file.Close()
 

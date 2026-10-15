@@ -267,7 +267,7 @@ func (n *Network) read() (map[string]netCounters, error) {
 	path := n.devPath()
 	file, err := os.Open(path) //nolint:gosec // a path under the configured proc root
 	if err != nil {
-		return nil, fmt.Errorf("cannot read %s: %w", path, err)
+		return nil, err
 	}
 	defer file.Close()
 

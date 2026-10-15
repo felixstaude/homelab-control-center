@@ -23,11 +23,18 @@ import (
 //	storagebusy      — the same mounts, and diskstats one second of work later
 //	storagerebooted  — diskstats with counters *below* the baseline
 //	storageidle      — a container's mount table: nothing but pseudo-mounts
+//	storageremoved   — one second after storagebusy with nvme0n1 pulled out,
+//	                   the uplink NIC unplugged and the wg0 tunnel riding on
+//	                   it gone: the remaining devices kept moving
+//	storagereplaced  — a second later again, with a *different* nvme0n1
+//	                   enumerated under the same name, counters from zero
 const (
 	storage         = "testdata/storage"
 	storageBusy     = "testdata/storagebusy"
 	storageRebooted = "testdata/storagerebooted"
 	storageIdle     = "testdata/storageidle"
+	storageRemoved  = "testdata/storageremoved"
+	storageReplaced = "testdata/storagereplaced"
 )
 
 // --- Filesystem -------------------------------------------------------------
@@ -579,6 +586,71 @@ func TestADeviceThatAppearsHasNoRateUntilTheNextInterval(t *testing.T) {
 	}
 }
 
+func TestADiskThatIsPulledOutStopsReportingRatherThanReportingZero(t *testing.T) {
+	// An NVMe drive removed between two samples. Phase M found that this
+	// case was never covered: appearance was (above), disappearance was not.
+	//
+	// "Zero bytes per second" is a measurement and would be a lie — the
+	// device is not idle, it is gone — and the interface charting it would
+	// draw a flat line through the removal, which reads as "the disk is
+	// fine and doing nothing".
+	samples := twoSnapshots(t, storageBusy, storageRemoved, time.Second)
+
+	for _, sample := range samples {
+		if sample.Labels["device"] == "nvme0n1" {
+			t.Errorf("a removed device reported %s = %v", sample.Metric, sample.Value)
+		}
+	}
+	// And the disks that are still there are still reported. One device
+	// vanishing must not blank out the host — which is the mirror of the
+	// counter-reset case above and a separate code path.
+	if _, found := labelled(samples, "read_bytes", "device", "sda"); !found {
+		t.Error("the remaining devices were lost with it")
+	}
+}
+
+func TestADiskReplacedUnderTheSameNameProducesNoSpike(t *testing.T) {
+	// The realistic hot-swap: a drive is pulled, another is inserted, and
+	// the kernel enumerates it as nvme0n1 again with counters from zero.
+	//
+	// Three collections, because that is what the sequence takes: present,
+	// absent, present-again. The device is missing from the middle reading,
+	// so the third has no previous counters for it and must report nothing
+	// rather than treat 12 sectors as a delta from 140,000.
+	start := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	now := start
+	collector := collect.NewDiskIO(storageBusy, storageBusy+"/sys")
+	collector.Now = func() time.Time { return now }
+	if _, err := collector.Collect(context.Background()); err != nil {
+		t.Fatalf("first collect: %v", err)
+	}
+
+	collector.ProcRoot, collector.SysRoot = storageRemoved, storageRemoved+"/sys"
+	now = start.Add(time.Second)
+	if _, err := collector.Collect(context.Background()); err != nil {
+		t.Fatalf("second collect: %v", err)
+	}
+
+	collector.ProcRoot, collector.SysRoot = storageReplaced, storageReplaced+"/sys"
+	now = start.Add(2 * time.Second)
+	samples, err := collector.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("third collect: %v", err)
+	}
+
+	for _, sample := range samples {
+		if sample.Labels["device"] == "nvme0n1" {
+			t.Errorf("the replacement device reported %s = %v on its first "+
+				"interval; it has no previous reading to subtract",
+				sample.Metric, sample.Value)
+		}
+	}
+	// The host is still reporting: a replacement must not stop everything.
+	if _, found := labelled(samples, "read_bytes", "device", "sda"); !found {
+		t.Error("the rest of the host stopped reporting")
+	}
+}
+
 func TestTwoCollectionsInsideOneTickProduceNothing(t *testing.T) {
 	// A zero interval divides by zero. Returning nothing says "no
 	// measurement" without producing an infinity for Sample.Valid to catch
@@ -883,6 +955,58 @@ func TestANetworkCounterResetDropsTheWholeInterface(t *testing.T) {
 	// The interface whose counters did not move backwards is still reported.
 	if _, found := labelled(samples, "receive_bytes", "interface", "wg0"); !found {
 		t.Error("an unaffected interface was dropped too")
+	}
+}
+
+func TestAnInterfaceThatGoesAwayStopsReportingRatherThanReportingZero(t *testing.T) {
+	// A WireGuard tunnel brought down, or a USB NIC unplugged. The mirror
+	// of the disk case above and a separate code path, because the network
+	// collector keys its previous counters by interface name.
+	//
+	// "Zero bytes per second" would render as a flat line through the
+	// moment the tunnel dropped, which is the opposite of what happened.
+	samples := networkSnapshots(t, storageBusy, storageRemoved, time.Second, nil)
+
+	for _, sample := range samples {
+		if sample.Labels["interface"] == "wg0" {
+			t.Errorf("a removed interface reported %s = %v", sample.Metric, sample.Value)
+		}
+	}
+	// The bridge is still there and still moving, so it is still reported.
+	if _, found := labelled(samples, "receive_bytes", "interface", "br0"); !found {
+		t.Error("the remaining interfaces were lost with it")
+	}
+}
+
+func TestLinkStateIsNotReportedForAnInterfaceThatIsGone(t *testing.T) {
+	// `up` and `speed` come from the *current* snapshot rather than from a
+	// delta, which is what makes "the cable is unplugged" visible on the
+	// first collection instead of one interval later. The same property is
+	// the hazard here: an interface absent from /proc/net/dev must not
+	// acquire a link state from a sysfs entry that outlived it, or from the
+	// collector's own memory. "enp6s0 is up at 1 Gb/s" about a NIC that is
+	// no longer in the machine is worse than silence.
+	//
+	// An explicit list, because the default selection drops enp6s0 as a
+	// bridge member — and asserting the absence of something the selection
+	// rule already removes would be a test of nothing. wg0 would be worse
+	// still: WireGuard reports `operstate=unknown`, which this collector
+	// deliberately does not turn into a link state, so a `wg0` version of
+	// this assertion passes whether or not the interface is there.
+	only := []string{"enp6s0"}
+	before := networkSnapshots(t, storage, storageBusy, time.Second, only)
+	if _, found := labelled(before, "up", "interface", "enp6s0"); !found {
+		t.Fatal("the fixture reports no link state while the interface is present, " +
+			"so the absence below would prove nothing")
+	}
+
+	samples := networkSnapshots(t, storageBusy, storageRemoved, time.Second, only)
+
+	if _, found := labelled(samples, "up", "interface", "enp6s0"); found {
+		t.Error("a removed interface still reported a link state")
+	}
+	if _, found := labelled(samples, "speed", "interface", "enp6s0"); found {
+		t.Error("a removed interface still reported a link speed")
 	}
 }
 

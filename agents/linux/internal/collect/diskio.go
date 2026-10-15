@@ -271,7 +271,7 @@ func (d *DiskIO) read() (map[string]diskCounters, error) {
 	path := d.diskstatsPath()
 	file, err := os.Open(path) //nolint:gosec // a path under the configured proc root
 	if err != nil {
-		return nil, fmt.Errorf("cannot read %s: %w", path, err)
+		return nil, err
 	}
 	defer file.Close()
 

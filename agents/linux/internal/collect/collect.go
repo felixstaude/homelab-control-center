@@ -116,6 +116,16 @@ type Collector interface {
 	// *this* time" — the CPU collector's first run, or an interval across a
 	// counter reset. The two are different and the scheduler reports them
 	// differently.
+	//
+	// **The error text reaches an operator.** The agent sends it with the
+	// collection, the controller stores it against the module, and the host
+	// page shows it under the module's name. So it is written to be read by
+	// somebody looking at a web page, not only by somebody reading a log —
+	// which is why the collectors return the `*fs.PathError` from os.Open
+	// and os.ReadFile unwrapped. It already prints as
+	// "open /proc/diskstats: no such file or directory"; naming the path
+	// again produces "cannot read /proc/diskstats: open /proc/diskstats:
+	// ...", and half of a 256-character field is then a duplicate.
 	Collect(ctx context.Context) ([]Sample, error)
 }
 

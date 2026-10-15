@@ -426,8 +426,11 @@ install-matrix: ## Install the agent into a real-systemd container and exercise 
 	@./scripts/install-matrix.sh
 
 .PHONY: reliability-e2e
-reliability-e2e: ## Kill the controller, the agent and the database connections; check what survived (requires make db-up)
+reliability-e2e: ## Kill the controller, the agent and the database connections, pull a disk, delete a collector's source; check what survived (requires make db-up)
 # Its own disposable database and port. The "database outage" terminates only
 # this database's own sessions — the server is never stopped and the
-# developer's database is never touched. See scripts/reliability-e2e.sh.
+# developer's database is never touched. The failure injection runs against a
+# synthetic /proc and /sys under the script's own mktemp directory, so
+# "removing a disk" is a line deleted from a file it wrote and this machine's
+# real devices are never enumerated. See scripts/reliability-e2e.sh.
 	@./scripts/reliability-e2e.sh

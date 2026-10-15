@@ -184,7 +184,7 @@ func (s *Sensors) read() ([]reading, error) {
 	root := filepath.Join(s.SysRoot, "class", "hwmon")
 	entries, err := os.ReadDir(root)
 	if err != nil {
-		return nil, fmt.Errorf("cannot read %s: %w", root, err)
+		return nil, err
 	}
 
 	// Sorted, so the MaxSensors cut is deterministic rather than filesystem
