@@ -1,7 +1,7 @@
 """Monitoring configuration: global defaults, host overrides, and revisions.
 
-Phase 2. Three tables, and the shape of each is decided by a question the
-product has to be able to answer.
+Phase 2, plus one observation table added later. Four tables, and the shape of
+each is decided by a question the product has to be able to answer.
 
 * :class:`GlobalModuleDefault` — "what does every host do unless told
   otherwise?" One row per module, at most.
@@ -11,6 +11,10 @@ product has to be able to answer.
 * :class:`HostConfigRevision` — "what document was this agent actually
   running?" A full snapshot per version, because that is the question, and a
   diff chain answers it only after a replay nobody wants to audit.
+* :class:`HostModuleHealth` — "is this module's collector actually working?"
+  The only one of the four that records an observation rather than an
+  intention, which is why it is a separate table and not a column on the
+  override row.
 
 ## Why ``NULL`` means inherit, in a column rather than in a convention
 
@@ -68,6 +72,7 @@ from sqlalchemy import (
     FetchedValue,
     ForeignKey,
     Index,
+    Integer,
     String,
     Text,
     UniqueConstraint,
@@ -407,6 +412,165 @@ class HostConfigRevision(Base):
             state = "rejected"
         return (
             f"HostConfigRevision(host_id={self.host_id!r}, version={self.version!r}, state={state})"
+        )
+
+
+#: Longest collector error this controller stores.
+#:
+#: The agent's protocol already bounds the field at 256 characters, so this is
+#: the second of the two bounds rather than the only one — the protocol one
+#: refuses the frame, this one is what the column can physically hold. Both,
+#: because the column outlives any one version of the protocol model and a
+#: reader of the schema should not have to go and find the other number.
+MAX_COLLECTOR_ERROR_LENGTH: Final = 256
+
+
+class HostModuleHealth(Base):
+    """Whether one module's collector is actually working on one host.
+
+    # The fourth reason a chart is empty
+
+    ``GET /hosts/{id}/metrics/status`` could already tell "this module has
+    collected nothing" from "this module does not exist"; the monitoring
+    endpoint says whether collection is switched on, and the host endpoint
+    whether the agent is connected. Between them they left one cause
+    unreported and it is the interesting one: **collection is on, the agent is
+    connected, and the collector is failing every interval.**
+
+    The agent has always said so. :class:`hcc.agents.protocol.TelemetryEntry`
+    carries an ``error`` field whose own description reads "a module that has
+    been failing for an hour is information an operator needs" — and until
+    this table the controller parsed it, validated it, and discarded it. A
+    removed disk, a stopped Docker daemon or a systemd that stopped answering
+    produced an enabled module with no data and no explanation, indefinitely.
+
+    # Configuration and observation are different tables
+
+    This is not a column on :class:`HostModuleOverride`. That row is what the
+    operator *wants*; this one is what is *happening*. A module with no
+    override row at all — inheriting the global default, which is the common
+    case — still has health, and resetting an override deletes a row that
+    must not take the failure history with it.
+
+    # Success means the collection ran, not that it produced samples
+
+    ``last_success_at`` advances whenever an entry arrives without an error,
+    including one carrying no samples. That is not a loophole: a rate
+    collector legitimately reports nothing on its first interval and on any
+    interval where a counter went backwards, and calling those failures would
+    make the first minute after every agent restart look broken. "Collected
+    nothing" is already answerable from ``metric_series.last_sample_at``;
+    this column answers "did the collector run".
+
+    # The error survives recovery
+
+    ``last_error`` and ``last_error_at`` are kept after a later success, and
+    only ``consecutive_failures`` resets to zero. A module that fails forty
+    times an hour and recovers between each one is a real condition, and a
+    schema that cleared the evidence on every success could not express it.
+
+    # Every timestamp here is the *controller's* clock
+
+    Unlike ``metric_series.last_sample_at``, which records when the agent says
+    it took a measurement. The difference is deliberate: a host whose clock is
+    four hours out is one of the conditions this table exists to report, and a
+    diagnostic timestamped by the thing being diagnosed is not a diagnostic.
+    So these columns say when the controller *heard*, which it knows for
+    certain, and the sample timestamps elsewhere say when the agent *claims*.
+    """
+
+    __tablename__ = "host_module_health"
+
+    __table_args__ = (
+        # One row per host per module. Ingest upserts on this, so without it
+        # a batch would append rather than update and the newest row would be
+        # whichever one a query happened to order first.
+        UniqueConstraint("host_id", "module_id", name="uq_host_module_health_host_module"),
+        Index("ix_host_module_health_host_id", "host_id"),
+        CheckConstraint(f"module_id IN ({_MODULE_ID_SQL})", name="module_id_is_known"),
+        CheckConstraint("consecutive_failures >= 0", name="failures_are_not_negative"),
+        # An error string and no time for it, or the reverse, would be a row
+        # the interface cannot render honestly: "failing, at some unknown
+        # moment" and "failed at 14:03 for no stated reason" are both worse
+        # than the absence this forbids them from becoming.
+        CheckConstraint(
+            "(last_error IS NULL) = (last_error_at IS NULL)",
+            name="an_error_has_a_time_and_a_time_has_an_error",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    host_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("hosts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    module_id: Mapped[str] = mapped_column(String(MAX_MODULE_ID_LENGTH), nullable=False)
+
+    last_reported_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        doc="When the controller last heard about this module, success or failure.",
+    )
+
+    last_success_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        doc="When a collection last arrived without an error. See the class docstring.",
+    )
+
+    last_error_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, doc="When the last failure arrived."
+    )
+
+    last_error: Mapped[str | None] = mapped_column(
+        String(MAX_COLLECTOR_ERROR_LENGTH),
+        nullable=True,
+        doc=(
+            "Why the last collection produced nothing — usually the agent's "
+            "own words, occasionally the controller's refusal of what it sent. "
+            "Text from a host that may be compromised: bounded here, escaped "
+            "by whatever renders it, never interpolated into anything that "
+            "executes."
+        ),
+    )
+
+    consecutive_failures: Mapped[int] = mapped_column(
+        # Not nullable and defaulting to zero: "has never failed" and "failed
+        # an unknown number of times" would otherwise look the same, and the
+        # first is the overwhelmingly common case.
+        nullable=False,
+        server_default="0",
+        default=0,
+        type_=Integer,
+        doc="Failures since the last success. Reset to zero by a success, never by time.",
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        server_onupdate=FetchedValue(),
+    )
+
+    @validates("module_id")
+    def _validate_module_id(self, _key: str, value: str) -> str:
+        if value not in MODULE_IDS:
+            raise ValueError(
+                f"unknown module {value!r}; this controller knows: {', '.join(MODULE_IDS)}"
+            )
+        return value
+
+    def __repr__(self) -> str:
+        return (
+            f"HostModuleHealth(host_id={self.host_id!r}, module_id={self.module_id!r}, "
+            f"consecutive_failures={self.consecutive_failures!r})"
         )
 
 

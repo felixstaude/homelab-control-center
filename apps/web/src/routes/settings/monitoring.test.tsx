@@ -58,10 +58,11 @@ describe('the resting state of a fresh installation', () => {
     await renderSettings();
 
     // Scoped to the badge: each row's select also carries a "Not configured"
-    // option, so an unscoped count would be ten and pass for the wrong reason.
+    // option, so an unscoped count would be twenty-two and pass for the
+    // wrong reason. Eleven, one per module in the registry.
     expect(
       await screen.findAllByText('Not configured', { selector: 'span' }),
-    ).toHaveLength(5);
+    ).toHaveLength(11);
     expect(screen.queryByText('On by default')).toBeNull();
   });
 

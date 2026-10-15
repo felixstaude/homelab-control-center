@@ -267,13 +267,19 @@ export function makeHost(overrides: Partial<Host> = {}): Host {
  * from outside the project root and widening its allowed paths for a test
  * fixture is not a trade worth making.
  *
- * Kept faithful on purpose. Five modules, because that is what the registry
- * declares — not the two that are most interesting — and the real interval
- * floors, which differ per module: a fixture using 1 s everywhere would not
- * notice an interface offering an interval the server refuses. The metric ids
- * are the registry's too (`used`, not `used_bytes`); the interface displays
- * `metric_name` and never branches on the id, but a fixture that disagrees
- * with reality misleads whoever reads it next.
+ * Kept faithful on purpose, and now *checked* — see `fake-backend.test.ts`,
+ * which reads the contract with `node:fs` and compares every field. The
+ * prose below used to be the only thing keeping this in step, and it was not
+ * enough: six modules landed in the registry during Operation Horizon and
+ * this copy claimed five throughout, so every browser test ran against a
+ * five-module world and nothing failed.
+ *
+ * Eleven modules, because that is what the registry declares, with the real
+ * interval floors, which differ per module: a fixture using 1 s everywhere
+ * would not notice an interface offering an interval the server refuses. The
+ * metric ids are the registry's too (`used`, not `used_bytes`); the interface
+ * displays `metric_name` and never branches on the id, but a fixture that
+ * disagrees with reality misleads whoever reads it next.
  */
 export const FAKE_MODULES: readonly ModuleDescriptor[] = [
   {
@@ -356,6 +362,137 @@ export const FAKE_MODULES: readonly ModuleDescriptor[] = [
     data_schema_version: 1,
     metrics: [
       { id: 'seconds', name: 'System uptime', unit: 'seconds', kind: 'gauge', label_keys: [] },
+    ],
+  },
+  {
+    id: 'filesystem',
+    name: 'Filesystem usage',
+    description:
+      'Capacity, usage and inode usage per mounted filesystem, from statfs and /proc/self/mountinfo. Filesystem capacity, which is not disk capacity.',
+    platform: 'linux',
+    default_interval_seconds: 60,
+    min_interval_seconds: 10,
+    schedule_kinds: ['interval'],
+    requires_privileges: false,
+    allows_duplicate_runs: true,
+    data_schema_version: 1,
+    metrics: [
+      { id: 'total', name: 'Filesystem size', unit: 'bytes', kind: 'gauge', label_keys: ['mount'] },
+      { id: 'used', name: 'Used', unit: 'bytes', kind: 'gauge', label_keys: ['mount'] },
+      { id: 'available', name: 'Available', unit: 'bytes', kind: 'gauge', label_keys: ['mount'] },
+      { id: 'utilisation', name: 'Used', unit: 'percent', kind: 'gauge', label_keys: ['mount'] },
+      { id: 'inodes_utilisation', name: 'Inodes used', unit: 'percent', kind: 'gauge', label_keys: ['mount'] },
+      { id: 'readonly', name: 'Mounted read-only', unit: 'count', kind: 'gauge', label_keys: ['mount'] },
+    ],
+  },
+  {
+    id: 'diskio',
+    name: 'Disk throughput',
+    description:
+      'Read and write throughput and operation rates per block device, from /proc/diskstats. Computed from the difference between two samples.',
+    platform: 'linux',
+    default_interval_seconds: 10,
+    min_interval_seconds: 1,
+    schedule_kinds: ['interval'],
+    requires_privileges: false,
+    allows_duplicate_runs: true,
+    data_schema_version: 1,
+    metrics: [
+      { id: 'read_bytes', name: 'Read throughput', unit: 'bytes_per_second', kind: 'gauge', label_keys: ['device'] },
+      { id: 'write_bytes', name: 'Write throughput', unit: 'bytes_per_second', kind: 'gauge', label_keys: ['device'] },
+      { id: 'read_ops', name: 'Reads', unit: 'operations_per_second', kind: 'gauge', label_keys: ['device'] },
+      { id: 'write_ops', name: 'Writes', unit: 'operations_per_second', kind: 'gauge', label_keys: ['device'] },
+      { id: 'utilisation', name: 'Busy', unit: 'percent', kind: 'gauge', label_keys: ['device'] },
+    ],
+  },
+  {
+    id: 'network',
+    name: 'Network traffic',
+    description:
+      'Throughput, packet rates, errors and link state per interface, from /proc/net/dev and /sys/class/net. Computed from the difference between two samples.',
+    platform: 'linux',
+    default_interval_seconds: 10,
+    min_interval_seconds: 1,
+    schedule_kinds: ['interval'],
+    requires_privileges: false,
+    allows_duplicate_runs: true,
+    data_schema_version: 1,
+    metrics: [
+      { id: 'receive_bytes', name: 'Download', unit: 'bytes_per_second', kind: 'gauge', label_keys: ['interface'] },
+      { id: 'transmit_bytes', name: 'Upload', unit: 'bytes_per_second', kind: 'gauge', label_keys: ['interface'] },
+      { id: 'receive_packets', name: 'Packets in', unit: 'packets_per_second', kind: 'gauge', label_keys: ['interface'] },
+      { id: 'transmit_packets', name: 'Packets out', unit: 'packets_per_second', kind: 'gauge', label_keys: ['interface'] },
+      { id: 'receive_errors', name: 'Receive errors', unit: 'packets_per_second', kind: 'gauge', label_keys: ['interface'] },
+      { id: 'transmit_errors', name: 'Transmit errors', unit: 'packets_per_second', kind: 'gauge', label_keys: ['interface'] },
+      { id: 'receive_drops', name: 'Receive drops', unit: 'packets_per_second', kind: 'gauge', label_keys: ['interface'] },
+      { id: 'transmit_drops', name: 'Transmit drops', unit: 'packets_per_second', kind: 'gauge', label_keys: ['interface'] },
+      { id: 'up', name: 'Link up', unit: 'count', kind: 'gauge', label_keys: ['interface'] },
+      { id: 'speed', name: 'Link speed', unit: 'bits_per_second', kind: 'gauge', label_keys: ['interface'] },
+    ],
+  },
+  {
+    id: 'sensors',
+    name: 'Temperatures and fans',
+    description:
+      'Temperature and fan readings from /sys/class/hwmon, named by the chip that reports them. Only what the hardware actually exposes — a host with no sensors reports the module unavailable rather than inventing one.',
+    platform: 'linux',
+    default_interval_seconds: 30,
+    min_interval_seconds: 5,
+    schedule_kinds: ['interval'],
+    requires_privileges: false,
+    allows_duplicate_runs: true,
+    data_schema_version: 1,
+    metrics: [
+      { id: 'temperature', name: 'Temperature', unit: 'celsius', kind: 'gauge', label_keys: ['sensor'] },
+      { id: 'fan_speed', name: 'Fan speed', unit: 'rpm', kind: 'gauge', label_keys: ['sensor'] },
+    ],
+  },
+  {
+    id: 'docker',
+    name: 'Containers',
+    description:
+      'Container state, CPU, memory and network from the Docker Engine API. Read-only. Needs the host administrator to grant socket access first: the Docker socket is equivalent to root.',
+    platform: 'linux',
+    default_interval_seconds: 15,
+    min_interval_seconds: 5,
+    schedule_kinds: ['interval'],
+    requires_privileges: true,
+    allows_duplicate_runs: true,
+    data_schema_version: 1,
+    metrics: [
+      { id: 'containers_total', name: 'Containers', unit: 'count', kind: 'gauge', label_keys: [] },
+      { id: 'containers_running', name: 'Running', unit: 'count', kind: 'gauge', label_keys: [] },
+      { id: 'running', name: 'Running', unit: 'count', kind: 'gauge', label_keys: ['container'] },
+      { id: 'cpu_utilisation', name: 'CPU', unit: 'percent', kind: 'gauge', label_keys: ['container'] },
+      { id: 'memory_bytes', name: 'Memory', unit: 'bytes', kind: 'gauge', label_keys: ['container'] },
+      { id: 'memory_limit', name: 'Memory limit', unit: 'bytes', kind: 'gauge', label_keys: ['container'] },
+      { id: 'memory_utilisation', name: 'Memory used', unit: 'percent', kind: 'gauge', label_keys: ['container'] },
+      { id: 'receive_bytes', name: 'Download', unit: 'bytes_per_second', kind: 'gauge', label_keys: ['container'] },
+      { id: 'transmit_bytes', name: 'Upload', unit: 'bytes_per_second', kind: 'gauge', label_keys: ['container'] },
+      { id: 'restart_count', name: 'Restarts', unit: 'count', kind: 'gauge', label_keys: ['container'] },
+      { id: 'uptime_seconds', name: 'Uptime', unit: 'seconds', kind: 'gauge', label_keys: ['container'] },
+      { id: 'healthy', name: 'Healthy', unit: 'count', kind: 'gauge', label_keys: ['container'] },
+    ],
+  },
+  {
+    id: 'systemd',
+    name: 'Services',
+    description:
+      'State, restart count and uptime for named systemd units, plus the host\'s failed-unit count. Read-only. Names the units to watch, because a host has hundreds and almost none of them are interesting.',
+    platform: 'linux',
+    default_interval_seconds: 60,
+    min_interval_seconds: 15,
+    schedule_kinds: ['interval'],
+    requires_privileges: false,
+    allows_duplicate_runs: true,
+    data_schema_version: 1,
+    metrics: [
+      { id: 'units_failed', name: 'Failed units', unit: 'count', kind: 'gauge', label_keys: [] },
+      { id: 'active', name: 'Active', unit: 'count', kind: 'gauge', label_keys: ['unit'] },
+      { id: 'failed', name: 'Failed', unit: 'count', kind: 'gauge', label_keys: ['unit'] },
+      { id: 'restarts', name: 'Restarts', unit: 'count', kind: 'gauge', label_keys: ['unit'] },
+      { id: 'enabled', name: 'Enabled at boot', unit: 'count', kind: 'gauge', label_keys: ['unit'] },
+      { id: 'uptime_seconds', name: 'Running for', unit: 'seconds', kind: 'gauge', label_keys: ['unit'] },
     ],
   },
 ];
@@ -565,6 +702,29 @@ export type FakeBackendState = {
   metricResolution: string;
   /** Total raw samples stored per host, for the status endpoint. */
   metricSampleCount: Record<string, number>;
+  /**
+   * Per-host, per-module collector health, keyed `hostId` then `moduleId`.
+   *
+   * Empty by default — "no module has ever failed" is the resting state of a
+   * working installation, and a fake whose default was "everything is
+   * failing" would make the ordinary case the one nobody tested.
+   */
+  moduleHealth: Record<string, Record<string, ModuleHealthSeed>>;
+};
+
+/**
+ * What one module's collector is doing, as a test states it.
+ *
+ * Deliberately not the full API shape: a test saying "docker is failing with
+ * this message" should not also have to supply four timestamps, and the
+ * handler derives the ones that follow from the two that matter.
+ */
+export type ModuleHealthSeed = {
+  /** The agent's own words. Null for a module that is collecting fine. */
+  last_error?: string | null;
+  consecutive_failures?: number;
+  /** Omit to derive from `consecutive_failures`. */
+  last_reported_at?: string | null;
 };
 
 export type FakeBackend = {
@@ -672,6 +832,7 @@ export function installFakeBackend(initial: Partial<FakeBackendState> = {}): Fak
     metricPoints: {},
     metricResolution: 'raw',
     metricSampleCount: {},
+    moduleHealth: {},
     enrollmentCredential: 'TEST-ENROLMENT-CREDENTIAL-0000000000000000',
     agentReleases: null,
     updateOverview: null,
@@ -1727,11 +1888,24 @@ export function installFakeBackend(initial: Partial<FakeBackendState> = {}): Fak
               .filter((value): value is string => value !== null)
               .sort()
               .at(-1);
+            const seed = state.moduleHealth[hostId]?.[descriptor.id];
+            const failures = seed?.consecutive_failures ?? (seed?.last_error ? 1 : 0);
+            // A module with a health seed has been heard from; one without
+            // has not. That distinction is the whole point of the field —
+            // "never reported" is not "working" — so the fake has to be able
+            // to produce both, and does not default to the reassuring one.
+            const reported =
+              seed === undefined ? null : (seed.last_reported_at ?? last ?? new Date().toISOString());
             return {
               module: descriptor.id,
               module_name: descriptor.name,
               series_count: owned.length,
               last_sample_at: last ?? null,
+              last_reported_at: reported,
+              last_success_at: failures > 0 ? (last ?? null) : reported,
+              last_error_at: seed?.last_error ? reported : null,
+              last_error: seed?.last_error ?? null,
+              consecutive_failures: failures,
             };
           }),
         });

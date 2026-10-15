@@ -741,20 +741,60 @@ export type MetricRange = {
   truncated: boolean;
 };
 
-/** What one module is doing on one host. */
+/**
+ * What one module is doing on one host.
+ *
+ * The last five fields answer a question the first four could not: **is the
+ * collector failing?** A module with no series and no samples could be one
+ * nobody enabled, one enabled a second ago, or one that has raised the same
+ * error every interval for a week. Those need different actions.
+ */
 export type ModuleMetricStatus = {
   module: string;
   module_name: string;
   series_count: number;
+  /** When the module last produced a sample, on the **agent's** clock. */
   last_sample_at: string | null;
+  /**
+   * When the controller last heard anything about this module — a successful
+   * collection or a failed one. Null means this host has never reported it,
+   * which is not the same as healthy.
+   *
+   * This and the three fields below are on the **controller's** clock. A host
+   * whose clock is wrong is one of the conditions they report, and a
+   * diagnostic timestamped by the thing being diagnosed is not a diagnostic.
+   */
+  last_reported_at: string | null;
+  /**
+   * When a collection last arrived without an error. A collection that ran
+   * and produced no samples counts: a rate collector's first interval
+   * legitimately produces nothing.
+   */
+  last_success_at: string | null;
+  last_error_at: string | null;
+  /**
+   * Why the last collection produced nothing, usually in the agent's own
+   * words. Kept after a later success — only the count resets — so a module
+   * that fails and recovers is visible rather than self-erasing.
+   *
+   * **Untrusted text from the host.** Render it, never interpret it.
+   */
+  last_error: string | null;
+  /**
+   * Failures since the last success. Zero both for a module that is working
+   * and for one that has never reported; `last_reported_at` tells them apart.
+   */
+  consecutive_failures: number;
 };
 
 /**
  * `GET /api/v1/hosts/{id}/metrics/status`.
  *
- * The question a chart cannot answer: an empty chart could mean "nothing
- * collected", "collection is off" or "the agent is offline", and only the
- * first is visible from the data.
+ * The question a chart cannot answer. An empty chart has four causes and only
+ * one of them is visible from the data: nothing collected (this endpoint),
+ * collection is off (the monitoring endpoint), the agent is offline (the host
+ * endpoint), or the collector is failing every interval — this endpoint too,
+ * through `ModuleMetricStatus`.
  */
 export type MetricsStatus = {
   host_id: string;

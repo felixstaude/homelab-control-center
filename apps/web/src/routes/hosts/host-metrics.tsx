@@ -1,9 +1,15 @@
 import { useQuery } from '@tanstack/react-query';
-import { Activity } from 'lucide-react';
+import { Activity, AlertTriangle } from 'lucide-react';
 import { lazy, Suspense, useMemo, useState } from 'react';
 
 import { fetchLatestMetrics, fetchMetricsStatus } from '@/api/metrics';
-import type { Host, LatestValue, MetricSeries } from '@/api/types';
+import type {
+  Host,
+  LatestValue,
+  MetricSeries,
+  MetricsStatus,
+  ModuleMetricStatus,
+} from '@/api/types';
 import { ErrorPanel } from '@/components/states/panel-states';
 import { Alert } from '@/components/ui/alert';
 import {
@@ -40,11 +46,12 @@ import { ResourcePanels } from '@/routes/hosts/resource-panels';
  *   it out of `latest` and this renders nothing in its place. "CPU 0%" is a
  *   claim about a machine, and a zeroed tile is indistinguishable from a real
  *   measurement of zero.
- * - **"No data" says why.** An empty response has at least four causes —
+ * - **"No data" says why.** An empty response has at least five causes —
  *   nothing enabled, agent offline, enabled but not yet collected, collecting
- *   but every reading stale — and they have different remedies. The empty
- *   state uses `status` and the host's own connectivity to say which it is,
- *   rather than printing one sentence that is right a quarter of the time.
+ *   but every reading stale, and the collector failing every interval — and
+ *   they have different remedies. The empty state uses `status` and the
+ *   host's own connectivity to say which it is, rather than printing one
+ *   sentence that is right a fifth of the time.
  * - **Every value carries its age.** A reading is only current inside the
  *   freshness window, and the window is stated, so "nothing in the last five
  *   minutes" is distinguishable from "nothing, ever".
@@ -102,6 +109,13 @@ export function HostMetricsCard({ host }: { host: Host }) {
     [values],
   );
 
+  // Modules whose last collection raised an error. Usually empty; when it is
+  // not, it is the explanation for an otherwise inexplicable empty page.
+  const failing = useMemo(
+    () => (status.data?.modules ?? []).filter((module) => module.consecutive_failures > 0),
+    [status.data],
+  );
+
   return (
     <Card>
       <CardHeader>
@@ -139,6 +153,7 @@ export function HostMetricsCard({ host }: { host: Host }) {
             freshnessSeconds={latest.data.freshness_seconds}
             sampleCount={status.data?.sample_count ?? null}
             lastSampleAt={status.data?.last_sample_at ?? null}
+            failing={failing}
           />
         ) : (
           <>
@@ -191,22 +206,59 @@ function LatestTile({ latest }: { latest: LatestValue }) {
 /**
  * Why there is nothing to show.
  *
- * Four distinguishable causes, because they have four different remedies and a
+ * Five distinguishable causes, because they have five different remedies and a
  * single "no data" message would send an operator to the wrong one. The order
- * is the order of likelihood for a host that was just set up.
+ * is the order of likelihood for a host that was just set up, except for the
+ * first — a collector that is failing is checked before everything else,
+ * because when it applies it is the answer and no amount of enabling modules
+ * or restarting agents will change it.
  */
 function NoCurrentData({
   host,
   freshnessSeconds,
   sampleCount,
   lastSampleAt,
+  failing,
 }: {
   host: Host;
   freshnessSeconds: number;
   sampleCount: number | null;
   lastSampleAt: string | null;
+  /** Modules whose last collection raised an error. Usually empty. */
+  failing: ModuleMetricStatus[];
 }) {
   const minutes = Math.max(1, Math.round(freshnessSeconds / 60));
+
+  // A collector that is failing. Checked first because it is the one cause
+  // the other four messages would actively mislead about: "turn on a module"
+  // is wrong advice for a module that is on and erroring, and the agent
+  // being connected makes the "agent is offline" reading wrong too.
+  if (failing.length > 0) {
+    return (
+      <Alert
+        variant="critical"
+        title={
+          failing.length === 1
+            ? `${failing[0]?.module_name ?? 'A module'} is failing to collect`
+            : `${String(failing.length)} modules are failing to collect`
+        }
+      >
+        <p>
+          The agent is running these modules and each attempt is raising an error, so
+          nothing is being measured. The reasons are the agent&rsquo;s own, reported from
+          the host:
+        </p>
+        <ul className="mt-2 space-y-1">
+          {failing.map((module) => (
+            <li key={module.module} className="text-sm break-words">
+              <strong className="font-medium">{module.module_name}</strong>
+              {module.last_error === null ? '' : ` — ${module.last_error}`}
+            </li>
+          ))}
+        </ul>
+      </Alert>
+    );
+  }
 
   // Nothing has ever arrived. Either collection is off or the agent has never
   // managed to deliver anything, and the host's own state tells them apart.
@@ -363,11 +415,9 @@ function HistorySection({
  * module does not exist on this controller" are different answers, and an
  * interface that listed only what reported would make them look the same.
  */
-function ModuleActivity({
-  status,
-}: {
-  status: { sample_count: number; modules: { module: string; module_name: string; series_count: number; last_sample_at: string | null }[] };
-}) {
+function ModuleActivity({ status }: { status: MetricsStatus }) {
+  const failing = status.modules.filter((module) => module.consecutive_failures > 0);
+
   return (
     <div className="border-border-subtle border-t pt-5">
       <div className="flex items-center gap-2">
@@ -377,27 +427,101 @@ function ModuleActivity({
           {status.sample_count.toLocaleString()} measurement
           {status.sample_count === 1 ? '' : 's'} stored
         </span>
+        {failing.length > 0 ? (
+          <span className="text-status-critical text-xs font-medium">
+            {failing.length} failing
+          </span>
+        ) : null}
       </div>
       <dl className="mt-3 grid gap-x-6 gap-y-3 sm:grid-cols-2 lg:grid-cols-3">
         {status.modules.map((module) => (
           <div key={module.module} className="min-w-0">
             <dt className="text-text-faint text-xs font-medium">{module.module_name}</dt>
             <dd className="mt-0.5 text-sm">
-              {module.last_sample_at === null ? (
-                <span className="text-text-faint">No data</span>
-              ) : (
-                <time
-                  dateTime={machineDateTime(module.last_sample_at)}
-                  title={formatDateTime(module.last_sample_at)}
-                  className="text-text-primary"
-                >
-                  {relativeTime(module.last_sample_at)}
-                </time>
-              )}
+              <ModuleActivityState module={module} />
             </dd>
           </div>
         ))}
       </dl>
     </div>
   );
+}
+
+/**
+ * One module's line in the Collection list.
+ *
+ * Four states, and the one that did not exist before Phase M is the
+ * important one. "No data" used to be the answer for a module nobody had
+ * enabled, a module enabled a second ago, and a module whose collector had
+ * raised the same error every interval for a week. Those need three
+ * different actions from an operator, and an interface that gave them one
+ * sentence was sending two thirds of its readers to the wrong place.
+ *
+ * The error is **the agent's own words**, rendered as text. React escapes it;
+ * nothing here parses it, matches on it, or decides anything from it. It
+ * comes from a host that may be compromised and it is shown because an
+ * operator needs it, not because it is trusted.
+ */
+function ModuleActivityState({ module }: { module: ModuleMetricStatus }) {
+  if (module.consecutive_failures > 0) {
+    return (
+      <span className="flex min-w-0 flex-col gap-0.5">
+        <span className="text-status-critical flex items-center gap-1.5 font-medium">
+          <AlertTriangle aria-hidden="true" className="size-3.5 shrink-0" />
+          Failing
+          {module.consecutive_failures > 1
+            ? ` · ${String(module.consecutive_failures)} collections`
+            : ''}
+        </span>
+        {module.last_error === null ? null : (
+          <span className="text-text-secondary text-xs break-words">{module.last_error}</span>
+        )}
+        {module.last_sample_at === null ? null : (
+          // The last time it *worked*, which is what tells an operator
+          // whether this started ten minutes or three weeks ago.
+          <span className="text-text-faint text-xs">
+            Last measurement{' '}
+            <time
+              dateTime={machineDateTime(module.last_sample_at)}
+              title={formatDateTime(module.last_sample_at)}
+            >
+              {relativeTime(module.last_sample_at)}
+            </time>
+          </span>
+        )}
+      </span>
+    );
+  }
+
+  if (module.last_sample_at !== null) {
+    return (
+      <time
+        dateTime={machineDateTime(module.last_sample_at)}
+        title={formatDateTime(module.last_sample_at)}
+        className="text-text-primary"
+      >
+        {relativeTime(module.last_sample_at)}
+      </time>
+    );
+  }
+
+  if (module.last_reported_at !== null) {
+    // Heard from, no error, and no samples. A rate collector's first
+    // interval, or a module with genuinely nothing to report on this host —
+    // no hwmon devices, no watched units. Not "no data", which reads as a
+    // problem, and not a time, which there is no sample to report.
+    return (
+      <span className="text-text-muted">
+        Collected, nothing to report{' · '}
+        <time
+          dateTime={machineDateTime(module.last_reported_at)}
+          title={formatDateTime(module.last_reported_at)}
+        >
+          {relativeTime(module.last_reported_at)}
+        </time>
+      </span>
+    );
+  }
+
+  return <span className="text-text-faint">No data</span>;
 }

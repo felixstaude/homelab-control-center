@@ -108,6 +108,12 @@ def test_every_module_is_in_the_database_allow_list() -> None:
 
     versions = pathlib.Path(__file__).resolve().parents[1] / "alembic" / "versions"
     pattern = re.compile(r"(?:module_id|module) IN \(([^)]*)\)")
+    #: A module list built as a module-level tuple and interpolated into the
+    #: SQL, which is what 0011 and 0013 do. Matched by shape rather than by
+    #: variable name: this guard was keyed to the literal name ``_AFTER``
+    #: once, and the next migration to use a different name silently became
+    #: an unparseable constraint that the guard read as "no modules allowed".
+    tuple_pattern = re.compile(r"^_[A-Z_]+ = \(\s*$\n((?:\s*\"[a-z_]+\",\s*\n)+)\)", re.MULTILINE)
 
     # Sorted by file name, which is the date-prefixed revision order this
     # project uses, so the last match is the newest statement about the
@@ -116,13 +122,23 @@ def test_every_module_is_in_the_database_allow_list() -> None:
     for path in sorted(versions.glob("*.py")):
         text = path.read_text(encoding="utf-8")
         for match in pattern.finditer(text):
-            latest = {value.strip().strip("'\"") for value in match.group(1).split(",")}
-        # A migration may also build the list from a tuple, as 0011 does.
-        if "_AFTER" in text:
-            after = re.search(r"_AFTER = \(([^)]*)\)", text)
-            if after:
-                names = re.findall(r"\"([a-z_]+)\"", after.group(1))
-                latest = (latest or set()) | set(names)
+            values = {value.strip().strip("'\"") for value in match.group(1).split(",")}
+            if any(not re.fullmatch(r"[a-z_]+", value) for value in values):
+                # An f-string placeholder rather than a literal list. Resolved
+                # from the tuples in the same file, and *failed* rather than
+                # skipped if there are none: a constraint this guard cannot
+                # read is one it cannot vouch for, and quietly passing would
+                # be the guard reporting a check it did not perform.
+                resolved: set[str] = set()
+                for names in tuple_pattern.findall(text):
+                    resolved |= set(re.findall(r"\"([a-z_]+)\"", names))
+                assert resolved, (
+                    f"{path.name} builds its module allow-list from something this "
+                    f"guard cannot read ({sorted(values)}). Spell the list out as a "
+                    f"module-level tuple of quoted names, or this check is vacuous."
+                )
+                values = resolved
+            latest = values
 
     assert latest is not None, "no migration defines a module allow-list"
     missing = sorted(set(MODULE_IDS) - latest)

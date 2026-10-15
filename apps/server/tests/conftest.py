@@ -74,6 +74,7 @@ _TRUNCATED_TABLES = (
     "global_module_defaults",
     "host_config_revisions",
     "host_enrollments",
+    "host_module_health",
     "host_module_overrides",
     "hosts",
     # The partitioned sample tables are truncated through their parents, which

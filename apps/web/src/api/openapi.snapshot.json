@@ -1765,7 +1765,7 @@
         "type": "object"
       },
       "MetricsStatusResponse": {
-        "description": "Whether anything is actually arriving.\n\nThe answer to the question an operator asks before looking at a chart, and\nthe one a chart cannot answer: an empty chart could mean \"nothing\ncollected\", \"collection is off\" or \"the agent is offline\", and only the\nfirst is visible from the data.",
+        "description": "Whether anything is actually arriving.\n\nThe answer to the question an operator asks before looking at a chart, and\nthe one a chart cannot answer. An empty chart has four possible causes and\nonly one of them is visible from the data:\n\n1. **Nothing has been collected** \u2014 this endpoint.\n2. **Collection is switched off** \u2014 the monitoring endpoint.\n3. **The agent is offline** \u2014 the host endpoint.\n4. **Collection is on, the agent is connected, and the collector is\n   failing every interval** \u2014 this endpoint too, through\n   :class:`ModuleStatusResponse`'s error fields.\n\nThe fourth was unreported until Phase M. The agent had always sent the\nreason; the controller parsed it and threw it away.",
         "properties": {
           "host_id": {
             "title": "Host Id",
@@ -1959,8 +1959,50 @@
         "type": "object"
       },
       "ModuleStatusResponse": {
-        "description": "What one module is doing on one host.",
+        "description": "What one module is doing on one host.\n\nThe last five fields answer a question the first four could not: **is the\ncollector failing?** A module with ``series_count`` of zero and a\n``last_sample_at`` of null could be one nobody enabled, one enabled a\nsecond ago, or one that has raised the same error every interval for a\nweek. Those need different actions and used to look identical.",
         "properties": {
+          "consecutive_failures": {
+            "default": 0,
+            "description": "Failures since the last success. Zero both for a module that is working and for one that has never reported; `last_reported_at` tells those apart.",
+            "title": "Consecutive Failures",
+            "type": "integer"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why the last collection produced nothing, usually in the agent's own words. Kept after a later success \u2014 only the failure count resets \u2014 so a module that fails and recovers every few minutes is visible rather than self-erasing. Untrusted text from the host: display it, do not interpret it.",
+            "title": "Last Error"
+          },
+          "last_error_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the last failure arrived, or null if none ever has.",
+            "title": "Last Error At"
+          },
+          "last_reported_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the controller last heard anything about this module \u2014 a successful collection or a failed one. Null means this host has never reported it, which is not the same as healthy.",
+            "title": "Last Reported At"
+          },
           "last_sample_at": {
             "anyOf": [
               {
@@ -1970,8 +2012,20 @@
                 "type": "null"
               }
             ],
-            "description": "When this module last produced a sample, or null if it never has.",
+            "description": "When this module last produced a sample, on the *agent's* clock, or null if it never has.",
             "title": "Last Sample At"
+          },
+          "last_success_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When a collection last arrived without an error. A collection that ran and produced no samples counts: a rate collector's first interval legitimately produces nothing.",
+            "title": "Last Success At"
           },
           "module": {
             "title": "Module",
@@ -5278,7 +5332,7 @@
     },
     "/api/v1/hosts/{host_id}/metrics/status": {
       "get": {
-        "description": "The question a chart cannot answer.\n\nAn empty chart could mean \"nothing collected\", \"collection is off\" or \"the\nagent is offline\", and only the first is visible from the data. This\nendpoint answers the first; the monitoring endpoint answers the second and\nthe host endpoint the third.\n\nEvery module in the registry appears, including those that have produced\nnothing, so the interface can tell \"this module has no data\" from \"this\nmodule does not exist on this controller\".",
+        "description": "The question a chart cannot answer.\n\nAn empty chart could mean \"nothing collected\", \"collection is off\", \"the\nagent is offline\" or \"the collector is failing\", and only the first is\nvisible from the data. This endpoint answers the first and the fourth; the\nmonitoring endpoint answers the second and the host endpoint the third.\n\nEvery module in the registry appears, including those that have produced\nnothing, so the interface can tell \"this module has no data\" from \"this\nmodule does not exist on this controller\".",
         "operationId": "metrics_status_api_v1_hosts__host_id__metrics_status_get",
         "parameters": [
           {
