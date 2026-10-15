@@ -2,11 +2,13 @@ import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import type { Rollout } from '@/api/types';
+import type { HostUpdateStatus, Rollout } from '@/api/types';
 import {
   installFakeBackend,
+  makeHostUpdateStatus,
   makeRollout,
   makeRolloutMember,
+  makeUpdatePlan,
   makeUser,
   type FakeBackend,
 } from '@/test/fake-backend';
@@ -47,9 +49,13 @@ afterEach(() => {
  * the seed has to be in place before the first request, and a mutation after
  * render races the query.
  */
-async function openUpdates(rollouts: Rollout[] = [], user: typeof ADMIN = ADMIN) {
+async function openUpdates(
+  rollouts: Rollout[] = [],
+  user: typeof ADMIN = ADMIN,
+  hostUpdateStatuses: HostUpdateStatus[] = [],
+) {
   backend.restore();
-  backend = installFakeBackend({ session: user, rollouts });
+  backend = installFakeBackend({ session: user, rollouts, hostUpdateStatuses });
   renderApp('/updates');
   await waitForAuthToResolve();
   await screen.findByRole('heading', { name: 'Rollouts' });
@@ -240,5 +246,86 @@ describe('authorization', () => {
 
     expect(await screen.findByText('running')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Pause|Cancel/ })).toBeNull();
+  });
+});
+
+describe('creating one', () => {
+  const HOSTS = [
+    makeHostUpdateStatus({
+      host_id: 'h-current',
+      host_name: 'already-current',
+      installed_version: '0.2.0',
+      plan: makeUpdatePlan({ outcome: 'up_to_date', target_version: null }),
+    }),
+    makeHostUpdateStatus({
+      host_id: 'h-behind',
+      host_name: 'behind',
+      installed_version: '0.1.0',
+      plan: makeUpdatePlan({ outcome: 'update_available', target_version: '0.2.0' }),
+    }),
+  ];
+
+  it('puts the hosts with something to install first', async () => {
+    // A rollout over a host already on the target is not wrong — the engine
+    // skips it — but offering those first would make the common case look
+    // like a mistake.
+    await openUpdates([], ADMIN, HOSTS);
+    await userEvent.click(await screen.findByRole('button', { name: /New rollout/ }));
+
+    const labels = (await screen.findAllByRole('checkbox')).map((box) => box.getAttribute('id'));
+    expect(labels[0]).toContain('h-behind');
+  });
+
+  it('will not submit without a host', async () => {
+    await openUpdates([], ADMIN, HOSTS);
+    await userEvent.click(await screen.findByRole('button', { name: /New rollout/ }));
+
+    expect(await screen.findByRole('button', { name: /Create rollout/ })).toBeDisabled();
+    expect(screen.getByText('Select at least one host.')).toBeInTheDocument();
+  });
+
+  it('says why the button is dead rather than only disabling it', async () => {
+    // The submit button is disabled until the form is valid, so there is no
+    // submit event to hang a validation message on — gate the message on one
+    // and it never appears, leaving somebody looking at a dead button.
+    await openUpdates([], ADMIN, HOSTS);
+    await userEvent.click(await screen.findByRole('button', { name: /New rollout/ }));
+    await userEvent.clear(await screen.findByLabelText('Version'));
+
+    expect(screen.getByRole('button', { name: /Create rollout/ })).toBeDisabled();
+    expect(screen.getByText('Enter the version to install.')).toBeInTheDocument();
+  });
+
+  it('describes what will happen from the values on screen', async () => {
+    // A static sentence would be right until somebody changed a field, and
+    // this is the sentence an administrator needs to check before replacing
+    // software on machines they own.
+    await openUpdates([], ADMIN, HOSTS);
+    await userEvent.click(await screen.findByRole('button', { name: /New rollout/ }));
+    await userEvent.click((await screen.findAllByRole('checkbox'))[0]!);
+
+    expect(screen.getByText(/stopping on the first failure/)).toBeInTheDocument();
+    expect(screen.getByText(/must stay healthy for 120s/)).toBeInTheDocument();
+  });
+
+  it('creates a pending rollout and nothing starts', async () => {
+    await openUpdates([], ADMIN, HOSTS);
+    await userEvent.click(await screen.findByRole('button', { name: /New rollout/ }));
+    await userEvent.click((await screen.findAllByRole('checkbox'))[0]!);
+    await userEvent.clear(screen.getByLabelText('Version'));
+    await userEvent.type(screen.getByLabelText('Version'), '0.2.0');
+    await userEvent.click(screen.getByRole('button', { name: /Create rollout/ }));
+
+    await waitFor(() => {
+      expect(backend.state.rollouts).toHaveLength(1);
+    });
+    expect(backend.state.rollouts[0]?.state).toBe('pending');
+    expect(backend.state.rollouts[0]?.to_version).toBe('0.2.0');
+  });
+
+  it('is not offered to a viewer', async () => {
+    await openUpdates([], VIEWER);
+
+    expect(screen.queryByRole('button', { name: /New rollout/ })).toBeNull();
   });
 });

@@ -47,6 +47,7 @@ import type {
   ModuleDescriptor,
   OwnSession,
   StoredSetting,
+  CreateRolloutRequest,
   Rollout,
   RolloutMember,
   UpdateJob,
@@ -957,6 +958,39 @@ export function installFakeBackend(initial: Partial<FakeBackendState> = {}): Fak
       const refused = requireSession();
       if (refused) return refused;
       return json(state.rollouts);
+    }
+
+    if (path.endsWith('/updates/rollouts') && method === 'POST') {
+      const refused = requireSession();
+      if (refused) return refused;
+      if (state.session && state.session.role !== 'admin') {
+        return envelope(403, 'insufficient_permissions', 'Administrator role required.');
+      }
+      const payload = (body ?? {}) as Partial<CreateRolloutRequest>;
+      const hostIds = payload.host_ids ?? [];
+      const created = {
+        ...makeRollout({
+          rollout_id: `r-${String(state.rollouts.length + 1)}`,
+          name: payload.name ?? 'rollout',
+          to_version: payload.to_version ?? '0.0.0',
+          state: 'pending' as const,
+          batch_size: payload.batch_size ?? 5,
+          failure_tolerance: payload.failure_tolerance ?? 0,
+          health_check_seconds: payload.health_check_seconds ?? 120,
+          total: hostIds.length,
+          pending: hostIds.length,
+          current_batch: 0,
+          members: hostIds.map((hostId, index) => ({
+            host_id: hostId,
+            batch: index === 0 ? 0 : 1,
+            state: 'pending' as const,
+            healthy: false,
+            detail: null,
+          })),
+        }),
+      };
+      state.rollouts.push(created);
+      return json(created, 201);
     }
 
     // Pause, resume and cancel. Administrator only, as the server enforces —

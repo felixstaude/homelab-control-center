@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { RefreshCw, ShieldCheck, ShieldAlert } from 'lucide-react';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import { fetchHostUpdateStatuses, fetchUpdateOverview } from '@/api/updates';
@@ -34,6 +34,7 @@ import { UpdatePolicyDialog } from '@/routes/updates/update-policy-dialog';
 import {
   OUTCOMES,
   POLICY_LABELS,
+  canStartUpdate,
   jobState,
   signaturePresentation,
 } from '@/routes/updates/update-status';
@@ -87,6 +88,29 @@ export function UpdatesPage() {
     queryFn: ({ signal }) => fetchHostUpdateStatuses(signal),
     refetchInterval: REFRESH_INTERVAL_MS,
   });
+
+  // The version a new rollout would most likely target: whichever the
+  // planner is offering to the most hosts. Derived from the plans rather
+  // than from the manifest's `recommended`, because a host's plan already
+  // accounts for its channel and its pin — and offering a version half the
+  // fleet is not eligible for would be a form that fails on submit.
+  const suggestedVersion = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const host of hosts.data ?? []) {
+      const target = host.plan.target_version;
+      if (target === null || !canStartUpdate(host.plan)) continue;
+      counts.set(target, (counts.get(target) ?? 0) + 1);
+    }
+    let best: string | null = null;
+    let bestCount = 0;
+    for (const [target, count] of counts) {
+      if (count > bestCount) {
+        best = target;
+        bestCount = count;
+      }
+    }
+    return best;
+  }, [hosts.data]);
 
   return (
     <div className="flex flex-col gap-6">
@@ -263,7 +287,7 @@ export function UpdatesPage() {
         </CardContent>
       </Card>
 
-      <RolloutPanel />
+      <RolloutPanel hosts={hosts.data ?? []} suggestedVersion={suggestedVersion} />
 
       <UpdateHistoryPanel />
 

@@ -1,9 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Pause, Play, X } from 'lucide-react';
+import { Pause, Play, Plus, X } from 'lucide-react';
 import { useState } from 'react';
 
 import { cancelRollout, fetchRollouts, pauseRollout, resumeRollout } from '@/api/updates';
-import type { Rollout } from '@/api/types';
+import type { HostUpdateStatus, Rollout } from '@/api/types';
 import { usePermissions } from '@/auth/use-auth';
 import { EmptyPanel, ErrorPanel, LoadingRows } from '@/components/states/panel-states';
 import { Badge } from '@/components/ui/badge';
@@ -18,6 +18,7 @@ import {
 import { relativeTime } from '@/lib/datetime';
 import { queryKeys } from '@/lib/query-keys';
 import { cn } from '@/lib/utils';
+import { CreateRolloutDialog } from '@/routes/updates/create-rollout-dialog';
 import { memberPresentation } from '@/routes/updates/update-status';
 
 /**
@@ -56,10 +57,19 @@ import { memberPresentation } from '@/routes/updates/update-status';
 /** How often this refetches while the tab is visible. */
 const POLL_INTERVAL_MS = 10_000;
 
-export function RolloutPanel() {
+export function RolloutPanel({
+  hosts = [],
+  suggestedVersion = null,
+}: {
+  /** Candidates for a new rollout. Empty hides nothing; the dialog says so. */
+  hosts?: HostUpdateStatus[];
+  /** The version most hosts would move to, offered as the form's default. */
+  suggestedVersion?: string | null;
+}) {
   // Administrator only, mirroring what the server enforces: create, pause,
   // resume and cancel are all on the administrator router.
   const { administer } = usePermissions();
+  const [creating, setCreating] = useState(false);
   const rollouts = useQuery({
     queryKey: queryKeys.session.rollouts(),
     queryFn: ({ signal }) => fetchRollouts(signal),
@@ -69,12 +79,27 @@ export function RolloutPanel() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Rollouts</CardTitle>
-        <CardDescription>
-          A canary first, then batches. The next batch starts only once the hosts before
-          it have installed <em>and</em> stayed healthy — so a bad release stops after one
-          machine rather than after forty.
-        </CardDescription>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <CardTitle>Rollouts</CardTitle>
+            <CardDescription>
+              A canary first, then batches. The next batch starts only once the hosts
+              before it have installed <em>and</em> stayed healthy — so a bad release
+              stops after one machine rather than after forty.
+            </CardDescription>
+          </div>
+          {administer ? (
+            <Button
+              size="sm"
+              onClick={() => {
+                setCreating(true);
+              }}
+            >
+              <Plus aria-hidden className="size-3.5" />
+              New rollout
+            </Button>
+          ) : null}
+        </div>
       </CardHeader>
       <CardContent>
         {rollouts.isPending ? (
@@ -104,6 +129,15 @@ export function RolloutPanel() {
           </div>
         )}
       </CardContent>
+      {creating ? (
+        <CreateRolloutDialog
+          hosts={hosts}
+          defaultVersion={suggestedVersion}
+          onClose={() => {
+            setCreating(false);
+          }}
+        />
+      ) : null}
     </Card>
   );
 }
