@@ -193,6 +193,23 @@ cmd_up() {
 
   printf "\n${BOLD}Homelab Control Center — demo${RESET}\n"
 
+  # --rebuild means "I changed the code", so the processes holding the old
+  # build are stopped before anything else. Without this, `up --rebuild`
+  # rebuilt the bundle and the binary and then reported the *running* ones
+  # as already up, which is the most confusing possible outcome: everything
+  # says it worked and nothing changed.
+  if [ "$rebuild" = 1 ]; then
+    for name in agent controller; do
+      if process_alive "$DEMO_DIR/$name.pid"; then
+        kill "$(cat "$DEMO_DIR/$name.pid")" 2>/dev/null || true
+        rm -f "$DEMO_DIR/$name.pid"
+      fi
+    done
+    # The agent binary is rebuilt from source below; removing it here is
+    # what makes that unconditional.
+    rm -f "$DEMO_DIR/agent/hcc-agent"
+  fi
+
   # --- 0. Preflight ---------------------------------------------------------
   info "Checking what is needed"
   require_runtime

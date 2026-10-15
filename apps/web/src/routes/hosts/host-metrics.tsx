@@ -22,8 +22,10 @@ import {
   compareLatest,
   compareSeries,
   formatMetric,
+  RESOURCE_MODULES,
   seriesLabel,
 } from '@/routes/hosts/metric-format';
+import { ResourcePanels } from '@/routes/hosts/resource-panels';
 
 /**
  * A host's real measurements.
@@ -88,6 +90,18 @@ export function HostMetricsCard({ host }: { host: Host }) {
     [latest.data],
   );
 
+  // Split by shape, not by module name: a scalar belongs in a tile and a set
+  // belongs in a table. The module set is what decides, because that is
+  // where the knowledge of *which* label a module is keyed by lives.
+  const tiles = useMemo(
+    () => values.filter((value) => !RESOURCE_MODULES.has(value.series.module)),
+    [values],
+  );
+  const panelled = useMemo(
+    () => values.filter((value) => RESOURCE_MODULES.has(value.series.module)),
+    [values],
+  );
+
   return (
     <Card>
       <CardHeader>
@@ -128,11 +142,19 @@ export function HostMetricsCard({ host }: { host: Host }) {
           />
         ) : (
           <>
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {values.map((value) => (
-                <LatestTile key={value.series.series_id} latest={value} />
-              ))}
-            </div>
+            {/* Scalars as tiles, sets as tables. A host with three
+                filesystems, four disks and two interfaces produces
+                fifty-five labelled series, and fifty-five tiles is a wall
+                with the number somebody wanted somewhere in it. See
+                resource-panels.tsx. */}
+            {tiles.length > 0 ? (
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                {tiles.map((value) => (
+                  <LatestTile key={value.series.series_id} latest={value} />
+                ))}
+              </div>
+            ) : null}
+            {panelled.length > 0 ? <ResourcePanels values={panelled} /> : null}
             <HistorySection hostId={hostId} values={values} />
           </>
         )}

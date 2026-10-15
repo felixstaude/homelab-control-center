@@ -124,6 +124,62 @@ an implementation that stops at the first entry fails 4 vectors.
 verifies that the existing signature survived. The five-step rotation
 procedure is in `docs/RELEASING.md`.
 
+### Phases D and E — disk, filesystem and network monitoring — complete
+
+Three modules: `filesystem`, `diskio`, `network`. Commit `ad27212`, with the
+UI in a later commit.
+
+Capacity and throughput are **separate modules** because they have different
+natural rates (free space moves over days, throughput over seconds),
+different cardinality (per mount against per device), and an operator who
+wants one should not have to pay for the other.
+
+**Nothing is summed anywhere**, deliberately. Stacked storage reports the same
+I/O at every layer and a container's packet is counted three times; there is
+no aggregate metric, so there is nothing to be wrong.
+
+Found by running it rather than by reasoning:
+
+1. Against this laptop, `/` and `/home` reported byte-identical figures —
+   btrfs subvolumes get their own anonymous device numbers, so a `st_dev`
+   check misses them. A second test on the source device catches it.
+2. A fixture written the way the kernel renders an error-driven read-only
+   remount showed the check reading the wrong field. Both the per-mount and
+   the super options are checked now, with an `errors=remount-ro` regression
+   test — a substring match reports nearly every Linux root as read-only.
+3. `metric_series.unit` was `varchar(16)` and `operations_per_second` is 21.
+   See the defect table.
+
+ADR-065 records why the agent divides by its own measured elapsed time rather
+than shipping counters or trusting the configured interval.
+
+### Phase K — the demo environment — complete
+
+`make demo`. Commit `592f675`.
+
+Isolated PostgreSQL container on 55433, controller on 8900, state in
+`.demo/`, a real agent built from source reporting this machine's own `/proc`
+and `/sys`, seven modules enabled, a generated administrator password. Both
+ports loopback-only with no flag to change that.
+
+**No Compose**, which is why it works on this machine at all: the production
+stack is verified against Docker Compose only (podman-compose hangs on its
+`depends_on: service_completed_successfully`) and this machine has Podman.
+
+Verified on Fedora with Podman 5.8.7: 986 samples across 65 series within
+30 s of a cold start; `demo-down` then `up` resumed the same data;
+`demo-clean` left no container, volume or directory.
+
+### Phase J — the host detail page — in progress
+
+`resource-panels.tsx`: filesystems, disks and interfaces as **tables**, not
+tiles. A laptop with three filesystems, four devices and two interfaces
+produces 55 labelled series, and 55 tiles is a wall with the wanted number
+somewhere in it. Scalars stay as tiles.
+
+Verified in a real browser against the running demo, not only in jsdom —
+which is how the duplicate `Used` column heading was found.
+
 ---
 
 ## Decisions
@@ -158,6 +214,11 @@ Recorded as they are taken, with the alternative that was rejected.
 | 2 | No anti-rollback: a compromised controller could install any older signed release, and `allow_downgrade` made it one flag away | high | fixed, `eda8c39` |
 | 3 | `resolveArchive` used a prefix test, satisfied by a path through a symlinked subdirectory the agent can create | medium (arbitrary-file read as root) | fixed, `eda8c39` |
 | 4 | No replay protection on the handoff: a compromised agent account could re-apply the last instruction indefinitely | low (self-DoS, root-driven) | fixed, `eda8c39` |
+| 5 | `metric_series.unit` was `varchar(16)`; `operations_per_second` is 21 characters. Every unit test passed (no database), the integration suite passed (no test stored one), and the first real agent reporting real disk throughput raised `StringDataRightTruncationError` inside the WebSocket handler — which the agent saw only as `protocol_error` and retried for ever | high (silent, total telemetry loss for a module) | fixed, `592f675`; guard in `tests/test_metric_models.py` |
+| 6 | `demo.sh` printed a closing message containing backticks inside a double-quoted string, which **ran the demo again** | low | fixed, `592f675` |
+| 7 | `demo.sh` waited on `metric_samples`, which does not exist — the raw tier is `metric_samples_raw` — so a working demo reported "no telemetry" | low | fixed, `592f675` |
+| 8 | `== 15 ==` in `update-e2e.sh` asserted a plan outcome immediately after a controller restart, so a slow agent reconnect made it `unknown_version`. A CI flake | low (test) | fixed, `f9ae09d` |
+| 9 | The filesystem table headed two different columns `Used` | low (a11y) | fixed in this commit |
 
 ---
 

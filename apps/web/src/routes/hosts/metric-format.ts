@@ -303,3 +303,21 @@ export function compareSeries(left: MetricSeries, right: MetricSeries): number {
 export function compareLatest(left: LatestValue, right: LatestValue): number {
   return compareSeries(left.series, right.series);
 }
+
+/**
+ * The modules rendered as tables rather than as tiles.
+ *
+ * A tile is right for a host-wide scalar and wrong for a *set*: a laptop
+ * with three filesystems, four block devices and two interfaces produces
+ * fifty-five labelled series, and fifty-five tiles is a wall with the one
+ * number somebody wanted somewhere in it. The question these modules answer
+ * is comparative — *which* filesystem is filling up — and that is a table.
+ *
+ * Here rather than in `resource-panels.tsx` so that file exports only
+ * components, which is what React fast refresh needs.
+ */
+export const RESOURCE_MODULES: ReadonlySet<string> = new Set([
+  'filesystem',
+  'diskio',
+  'network',
+]);
