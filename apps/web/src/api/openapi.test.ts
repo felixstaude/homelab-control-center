@@ -723,6 +723,15 @@ describe('public surface', () => {
       '/api/v1/updates/jobs/{job_id}/cancel',
       '/api/v1/updates/jobs/{job_id}/events',
       '/api/v1/updates/overview',
+      // Staged rollouts (Horizon Phase B). Reads are open to any
+      // authenticated role; create, pause, resume and cancel are
+      // administrator-only and audited, which the authorization suite
+      // asserts separately.
+      '/api/v1/updates/rollouts',
+      '/api/v1/updates/rollouts/{rollout_id}',
+      '/api/v1/updates/rollouts/{rollout_id}/cancel',
+      '/api/v1/updates/rollouts/{rollout_id}/pause',
+      '/api/v1/updates/rollouts/{rollout_id}/resume',
       '/api/v1/users',
       '/api/v1/users/{user_id}',
       '/api/v1/users/{user_id}/deactivate',

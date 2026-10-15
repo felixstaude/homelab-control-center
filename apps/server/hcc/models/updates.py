@@ -59,6 +59,7 @@ from typing import Final
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     FetchedValue,
@@ -73,7 +74,7 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from hcc.db import Base
@@ -674,6 +675,59 @@ class UpdateRollout(Base):
         Integer, nullable=False, server_default=text("3600")
     )
 
+    canary_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        server_default=text("1"),
+        doc=(
+            "How many hosts are in batch 0. One by default, which is what "
+            "'canary' means; more is for a fleet where one host is not "
+            "representative of the rest."
+        ),
+    )
+
+    #: How long a host must stay healthy *after* its install before the next
+    #: batch may start.
+    #:
+    #: This is the column that stops "the process restarted" meaning "the
+    #: upgrade succeeded". The job concludes when the agent reconnects
+    #: reporting the target version, which is a real check and a narrow one:
+    #: an agent that comes up, reports its version and then crashes a minute
+    #: later has satisfied it. The rollout waits to see whether the host is
+    #: still there, still acknowledging its configuration, and still
+    #: delivering telemetry — and only then starts the next batch.
+    #:
+    #: Zero disables the wait, which is for a test and for an operator who
+    #: knows what they are doing.
+    health_check_seconds: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("120")
+    )
+
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, doc="When the first batch began."
+    )
+
+    #: A maintenance window for the rollout as a whole, in the same shape
+    #: `host_update_policies` uses.
+    #:
+    #: A rollout and a host policy can each have one, and they are different
+    #: statements: "this fleet change happens at night" and "this host is only
+    #: interruptible at night". Both are honoured; the host's is checked by
+    #: `decide`, this one by the rollout engine.
+    window_timezone: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    window_weekdays: Mapped[list[int] | None] = mapped_column(ARRAY(SmallInteger), nullable=True)
+    window_start_minute: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    window_end_minute: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    #: An administrator said "go on anyway" after the failure gate stopped it.
+    #:
+    #: Recorded rather than inferred from the state, because "resumed after a
+    #: failure" and "resumed after a pause" are different facts and the second
+    #: must not look like the first in an audit trail.
+    failures_overridden: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+
     created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
@@ -699,6 +753,16 @@ class UpdateRollout(Base):
             name="state_is_known",
         ),
         CheckConstraint("batch_size >= 1", name="batch_size_is_positive"),
+        CheckConstraint("canary_count >= 1", name="canary_count_is_positive"),
+        CheckConstraint("health_check_seconds >= 0", name="health_check_is_sane"),
+        CheckConstraint(
+            "window_start_minute IS NULL OR window_start_minute BETWEEN 0 AND 1439",
+            name="window_start_in_range",
+        ),
+        CheckConstraint(
+            "window_end_minute IS NULL OR window_end_minute BETWEEN 0 AND 1439",
+            name="window_end_in_range",
+        ),
         CheckConstraint("failure_tolerance >= 0", name="failure_tolerance_is_not_negative"),
         CheckConstraint(
             "offline_deadline_seconds >= 60",
@@ -745,6 +809,29 @@ class UpdateRolloutMember(Base):
     job_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("update_jobs.id", ondelete="SET NULL"), nullable=True
     )
+
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        doc="When this member's batch began. The offline deadline runs from here.",
+    )
+
+    #: A host that was offline past the deadline, or that could not be
+    #: started for a reason that is not a failure.
+    #:
+    #: Skipped is a **third outcome** beside succeeded and failed, and it does
+    #: not count against the failure tolerance: a powered-off NAS is not a bad
+    #: release, and treating it as one would stop a rollout for a reason that
+    #: says nothing about the version being deployed.
+    skipped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    skipped_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    #: When the post-install health check passed.
+    #:
+    #: Null while a member is in flight *and* null for a member that
+    #: installed and then went away — which is the distinction the canary gate
+    #: turns on. See [UpdateRollout.health_check_seconds].
+    healthy_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

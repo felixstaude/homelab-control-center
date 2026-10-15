@@ -223,6 +223,53 @@ Three pinned counts fired and were replaced with reads of the registry
 rather than updated numbers: a literal asserts that somebody remembered to
 edit a second file, which is how one came to say 5 while the registry had 11.
 
+### Phase B — staged rollouts — the engine exists
+
+Evergreen created `update_rollouts` and `update_rollout_members` — a canary
+batch, a batch size, a failure tolerance, an offline deadline — and nothing
+that drove one. `hcc/services/rollouts.py` is the engine, with migration
+0012 adding the columns it needs.
+
+**"The process restarted" is not "the upgrade succeeded".** The job concludes
+when the agent reconnects reporting the target version, which is a real check
+and a narrow one — an agent that comes up, reports its version and crashes a
+minute later satisfies it completely. So the rollout does not advance on the
+job. It advances on a **member health check** taken after the install, over a
+settling period, asking four separate questions: is the host connected *now*,
+is it reporting the target version, has it acknowledged its configuration at
+the current revision, and has it delivered telemetry since the install. The
+third is the one that catches a half-working binary.
+
+**Three outcomes, not two.** A host offline past its deadline is *skipped*,
+and a skip does not count against the failure tolerance — a powered-off NAS
+says nothing about the release, and stopping a fleet rollout over one would
+be a gate firing for an unrelated reason. Same for a host already running the
+target version.
+
+**A controller restart is a non-event.** There is no in-memory rollout state:
+a pass reads rows, decides, writes rows. A test constructs a *fresh service
+object* between passes, which is what a restarted controller has, and asserts
+it reaches the same conclusion.
+
+Resuming a rollout that the failure gate stopped **pauses it again** unless
+the administrator passes `override_failures`, which is recorded on the
+rollout rather than implied by the resume — "resumed after a failure" and
+"resumed after an administrator paused it" must not be able to look alike
+afterwards.
+
+A third background task, at 30 s rather than the policy pass's 300 s: a
+rollout is something somebody is watching, and five minutes between a canary
+going healthy and the first batch starting is a product that feels broken.
+
+30 integration tests, all against a real database. Two engine defects found
+by them: a batch where every member was skipped sat on `running` for an
+interval with nothing left to do, and the "already running the target
+version" skip reason said "this host is already pinned" — true of the
+question the planner was asked and nonsense as an explanation.
+
+**Not yet done in this phase:** the frontend. The API is complete and tested;
+the Updates page does not render rollouts.
+
 ### Phase J — the host detail page — in progress
 
 `resource-panels.tsx`: filesystems, disks and interfaces as **tables**, not

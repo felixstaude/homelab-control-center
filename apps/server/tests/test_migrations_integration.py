@@ -46,6 +46,7 @@ EXPECTED_REVISIONS = (
     "0009_agent_queue_health",
     "0010_update_management",
     "0011_storage_modules",
+    "0012_rollout_execution",
 )
 
 # Every table the chain creates, excluding Alembic's own bookkeeping. Pinned so

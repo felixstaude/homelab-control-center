@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING, Annotated, Literal
 
 from fastapi import APIRouter, Depends, Query, status
 from pydantic import BaseModel, Field, field_validator, model_validator
+from sqlalchemy import select
 from starlette.requests import HTTPConnection
 
 from hcc import __version__
@@ -52,9 +53,18 @@ from hcc.logging import get_logger
 from hcc.models.updates import (
     ROLLOUT_NAME_MAX_LENGTH,
     VERSION_MAX_LENGTH,
+    UpdateRollout,
     UpdateTrigger,
 )
 from hcc.services.hosts import HostNotFoundError
+from hcc.services.rollouts import (
+    MAX_ROLLOUT_HOSTS,
+    MemberOutcome,
+    RolloutInvalidError,
+    RolloutNotFoundError,
+    RolloutNotResumableError,
+    RolloutService,
+)
 from hcc.services.updates import (
     MAX_HISTORY_LIMIT,
     UpdateAlreadyRunningError,
@@ -928,3 +938,387 @@ async def expire_stale_updates(
         expired = await updates.expire_stale(db, now=datetime.now(UTC))
         await db.commit()
     return [UpdateJobResponse.of(job) for job in expired]
+
+
+# ---------------------------------------------------------------------------
+# Staged rollouts
+#
+# Evergreen created the tables and nothing drove one. These are the endpoints
+# for hcc/services/rollouts.py — create, inspect, pause, resume, cancel.
+#
+# Creating a rollout starts nothing. A created rollout is `pending` until a
+# background pass picks it up, which is what makes "create it now, let it run
+# inside its window tonight" work and what keeps the request that creates it
+# from performing forty installs synchronously.
+# ---------------------------------------------------------------------------
+
+
+class RolloutMemberResponse(BaseModel):
+    """One host's place in a rollout, and where it has got to."""
+
+    host_id: uuid.UUID
+    batch: int = Field(description="0 is the canary; 1 and up are the batches, in order.")
+    state: str = Field(description="pending | running | succeeded | failed | skipped")
+    healthy: bool = Field(
+        description=(
+            "Whether the post-install health check has passed. False while a host "
+            "is still settling, and false for one that installed and then went "
+            "away — which is the distinction the next batch waits on."
+        )
+    )
+    detail: str | None = None
+
+
+class RolloutResponse(BaseModel):
+    """A rollout and its current progress."""
+
+    rollout_id: uuid.UUID
+    name: str
+    to_version: str
+    state: str = Field(description="pending | canary | running | paused | completed | cancelled")
+    canary_count: int
+    batch_size: int
+    failure_tolerance: int
+    health_check_seconds: int
+    offline_deadline_seconds: int
+    failures_overridden: bool
+    window: MaintenanceWindowResponse | None = None
+    paused_reason: str | None = None
+    created_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    total: int
+    succeeded: int
+    failed: int
+    skipped: int
+    running: int
+    pending: int
+    current_batch: int | None = None
+    members: list[RolloutMemberResponse] = Field(default_factory=list)
+
+    @classmethod
+    def of(
+        cls,
+        rollout: UpdateRollout,
+        outcomes: list[MemberOutcome],
+        window: MaintenanceWindow | None,
+    ) -> RolloutResponse:
+        unfinished = [outcome for outcome in outcomes if not outcome.is_finished]
+        return cls(
+            rollout_id=rollout.id,
+            name=rollout.name,
+            to_version=rollout.to_version,
+            state=rollout.state,
+            canary_count=rollout.canary_count,
+            batch_size=rollout.batch_size,
+            failure_tolerance=rollout.failure_tolerance,
+            health_check_seconds=rollout.health_check_seconds,
+            offline_deadline_seconds=rollout.offline_deadline_seconds,
+            failures_overridden=rollout.failures_overridden,
+            window=(
+                None
+                if window is None
+                else MaintenanceWindowResponse(
+                    timezone=window.timezone,
+                    weekdays=list(window.weekdays),
+                    start=window.start.strftime("%H:%M"),
+                    end=window.end.strftime("%H:%M"),
+                    description=window.describe(),
+                )
+            ),
+            paused_reason=rollout.paused_reason,
+            created_at=rollout.created_at,
+            started_at=rollout.started_at,
+            finished_at=rollout.finished_at,
+            total=len(outcomes),
+            succeeded=sum(1 for o in outcomes if o.state == "succeeded"),
+            failed=sum(1 for o in outcomes if o.state == "failed"),
+            skipped=sum(1 for o in outcomes if o.state == "skipped"),
+            running=sum(1 for o in outcomes if o.state == "running"),
+            pending=sum(1 for o in outcomes if o.state == "pending"),
+            current_batch=min((o.batch for o in unfinished), default=None),
+            members=[
+                RolloutMemberResponse(
+                    host_id=outcome.host_id,
+                    batch=outcome.batch,
+                    state=outcome.state,
+                    healthy=outcome.healthy,
+                    detail=outcome.detail,
+                )
+                for outcome in outcomes
+            ],
+        )
+
+
+class CreateRolloutRequest(BaseModel):
+    """Everything a rollout needs, with defaults that are the cautious ones."""
+
+    model_config = {"extra": "forbid"}
+
+    name: str = Field(min_length=1, max_length=120)
+    to_version: str = Field(min_length=1, max_length=64)
+    host_ids: list[uuid.UUID] = Field(min_length=1, max_length=MAX_ROLLOUT_HOSTS)
+    canary_host_ids: list[uuid.UUID] = Field(
+        default_factory=list,
+        max_length=MAX_ROLLOUT_HOSTS,
+        description=(
+            "Hosts to put in batch 0. Fewer than canary_count fills the rest "
+            "from the connected members, because a powered-off canary tells "
+            "nobody anything and would hold the rollout at the offline deadline."
+        ),
+    )
+    canary_count: int = Field(default=1, ge=1, le=50)
+    batch_size: int = Field(
+        default=5,
+        ge=1,
+        le=100,
+        description="How many hosts update at once after the canary, and so the concurrency limit.",
+    )
+    failure_tolerance: int = Field(
+        default=0,
+        ge=0,
+        le=100,
+        description=(
+            "Failures accepted before the rollout pauses itself. Zero by default: "
+            "the first failure stops it, which is what somebody rolling out to a "
+            "fleet they care about wants. Skipped hosts do not count."
+        ),
+    )
+    health_check_seconds: int = Field(
+        default=120,
+        ge=0,
+        le=3600,
+        description=(
+            "How long a host must stay healthy after its install before the next "
+            "batch starts. Zero skips the wait, which makes 'the process "
+            "restarted' the only evidence there is."
+        ),
+    )
+    offline_deadline_seconds: int = Field(default=3600, ge=60, le=7 * 24 * 3600)
+    window: MaintenanceWindowRequest | None = None
+
+
+class RolloutControlRequest(BaseModel):
+    """Pausing, resuming or cancelling, with a reason for the audit trail."""
+
+    model_config = {"extra": "forbid"}
+
+    reason: str = Field(default="", max_length=500)
+    override_failures: bool = Field(
+        default=False,
+        description=(
+            "On resume: go on despite the failures that paused it. Without "
+            "this, a rollout stopped by the failure gate pauses again on the "
+            "next pass — which is correct and would otherwise look like a bug."
+        ),
+    )
+
+
+def get_rollout_service(connection: HTTPConnection) -> RolloutService:
+    """Return the process-wide rollout service."""
+    service: RolloutService = connection.app.state.rollout_service
+    return service
+
+
+RolloutServiceDep = Annotated[RolloutService, Depends(get_rollout_service)]
+
+
+@read_router.get(
+    "/updates/rollouts",
+    summary="Every rollout, newest first",
+    response_model=list[RolloutResponse],
+)
+async def list_rollouts(
+    rollouts: RolloutServiceDep,
+    database: DatabaseDep,
+    limit: Annotated[int, Query(ge=1, le=100)] = 25,
+) -> list[RolloutResponse]:
+    """List rollouts with their progress. Any authenticated role may read."""
+    async with database.session_factory() as db:
+        rows = (
+            (
+                await db.execute(
+                    select(UpdateRollout).order_by(UpdateRollout.created_at.desc()).limit(limit)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return [
+            RolloutResponse.of(
+                rollout,
+                await rollouts.outcomes(db, rollout),
+                rollouts.window_of(rollout),
+            )
+            for rollout in rows
+        ]
+
+
+@read_router.get(
+    "/updates/rollouts/{rollout_id}",
+    summary="One rollout and every member's state",
+    response_model=RolloutResponse,
+)
+async def get_rollout(
+    rollout_id: uuid.UUID,
+    rollouts: RolloutServiceDep,
+    database: DatabaseDep,
+) -> RolloutResponse:
+    async with database.session_factory() as db:
+        try:
+            rollout = await rollouts.get(db, rollout_id)
+        except RolloutNotFoundError as error:
+            raise NotFoundError("No such rollout.") from error
+        return RolloutResponse.of(
+            rollout, await rollouts.outcomes(db, rollout), rollouts.window_of(rollout)
+        )
+
+
+@router.post(
+    "/updates/rollouts",
+    summary="Create a staged rollout",
+    status_code=status.HTTP_201_CREATED,
+    response_model=RolloutResponse,
+)
+async def create_rollout(
+    body: CreateRolloutRequest,
+    rollouts: RolloutServiceDep,
+    database: DatabaseDep,
+    audit: AuditContextDep,
+) -> RolloutResponse:
+    """Create a rollout. Administrator only, and audited.
+
+    **Nothing starts here.** The rollout is `pending` and a background pass
+    starts its canary — within the maintenance window, if one was given.
+    """
+    async with database.session_factory() as db:
+        try:
+            window = None if body.window is None else body.window.to_window()
+        except WindowError as error:
+            raise ValidationFailedError(str(error)) from error
+        try:
+            rollout = await rollouts.create(
+                db,
+                name=body.name,
+                to_version=body.to_version,
+                host_ids=body.host_ids,
+                canary_host_ids=body.canary_host_ids,
+                canary_count=body.canary_count,
+                batch_size=body.batch_size,
+                failure_tolerance=body.failure_tolerance,
+                health_check_seconds=body.health_check_seconds,
+                offline_deadline_seconds=body.offline_deadline_seconds,
+                window=window,
+                context=audit,
+            )
+        except RolloutInvalidError as error:
+            await db.rollback()
+            raise ValidationFailedError(str(error)) from error
+        outcomes = await rollouts.outcomes(db, rollout)
+        response = RolloutResponse.of(rollout, outcomes, rollouts.window_of(rollout))
+        await db.commit()
+        return response
+
+
+@router.post(
+    "/updates/rollouts/{rollout_id}/pause",
+    summary="Stop starting new hosts",
+    response_model=RolloutResponse,
+)
+async def pause_rollout(
+    rollout_id: uuid.UUID,
+    body: RolloutControlRequest,
+    rollouts: RolloutServiceDep,
+    database: DatabaseDep,
+    audit: AuditContextDep,
+) -> RolloutResponse:
+    """Pause. In-flight installs finish; nothing new starts.
+
+    Deliberately not a cancellation of what is running: an install halfway
+    through replacing a binary is the worst moment to abandon, and the
+    agent's own rollback is what handles a bad one.
+    """
+    async with database.session_factory() as db:
+        try:
+            rollout = await rollouts.pause(
+                db, rollout_id, reason=body.reason or "paused by an administrator"
+            )
+        except RolloutNotFoundError as error:
+            raise NotFoundError("No such rollout.") from error
+        except RolloutNotResumableError as error:
+            await db.rollback()
+            raise ValidationFailedError(str(error)) from error
+        response = RolloutResponse.of(
+            rollout, await rollouts.outcomes(db, rollout), rollouts.window_of(rollout)
+        )
+        await db.commit()
+        return response
+
+
+@router.post(
+    "/updates/rollouts/{rollout_id}/resume",
+    summary="Start it again",
+    response_model=RolloutResponse,
+)
+async def resume_rollout(
+    rollout_id: uuid.UUID,
+    body: RolloutControlRequest,
+    rollouts: RolloutServiceDep,
+    database: DatabaseDep,
+    audit: AuditContextDep,
+) -> RolloutResponse:
+    """Resume a paused rollout.
+
+    `override_failures` is the administrator saying "I have looked at the
+    canary that failed and I want the rest anyway". It is recorded on the
+    rollout rather than implied by the resume, because "resumed after a
+    failure" and "resumed after an administrator paused it" are different
+    facts and the second must not be able to look like the first.
+    """
+    async with database.session_factory() as db:
+        try:
+            rollout = await rollouts.resume(
+                db, rollout_id, override_failures=body.override_failures
+            )
+        except RolloutNotFoundError as error:
+            raise NotFoundError("No such rollout.") from error
+        except RolloutNotResumableError as error:
+            await db.rollback()
+            raise ValidationFailedError(str(error)) from error
+        response = RolloutResponse.of(
+            rollout, await rollouts.outcomes(db, rollout), rollouts.window_of(rollout)
+        )
+        await db.commit()
+        return response
+
+
+@router.post(
+    "/updates/rollouts/{rollout_id}/cancel",
+    summary="Abandon a rollout",
+    response_model=RolloutResponse,
+)
+async def cancel_rollout(
+    rollout_id: uuid.UUID,
+    body: RolloutControlRequest,
+    rollouts: RolloutServiceDep,
+    database: DatabaseDep,
+    audit: AuditContextDep,
+) -> RolloutResponse:
+    """Cancel. Members that have not started never will.
+
+    In-flight jobs are **not** cancelled: the job has its own cancel, per
+    host, and reaching for a fleet-level button to abandon an install that is
+    replacing a binary is a bigger hammer than anybody wants.
+    """
+    async with database.session_factory() as db:
+        try:
+            rollout = await rollouts.cancel(
+                db, rollout_id, reason=body.reason or "cancelled by an administrator"
+            )
+        except RolloutNotFoundError as error:
+            raise NotFoundError("No such rollout.") from error
+        response = RolloutResponse.of(
+            rollout, await rollouts.outcomes(db, rollout), rollouts.window_of(rollout)
+        )
+        await db.commit()
+        return response

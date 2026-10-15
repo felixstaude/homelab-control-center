@@ -495,6 +495,99 @@
         "title": "ConfigSyncResponse",
         "type": "object"
       },
+      "CreateRolloutRequest": {
+        "additionalProperties": false,
+        "description": "Everything a rollout needs, with defaults that are the cautious ones.",
+        "properties": {
+          "batch_size": {
+            "default": 5,
+            "description": "How many hosts update at once after the canary, and so the concurrency limit.",
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Batch Size",
+            "type": "integer"
+          },
+          "canary_count": {
+            "default": 1,
+            "maximum": 50.0,
+            "minimum": 1.0,
+            "title": "Canary Count",
+            "type": "integer"
+          },
+          "canary_host_ids": {
+            "description": "Hosts to put in batch 0. Fewer than canary_count fills the rest from the connected members, because a powered-off canary tells nobody anything and would hold the rollout at the offline deadline.",
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 500,
+            "title": "Canary Host Ids",
+            "type": "array"
+          },
+          "failure_tolerance": {
+            "default": 0,
+            "description": "Failures accepted before the rollout pauses itself. Zero by default: the first failure stops it, which is what somebody rolling out to a fleet they care about wants. Skipped hosts do not count.",
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Failure Tolerance",
+            "type": "integer"
+          },
+          "health_check_seconds": {
+            "default": 120,
+            "description": "How long a host must stay healthy after its install before the next batch starts. Zero skips the wait, which makes 'the process restarted' the only evidence there is.",
+            "maximum": 3600.0,
+            "minimum": 0.0,
+            "title": "Health Check Seconds",
+            "type": "integer"
+          },
+          "host_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 500,
+            "minItems": 1,
+            "title": "Host Ids",
+            "type": "array"
+          },
+          "name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "offline_deadline_seconds": {
+            "default": 3600,
+            "maximum": 604800.0,
+            "minimum": 60.0,
+            "title": "Offline Deadline Seconds",
+            "type": "integer"
+          },
+          "to_version": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "To Version",
+            "type": "string"
+          },
+          "window": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MaintenanceWindowRequest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "to_version",
+          "host_ids"
+        ],
+        "title": "CreateRolloutRequest",
+        "type": "object"
+      },
       "CurrentUserResponse": {
         "description": "The authenticated identity.\n\nCarries no password material and no session token. ``csrf_token`` is\nincluded because the client needs it to make state-changing requests, and\nit is useless without the session cookie.",
         "properties": {
@@ -2298,6 +2391,230 @@
           "revoked"
         ],
         "title": "RevocationResponse",
+        "type": "object"
+      },
+      "RolloutControlRequest": {
+        "additionalProperties": false,
+        "description": "Pausing, resuming or cancelling, with a reason for the audit trail.",
+        "properties": {
+          "override_failures": {
+            "default": false,
+            "description": "On resume: go on despite the failures that paused it. Without this, a rollout stopped by the failure gate pauses again on the next pass \u2014 which is correct and would otherwise look like a bug.",
+            "title": "Override Failures",
+            "type": "boolean"
+          },
+          "reason": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "title": "RolloutControlRequest",
+        "type": "object"
+      },
+      "RolloutMemberResponse": {
+        "description": "One host's place in a rollout, and where it has got to.",
+        "properties": {
+          "batch": {
+            "description": "0 is the canary; 1 and up are the batches, in order.",
+            "title": "Batch",
+            "type": "integer"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "healthy": {
+            "description": "Whether the post-install health check has passed. False while a host is still settling, and false for one that installed and then went away \u2014 which is the distinction the next batch waits on.",
+            "title": "Healthy",
+            "type": "boolean"
+          },
+          "host_id": {
+            "format": "uuid",
+            "title": "Host Id",
+            "type": "string"
+          },
+          "state": {
+            "description": "pending | running | succeeded | failed | skipped",
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "host_id",
+          "batch",
+          "state",
+          "healthy"
+        ],
+        "title": "RolloutMemberResponse",
+        "type": "object"
+      },
+      "RolloutResponse": {
+        "description": "A rollout and its current progress.",
+        "properties": {
+          "batch_size": {
+            "title": "Batch Size",
+            "type": "integer"
+          },
+          "canary_count": {
+            "title": "Canary Count",
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "current_batch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Batch"
+          },
+          "failed": {
+            "title": "Failed",
+            "type": "integer"
+          },
+          "failure_tolerance": {
+            "title": "Failure Tolerance",
+            "type": "integer"
+          },
+          "failures_overridden": {
+            "title": "Failures Overridden",
+            "type": "boolean"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "health_check_seconds": {
+            "title": "Health Check Seconds",
+            "type": "integer"
+          },
+          "members": {
+            "items": {
+              "$ref": "#/components/schemas/RolloutMemberResponse"
+            },
+            "title": "Members",
+            "type": "array"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "offline_deadline_seconds": {
+            "title": "Offline Deadline Seconds",
+            "type": "integer"
+          },
+          "paused_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Paused Reason"
+          },
+          "pending": {
+            "title": "Pending",
+            "type": "integer"
+          },
+          "rollout_id": {
+            "format": "uuid",
+            "title": "Rollout Id",
+            "type": "string"
+          },
+          "running": {
+            "title": "Running",
+            "type": "integer"
+          },
+          "skipped": {
+            "title": "Skipped",
+            "type": "integer"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "state": {
+            "description": "pending | canary | running | paused | completed | cancelled",
+            "title": "State",
+            "type": "string"
+          },
+          "succeeded": {
+            "title": "Succeeded",
+            "type": "integer"
+          },
+          "to_version": {
+            "title": "To Version",
+            "type": "string"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          },
+          "window": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MaintenanceWindowResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "rollout_id",
+          "name",
+          "to_version",
+          "state",
+          "canary_count",
+          "batch_size",
+          "failure_tolerance",
+          "health_check_seconds",
+          "offline_deadline_seconds",
+          "failures_overridden",
+          "created_at",
+          "total",
+          "succeeded",
+          "failed",
+          "skipped",
+          "running",
+          "pending"
+        ],
+        "title": "RolloutResponse",
         "type": "object"
       },
       "SeriesListResponse": {
@@ -5942,6 +6259,361 @@
           }
         },
         "summary": "Fleet update status",
+        "tags": [
+          "updates"
+        ]
+      }
+    },
+    "/api/v1/updates/rollouts": {
+      "get": {
+        "description": "List rollouts with their progress. Any authenticated role may read.",
+        "operationId": "list_rollouts_api_v1_updates_rollouts_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/RolloutResponse"
+                  },
+                  "title": "Response List Rollouts Api V1 Updates Rollouts Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "Every rollout, newest first",
+        "tags": [
+          "updates"
+        ]
+      },
+      "post": {
+        "description": "Create a rollout. Administrator only, and audited.\n\n**Nothing starts here.** The rollout is `pending` and a background pass\nstarts its canary \u2014 within the maintenance window, if one was given.",
+        "operationId": "create_rollout_api_v1_updates_rollouts_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRolloutRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RolloutResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "Create a staged rollout",
+        "tags": [
+          "updates"
+        ]
+      }
+    },
+    "/api/v1/updates/rollouts/{rollout_id}": {
+      "get": {
+        "operationId": "get_rollout_api_v1_updates_rollouts__rollout_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "rollout_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Rollout Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RolloutResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "One rollout and every member's state",
+        "tags": [
+          "updates"
+        ]
+      }
+    },
+    "/api/v1/updates/rollouts/{rollout_id}/cancel": {
+      "post": {
+        "description": "Cancel. Members that have not started never will.\n\nIn-flight jobs are **not** cancelled: the job has its own cancel, per\nhost, and reaching for a fleet-level button to abandon an install that is\nreplacing a binary is a bigger hammer than anybody wants.",
+        "operationId": "cancel_rollout_api_v1_updates_rollouts__rollout_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "rollout_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Rollout Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RolloutControlRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RolloutResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "Abandon a rollout",
+        "tags": [
+          "updates"
+        ]
+      }
+    },
+    "/api/v1/updates/rollouts/{rollout_id}/pause": {
+      "post": {
+        "description": "Pause. In-flight installs finish; nothing new starts.\n\nDeliberately not a cancellation of what is running: an install halfway\nthrough replacing a binary is the worst moment to abandon, and the\nagent's own rollback is what handles a bad one.",
+        "operationId": "pause_rollout_api_v1_updates_rollouts__rollout_id__pause_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "rollout_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Rollout Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RolloutControlRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RolloutResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "Stop starting new hosts",
+        "tags": [
+          "updates"
+        ]
+      }
+    },
+    "/api/v1/updates/rollouts/{rollout_id}/resume": {
+      "post": {
+        "description": "Resume a paused rollout.\n\n`override_failures` is the administrator saying \"I have looked at the\ncanary that failed and I want the rest anyway\". It is recorded on the\nrollout rather than implied by the resume, because \"resumed after a\nfailure\" and \"resumed after an administrator paused it\" are different\nfacts and the second must not be able to look like the first.",
+        "operationId": "resume_rollout_api_v1_updates_rollouts__rollout_id__resume_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "rollout_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Rollout Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RolloutControlRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RolloutResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "Start it again",
         "tags": [
           "updates"
         ]
