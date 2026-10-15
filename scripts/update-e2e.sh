@@ -1025,13 +1025,28 @@ fi
 
 # And the planner refuses to offer it, rather than offering an update the
 # agent would decline.
+#
+# Waited for first, for the reason §16 already names: the controller was just
+# restarted, and a host that has not reported its version yet plans as
+# `unknown_version`. That outcome is also "not an actionable update", so
+# accepting it here would let this assertion pass with the signature check
+# broken — it would be passing because the controller does not know the
+# version, not because it refuses untrusted metadata. So the version is
+# waited for and `unknown_version` stays a failure.
+#
+# This was a CI flake before it was a wait: the step passed locally and on
+# most runs, and failed on one where the agent reconnected a second later.
+await_query "the host has reported its version again after the restart" \
+  "SELECT coalesce(agent_version, '') FROM hosts WHERE id = '$HOST_ID'" "$VERSION_NEW" 120 || true
+
 status_json="$(api_get "/hosts/$HOST_ID/updates")"
 outcome="$(printf '%s' "$status_json" | json_field plan.outcome)"
 case "$outcome" in
   up_to_date|update_available_incompatible|metadata_unavailable)
     ok "the plan is '$outcome' rather than an actionable update" ;;
   *)
-    bad "the plan is '$outcome' for metadata nothing can vouch for" ;;
+    reported="$(query "SELECT coalesce(agent_version, '(null)') FROM hosts WHERE id = '$HOST_ID'" | head -1)"
+    bad "the plan is '$outcome' for metadata nothing can vouch for (the host reports $reported)" ;;
 esac
 
 # Put the real signature back, so the state at the end of the run is coherent
