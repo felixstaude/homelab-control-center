@@ -312,6 +312,20 @@ check-artifacts: artifacts ## Build, verify, and prove the verifier's refusals f
 	@./scripts/verify-artifacts.sh --execute
 	@./scripts/verify-artifacts.sh --self-test
 
+.PHONY: release-candidate
+release-candidate: ## Exercise the whole release pipeline with a throwaway key (publishes nothing)
+# Builds, verifies, describes and signs — with a key generated for this run
+# and destroyed at the end. The point is to find a broken release *pipeline*
+# before a release day rather than during one, and the signature it produces
+# establishes nothing about publisher identity; prepare-release.sh says so and
+# writes a marker file beside the manifest.
+	@./scripts/prepare-release.sh \
+		--version $$(cat VERSION) \
+		--base-url https://example.invalid/release-candidate \
+		--protocol-versions 1,2 \
+		--output dist/release-candidate \
+		--ephemeral-key
+
 .PHONY: check-reproducible
 check-reproducible: ## Build twice and compare every digest
 	@./scripts/check-reproducible.sh
