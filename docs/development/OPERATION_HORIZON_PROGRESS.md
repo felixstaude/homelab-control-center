@@ -170,6 +170,59 @@ Verified on Fedora with Podman 5.8.7: 986 samples across 65 series within
 30 s of a cold start; `demo-down` then `up` resumed the same data;
 `demo-clean` left no container, volume or directory.
 
+### Phases F, G and H — sensors, containers, services — complete
+
+`sensors` (commit `80a54d2`), `docker` (`00688a1`), `systemd` (`e4f6aa6`).
+
+**`sensors`** reads `/sys/class/hwmon` and deliberately not
+`/sys/class/thermal`: on this machine `thermal_zone0` *is* `hwmon5`'s device,
+and `thermal_zone1` duplicates `coretemp`'s package sensor through a
+different device, so no path comparison catches it. Identity is chip + label,
+never the hwmon number (probe order, changes between boots). Running it here
+showed two NVMe drives both reporting `nvme`/`Composite` — the device
+basename disambiguates.
+
+**`docker`** is the only module with `requires_privileges`. The socket is
+root-equivalent, so it is granted locally by `HCC_AGENT_DOCKER_SOCKET` and
+the controller can only decide whether to *use* a capability the host has
+given. Read-only is structural: one request builder, GET only, asserted by a
+test against a real HTTP server on a real unix socket.
+
+**`systemd`** is the only module that runs a command, within ADR-021's eight
+rules, which existed before any module needed them. `--output=json` is a
+structured interface; an older systemd is a refusal naming the version.
+`systemctl show` is asked for six named properties, not the ~200 it prints by
+default — `Environment` can hold secrets. Running it against a deliberately
+absent unit found that `systemctl show` answers for units it has never heard
+of, so `LoadState` is checked.
+
+### Phase L — end-to-end coverage for the new modules — partly done
+
+`scripts/monitoring-e2e.sh` §17 and §18, run by CI on every change. **87
+checks pass** locally (was 60).
+
+Every assertion cross-checks the agent against the machine it runs on rather
+than against itself:
+
+- the agent's size for `/` against `statfs` directly (3,723 GiB, within one
+  block)
+- `used + available ≤ total` for every filesystem
+- no pseudo-filesystem or tmpfs reported as storage
+- every `diskio` device has a `/sys/block` entry — a partition here would
+  mean the same I/O counted twice
+- every `network` interface exists in `/sys/class/net`, and loopback does not
+- the failed-unit count against `systemctl --failed`
+
+§18 is separate because of the mission's rule about hardware: each of
+`sensors`, `systemd` and `docker` asserts **either** real readings **or** a
+correctly-reported unavailability, never silence. A runner with no sensors
+produces "this host exposes no hwmon temperature sensors, and none were
+invented" — a result, not a skip.
+
+Three pinned counts fired and were replaced with reads of the registry
+rather than updated numbers: a literal asserts that somebody remembered to
+edit a second file, which is how one came to say 5 while the registry had 11.
+
 ### Phase J — the host detail page — in progress
 
 `resource-panels.tsx`: filesystems, disks and interfaces as **tables**, not
@@ -218,7 +271,12 @@ Recorded as they are taken, with the alternative that was rejected.
 | 6 | `demo.sh` printed a closing message containing backticks inside a double-quoted string, which **ran the demo again** | low | fixed, `592f675` |
 | 7 | `demo.sh` waited on `metric_samples`, which does not exist — the raw tier is `metric_samples_raw` — so a working demo reported "no telemetry" | low | fixed, `592f675` |
 | 8 | `== 15 ==` in `update-e2e.sh` asserted a plan outcome immediately after a controller restart, so a slow agent reconnect made it `unknown_version`. A CI flake | low (test) | fixed, `f9ae09d` |
-| 9 | The filesystem table headed two different columns `Used` | low (a11y) | fixed in this commit |
+| 9 | The filesystem table headed two different columns `Used` | low (a11y) | fixed, `0ebae9c` |
+| 10 | `demo.sh up --rebuild` killed the controller without waiting, then refused its own port as "in use by something that is not this demo" | low | fixed, `b4357c2` |
+| 11 | The demo leaked `HCC_AGENT_*` into the controller, which refuses unknown `HCC_` variables — a good rule tripped by the demo's own sloppiness | low | fixed, `b4357c2` |
+| 12 | A demo database created before a module existed silently refuses it, because an applied migration is never re-run; surfaced as HTTP 500 with `CheckViolationError` | low (development only) | guarded, `b4357c2` |
+| 13 | `systemctl show` answers for units it has never heard of, so a typo in the watch list became a series permanently reporting a stopped service that does not exist, restart count zero | medium (fabricated measurement) | fixed, `e4f6aa6` |
+| 14 | `monitoring-e2e.sh` used a relative `$VENV` after a `cd`, producing `command not found` reported against a line that looked like a comment | low (test) | fixed in this commit |
 
 ---
 
@@ -230,6 +288,9 @@ Phases B–P. See the mission brief.
 
 ## Next task
 
-Phase D — disk and filesystem monitoring, as the first of the real monitoring
-modules, followed by Phase E (network) and then Phase K (the demo
-environment), which is what makes the result something to actually try.
+Phase B — real staged rollouts. It is the mission's Priority 1 and the
+largest remaining gap: Evergreen evaluates every eligible host together, and
+the replacement needs canary selection, batches, maintenance windows,
+pause/resume/cancel, durable progress across a controller restart, and health
+criteria that do not equate "the process restarted" with "the upgrade
+succeeded".
