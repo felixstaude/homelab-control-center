@@ -28,6 +28,7 @@ import {
   TableRowHeader,
 } from '@/components/ui/table';
 import { queryKeys } from '@/lib/query-keys';
+import { RolloutPanel } from '@/routes/updates/rollout-panel';
 import { UpdateHistoryPanel } from '@/routes/updates/update-history-panel';
 import { UpdatePolicyDialog } from '@/routes/updates/update-policy-dialog';
 import {
@@ -261,6 +262,8 @@ export function UpdatesPage() {
           )}
         </CardContent>
       </Card>
+
+      <RolloutPanel />
 
       <UpdateHistoryPanel />
 

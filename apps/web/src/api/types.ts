@@ -1006,3 +1006,87 @@ export type StartUpdateRequest = {
   target_version?: string | null;
   allow_downgrade?: boolean;
 };
+
+// ---------------------------------------------------------------------------
+// Staged rollouts
+// ---------------------------------------------------------------------------
+
+/** One host's place in a rollout, and where it has got to. */
+export type RolloutMember = {
+  host_id: string;
+  /** 0 is the canary; 1 and up are the batches, in order. */
+  batch: number;
+  state: 'pending' | 'running' | 'succeeded' | 'failed' | 'skipped';
+  /**
+   * Whether the post-install health check has passed.
+   *
+   * False while a host is still settling, and false for one that installed
+   * and then went away — which is the distinction the next batch waits on.
+   * A member can be `succeeded` and not healthy, and that pair is the whole
+   * reason this field exists separately from `state`.
+   */
+  healthy: boolean;
+  detail: string | null;
+};
+
+/** A rollout and its current progress. */
+export type Rollout = {
+  rollout_id: string;
+  name: string;
+  to_version: string;
+  state: 'pending' | 'canary' | 'running' | 'paused' | 'completed' | 'cancelled';
+  canary_count: number;
+  batch_size: number;
+  failure_tolerance: number;
+  health_check_seconds: number;
+  offline_deadline_seconds: number;
+  /** An administrator said "go on anyway" after the failure gate stopped it. */
+  failures_overridden: boolean;
+  window: MaintenanceWindow | null;
+  paused_reason: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  total: number;
+  succeeded: number;
+  failed: number;
+  /** Not a failure: an offline host, or one already on the target version. */
+  skipped: number;
+  running: number;
+  pending: number;
+  current_batch: number | null;
+  members: RolloutMember[];
+};
+
+/** What a new rollout needs. The defaults here are the cautious ones. */
+export type CreateRolloutRequest = {
+  name: string;
+  to_version: string;
+  host_ids: string[];
+  canary_host_ids?: string[];
+  canary_count?: number;
+  batch_size?: number;
+  failure_tolerance?: number;
+  health_check_seconds?: number;
+  offline_deadline_seconds?: number;
+  /** The same shape `UpdatePolicyRequest.maintenance_window` uses. */
+  window?: {
+    timezone: string;
+    weekdays: number[];
+    start: string;
+    end: string;
+  } | null;
+};
+
+/** Pausing, resuming or cancelling. */
+export type RolloutControlRequest = {
+  reason?: string;
+  /**
+   * On resume: go on despite the failures that paused it.
+   *
+   * Without this a rollout stopped by the failure gate pauses again on the
+   * next pass, which is correct and looks like a bug if the interface does
+   * not offer the override.
+   */
+  override_failures?: boolean;
+};

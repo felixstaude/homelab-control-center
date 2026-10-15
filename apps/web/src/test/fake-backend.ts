@@ -47,6 +47,8 @@ import type {
   ModuleDescriptor,
   OwnSession,
   StoredSetting,
+  Rollout,
+  RolloutMember,
   UpdateJob,
   UpdatePlan,
   UserRole,
@@ -519,6 +521,15 @@ export type FakeBackendState = {
   /** What `GET /updates/history` answers. */
   updateHistory: UpdateJob[];
 
+  /**
+   * What `GET /updates/rollouts` answers.
+   *
+   * Empty by default, which is the state of every installation: a rollout is
+   * something somebody creates, and a fake whose default was "a rollout is
+   * running" would make the empty state the one nobody tested.
+   */
+  rollouts: Rollout[];
+
   /* --- Phase 2: monitoring configuration --- */
 
   /**
@@ -665,6 +676,7 @@ export function installFakeBackend(initial: Partial<FakeBackendState> = {}): Fak
     updateOverview: null,
     hostUpdateStatuses: [],
     updateHistory: [],
+    rollouts: [],
     ...initial,
   };
 
@@ -939,6 +951,36 @@ export function installFakeBackend(initial: Partial<FakeBackendState> = {}): Fak
       const refused = requireSession();
       if (refused) return refused;
       return json({ jobs: state.updateHistory, next_before: null });
+    }
+
+    if (path.endsWith('/updates/rollouts') && method === 'GET') {
+      const refused = requireSession();
+      if (refused) return refused;
+      return json(state.rollouts);
+    }
+
+    // Pause, resume and cancel. Administrator only, as the server enforces —
+    // asserted here so a client that offered the control to a viewer would
+    // fail rather than silently succeed against a permissive fake.
+    const rolloutControl = /\/updates\/rollouts\/([^/]+)\/(pause|resume|cancel)$/.exec(path);
+    if (rolloutControl && method === 'POST') {
+      const refused = requireSession();
+      if (refused) return refused;
+      if (state.session && state.session.role !== 'admin') {
+        return envelope(403, 'insufficient_permissions', 'Administrator role required.');
+      }
+      const [, rolloutId, action] = rolloutControl;
+      const found = state.rollouts.find((entry) => entry.rollout_id === rolloutId);
+      if (!found) {
+        return envelope(404, 'not_found', 'No such rollout.');
+      }
+      const payload = (body ?? {}) as { override_failures?: boolean };
+      found.state =
+        action === 'pause' ? 'paused' : action === 'cancel' ? 'cancelled' : 'running';
+      if (action === 'resume' && payload.override_failures === true) {
+        found.failures_overridden = true;
+      }
+      return json(found);
     }
 
     if (path.endsWith('/update-policy') && method === 'PUT') {
@@ -1731,4 +1773,55 @@ const USERNAME_BY_ROLE: Record<UserRole, string> = {
 
 export function userWithRole(role: UserRole): CurrentUser {
   return makeUser({ role, username: USERNAME_BY_ROLE[role] });
+}
+
+/**
+ * A rollout, with the cautious defaults the API has.
+ *
+ * `members` is empty by default and a caller supplies them; the counts are
+ * not derived from the members on purpose, because the server sends both and
+ * a test that wanted them to disagree — a member list that has not caught up
+ * with the counts — should be able to say so.
+ */
+export function makeRollout(overrides: Partial<Rollout> = {}): Rollout {
+  return {
+    rollout_id: 'r-1',
+    name: 'to 0.2.0',
+    to_version: '0.2.0',
+    state: 'canary',
+    canary_count: 1,
+    batch_size: 5,
+    failure_tolerance: 0,
+    health_check_seconds: 120,
+    offline_deadline_seconds: 3600,
+    failures_overridden: false,
+    window: null,
+    paused_reason: null,
+    created_at: new Date(Date.now() - 60_000).toISOString(),
+    started_at: new Date(Date.now() - 30_000).toISOString(),
+    finished_at: null,
+    total: 0,
+    succeeded: 0,
+    failed: 0,
+    skipped: 0,
+    running: 0,
+    pending: 0,
+    current_batch: 0,
+    members: [],
+    ...overrides,
+  };
+}
+
+/** One host's place in a rollout. */
+export function makeRolloutMember(
+  overrides: Partial<RolloutMember> = {},
+): RolloutMember {
+  return {
+    host_id: 'h-1',
+    batch: 0,
+    state: 'pending',
+    healthy: false,
+    detail: null,
+    ...overrides,
+  };
 }
