@@ -300,20 +300,72 @@ Serves a certificate you already have. Put it in `./tls/`.
 ## 5. Upgrading
 
 ```bash
-cd deploy/production
+# See what it would involve, change nothing
+./scripts/upgrade-controller.sh --to 0.2.0 --plan-only
 
-# 1. Back up first. This is the rollback.
-../../scripts/backup.sh --output ~/hcc-backups
-
-# 2. Bump the pinned tag
-$EDITOR compose.yaml
-
-# 3. Pull and restart
-docker compose pull
-docker compose up -d
+# Do it: back up, verify the backup restores, apply, check readiness
+./scripts/upgrade-controller.sh --to 0.2.0
 ```
 
-Migrations run on start, so step 3 is the upgrade.
+`upgrade-controller.sh` is the seven steps below in one command, and it
+stops at the first that fails with the recovery procedure and the backup's
+real path in it.
+
+| | |
+| --- | --- |
+| 1 | Preflight: Compose, a running stack, a reachable controller, a writable backup directory |
+| 2 | Read the current version and applied schema revision |
+| 3 | Pull the target image and read **its** head revision, so the migration plan comes from the image being deployed rather than from this checkout |
+| 4 | Back up — and **verify the backup by restoring it** into a scratch database |
+| 5 | Confirm, unless `--yes` |
+| 6 | Apply, and wait for `/readyz` |
+| 7 | Verify: the version, the schema revision, and that the agents reconnected |
+
+**Step 4 is the one worth dwelling on.** A dump whose checksum matches is a
+dump that is *intact*, which is not the same as a dump that *restores*. A
+truncated `pg_dump`, a version mismatch between client and server, a dump
+taken while an extension was missing — each produces a file with a perfectly
+good checksum and no usable database inside it. So the backup is restored
+into a scratch database in the same PostgreSQL instance, its tables counted
+against the live one, and dropped. The live database is never touched, and
+an upgrade does not start unless the backup actually works.
+
+### Why this is a command and not a button
+
+Replacing the controller means replacing the container the web interface is
+served from. For the application to do that to itself it would need the
+Docker socket — which is root on the host — and a web application with root
+on its host is a worse problem than any upgrade it could perform. There is no
+remote-command API either, for the same reason.
+
+So the controller **guides** and the command **acts**:
+
+```
+GET /api/v1/controller/upgrade-readiness
+```
+
+reports the applied schema revision, the migrations that would run, how many
+agents are connected and how many updates are in flight — with a sentence of
+advice for each. It is read-only, available to every authenticated role, and
+a test asserts that `POST`, `PUT`, `PATCH` and `DELETE` all answer 405.
+
+That endpoint also names the one direction a backup cannot save you from:
+**a database ahead of the image**. Running an older controller against a
+schema a newer one migrated reports zero pending migrations — because the
+older build has never heard of the revision to be behind it — and looks
+entirely current. The readiness check reports it as `schema_is_ahead` and
+says the only safe move is to deploy the newer image again.
+
+### Doing it by hand
+
+```bash
+cd deploy/production
+../../scripts/backup.sh --output ~/hcc-backups    # this is the rollback
+$EDITOR compose.yaml                              # bump the pinned tag
+docker compose pull && docker compose up -d
+```
+
+Migrations run on start, so the last step is the upgrade.
 
 Rules that make it reliable:
 

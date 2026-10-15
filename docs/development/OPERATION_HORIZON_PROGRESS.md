@@ -270,6 +270,44 @@ question the planner was asked and nonsense as an explanation.
 **Not yet done in this phase:** the frontend. The API is complete and tested;
 the Updates page does not render rollouts.
 
+### Phase C — safe controller upgrades — done
+
+`scripts/upgrade-controller.sh`, plus a read-only
+`GET /api/v1/controller/upgrade-readiness`.
+
+**The controller guides; the command acts.** Replacing the controller means
+replacing the container the interface is served from, and for the
+application to do that to itself it would need the Docker socket — root on
+the host. There is no remote-command API for the same reason. A test asserts
+`POST`, `PUT`, `PATCH` and `DELETE` on the readiness endpoint all answer
+405.
+
+**The backup is verified by restoring it**, into a scratch database in the
+same PostgreSQL instance, with its table count compared against the live
+one. A dump whose checksum matches is *intact*; that is not the same as one
+that *restores*, and the difference is the whole value of the step. The
+upgrade does not start if the restore fails or comes back short.
+
+**No automatic database rollback**, stated rather than implied: an Alembic
+downgrade that drops a column is data loss performed by a script at the
+worst possible moment, and some of this project's own downgrades refuse
+rather than destroy. Recovery is the old image *and* the backup, in that
+order, and the script prints both commands with the real path in them.
+
+The readiness endpoint names the one direction a backup cannot save you
+from: **a database ahead of the image**. It reports zero pending migrations,
+because the older build has never heard of the revision to be behind it, and
+looks entirely current. `deployment-e2e.sh` §11 sets a future revision and
+asserts it is caught, that the advice says what to do, and that the
+controller keeps serving while reporting it — a controller that fell over
+would take the interface down at the moment somebody needs it to explain
+what happened.
+
+One bug found while writing it: `schema_is_ahead` asked `applied_revisions`,
+which reports an unknown head *as the head alone* — deliberately, so a
+blocker can name it — which made the unknown revision look applied. There is
+now a `knows_revision` helper that asks the history directly.
+
 ### Phase J — the host detail page — in progress
 
 `resource-panels.tsx`: filesystems, disks and interfaces as **tables**, not

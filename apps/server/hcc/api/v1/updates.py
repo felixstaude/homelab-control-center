@@ -37,7 +37,7 @@ from __future__ import annotations
 import dataclasses
 import uuid
 from datetime import UTC, datetime, time
-from typing import TYPE_CHECKING, Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, Final, Literal
 
 from fastapi import APIRouter, Depends, Query, status
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -54,6 +54,7 @@ from hcc.models.updates import (
     ROLLOUT_NAME_MAX_LENGTH,
     VERSION_MAX_LENGTH,
     UpdateRollout,
+    UpdateState,
     UpdateTrigger,
 )
 from hcc.services.hosts import HostNotFoundError
@@ -1322,3 +1323,160 @@ async def cancel_rollout(
         )
         await db.commit()
         return response
+
+
+# ---------------------------------------------------------------------------
+# Controller upgrade readiness
+#
+# Read-only, and that is the design rather than a limitation. Replacing the
+# controller means replacing the container this endpoint is served from, and
+# for the application to do that to itself it would need the Docker socket —
+# which is root on the host. A web application with root on its host is a
+# worse problem than any upgrade it could perform.
+#
+# So the controller reports what an upgrade would involve and
+# `scripts/upgrade-controller.sh` performs it, run by an administrator on the
+# machine with the privileges they already have. There is no remote-command
+# API here for the same reason: an endpoint that runs what it is told is what
+# an attacker is looking for.
+# ---------------------------------------------------------------------------
+
+#: Every update state, for the "is anything in flight" count.
+#:
+#: Enumerated from the enum rather than written out in SQL, because
+#: `is_terminal` is the one place that knows which states are terminal and a
+#: second list would be a copy that drifts.
+_ALL_UPDATE_STATES: Final = tuple(state.value for state in UpdateState)
+
+
+class UpgradeReadinessResponse(BaseModel):
+    """What an administrator needs before upgrading the controller."""
+
+    controller_version: str
+    schema_revision: str | None = Field(
+        description="What the database reports. Null on an unmigrated database."
+    )
+    head_revision: str | None = Field(
+        description=(
+            "The newest revision this build's migration files contain. Null "
+            "means the history could not be read, which is 'cannot tell' "
+            "rather than 'nothing pending'."
+        )
+    )
+    pending_revisions: list[str] = Field(
+        description=(
+            "Migrations this build has and the database has not, in the order they would run."
+        )
+    )
+    schema_is_current: bool
+    schema_is_ahead: bool = Field(
+        description=(
+            "The database reports a revision this build does not contain: an "
+            "older image against a newer schema. The dangerous direction, and "
+            "the one no backup taken now would recover."
+        )
+    )
+    connected_hosts: int = Field(
+        description="Agents connected right now. They reconnect by themselves after a restart."
+    )
+    hosts_with_open_updates: int = Field(
+        description=(
+            "Hosts with an update in flight. Restarting the controller during "
+            "one does not break it — the agent reports the result on its next "
+            "connection — but it is worth knowing before choosing the moment."
+        )
+    )
+    advice: list[str] = Field(
+        description="Sentences for an operator, strongest first. Never empty."
+    )
+
+
+@read_router.get(
+    "/controller/upgrade-readiness",
+    summary="What a controller upgrade would involve",
+    response_model=UpgradeReadinessResponse,
+)
+async def upgrade_readiness(database: DatabaseDep) -> UpgradeReadinessResponse:
+    """Report, never act. See the note above this handler.
+
+    Available to every authenticated role: "is the controller current" is a
+    question anybody looking after this installation may ask, and the answer
+    holds no secret — a schema revision and two counts.
+    """
+    from sqlalchemy import func as sql_func
+
+    from hcc.models.host import Host
+    from hcc.models.updates import UpdateJob, is_terminal
+    from hcc.updates.schema import (
+        current_revision,
+        head_revision,
+        knows_revision,
+        pending_revisions,
+    )
+
+    unfinished = [state for state in _ALL_UPDATE_STATES if not is_terminal(state)]
+
+    async with database.session_factory() as db:
+        revision = await current_revision(db)
+        applied = await applied_revisions(db)
+        head = head_revision()
+        pending = list(pending_revisions(applied))
+
+        connected = (
+            await db.execute(
+                select(sql_func.count())
+                .select_from(Host)
+                .where(Host.current_connection_id.is_not(None))
+            )
+        ).scalar_one()
+        open_updates = (
+            await db.execute(
+                select(sql_func.count())
+                .select_from(UpdateJob)
+                .where(UpdateJob.state.in_(unfinished))
+            )
+        ).scalar_one()
+
+    # The database is ahead when it reports a revision this build has never
+    # heard of. Checked before `schema_is_current`, because it is the case
+    # that looks current from a count of pending migrations and is not.
+    #
+    # Asked of the history directly rather than of `applied`: that reports an
+    # unknown head as the head alone — deliberately, so a blocker can name it
+    # — which would make an unknown revision look applied.
+    ahead = revision is not None and not knows_revision(revision)
+    advice: list[str] = []
+    if ahead:
+        advice.append(
+            f"This database reports schema revision {revision}, which this build "
+            f"({__version__}) does not contain. It was migrated by a newer "
+            "controller. Running an older image against a newer schema is the one "
+            "direction a backup taken now cannot recover; deploy the newer image "
+            "again."
+        )
+    elif pending:
+        advice.append(
+            f"{len(pending)} migration(s) would run: {', '.join(pending)}. "
+            "Migrations are applied once and are not reversed automatically — take "
+            "a backup first, and verify that it restores."
+        )
+    if open_updates:
+        advice.append(
+            f"{open_updates} host update(s) are in flight. Restarting the controller "
+            "does not break them — the agent reports the result on its next "
+            "connection — but waiting makes the history easier to read."
+        )
+    if not advice:
+        advice.append("The schema is current and nothing is in flight.")
+
+    return UpgradeReadinessResponse(
+        controller_version=__version__,
+        schema_revision=revision,
+        head_revision=head,
+        pending_revisions=pending,
+        schema_is_current=not pending and not ahead,
+        schema_is_ahead=ahead,
+        connected_hosts=int(connected),
+        hosts_with_open_updates=int(open_updates),
+        advice=advice,
+    )

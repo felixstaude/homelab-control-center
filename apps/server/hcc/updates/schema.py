@@ -138,3 +138,75 @@ async def applied_revisions(db: AsyncSession) -> frozenset[str]:
     # the revision, which is more useful than a silent pass.
     logger.warning("alembic_head_not_in_history", head=head)
     return frozenset({head})
+
+
+def knows_revision(revision: str) -> bool:
+    """Whether this build's migration files contain *revision* at all.
+
+    The question "is the database ahead of this image" reduces to this one,
+    and it cannot be answered from :func:`applied_revisions` — that reports
+    an unknown head as the head alone, deliberately, so that a blocker can
+    name it. A caller asking "do I know this revision" needs the direct
+    answer.
+
+    Returns ``True`` when the history cannot be read, which fails *open* for
+    this question alone and on purpose: claiming "your database is from the
+    future" because a file was unreadable would be the more alarming wrong
+    answer, and every other use of the history already fails closed.
+    """
+    ancestry = _ancestry()
+    return not ancestry or revision in ancestry
+
+
+def head_revision() -> str | None:
+    """The newest revision this build's migration files contain.
+
+    Distinct from :func:`current_revision`, which is what the *database* has
+    applied. The pair is the whole upgrade-readiness question: equal means
+    the schema is current, and different means migrations are pending —
+    either because the image is newer than the database, or because somebody
+    is running an image older than the database it is pointed at, which is
+    the dangerous direction and the one worth naming.
+
+    Returns ``None`` when the migration files cannot be read, which the
+    caller must treat as "cannot tell" rather than as "nothing pending".
+    """
+    try:
+        from alembic.script import ScriptDirectory
+    except ImportError:  # pragma: no cover - alembic is a hard dependency
+        return None
+    if not ALEMBIC_DIRECTORY.is_dir():
+        return None
+    try:
+        heads = ScriptDirectory(str(ALEMBIC_DIRECTORY)).get_heads()
+    except Exception:
+        # Same reasoning as `_ancestry`: a malformed history is a deployment
+        # fault and must not turn a status page into a 500.
+        logger.exception("alembic_heads_unreadable", path=str(ALEMBIC_DIRECTORY))
+        return None
+    return heads[0] if len(heads) == 1 else None
+
+
+def pending_revisions(applied: frozenset[str]) -> tuple[str, ...]:
+    """Revisions this build has and the database has not, oldest first.
+
+    The list an administrator reads before deciding whether to upgrade now or
+    tonight. Empty when the schema is current, and empty when the history
+    cannot be read — the caller distinguishes those by also asking
+    :func:`head_revision`, which is ``None`` in the second case.
+    """
+    head = head_revision()
+    if head is None:
+        return ()
+    ancestry = _ancestry()
+    # Expanded, so a caller that passes a bare head rather than the set
+    # `applied_revisions` returns gets the right answer instead of "every
+    # migration is pending". Reaching revision N means every revision behind
+    # it ran, and that is true however the caller spells it.
+    reached: set[str] = set()
+    for revision in applied:
+        reached.update(ancestry.get(revision, (revision,)))
+    everything = ancestry.get(head, ())
+    # `_ancestry` orders a revision before its ancestors, so reversing gives
+    # the order the migrations would actually run in.
+    return tuple(revision for revision in reversed(everything) if revision not in reached)

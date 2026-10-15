@@ -3226,6 +3226,87 @@
         "title": "UpdatePolicyRequest",
         "type": "object"
       },
+      "UpgradeReadinessResponse": {
+        "description": "What an administrator needs before upgrading the controller.",
+        "properties": {
+          "advice": {
+            "description": "Sentences for an operator, strongest first. Never empty.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Advice",
+            "type": "array"
+          },
+          "connected_hosts": {
+            "description": "Agents connected right now. They reconnect by themselves after a restart.",
+            "title": "Connected Hosts",
+            "type": "integer"
+          },
+          "controller_version": {
+            "title": "Controller Version",
+            "type": "string"
+          },
+          "head_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The newest revision this build's migration files contain. Null means the history could not be read, which is 'cannot tell' rather than 'nothing pending'.",
+            "title": "Head Revision"
+          },
+          "hosts_with_open_updates": {
+            "description": "Hosts with an update in flight. Restarting the controller during one does not break it \u2014 the agent reports the result on its next connection \u2014 but it is worth knowing before choosing the moment.",
+            "title": "Hosts With Open Updates",
+            "type": "integer"
+          },
+          "pending_revisions": {
+            "description": "Migrations this build has and the database has not, in the order they would run.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Pending Revisions",
+            "type": "array"
+          },
+          "schema_is_ahead": {
+            "description": "The database reports a revision this build does not contain: an older image against a newer schema. The dangerous direction, and the one no backup taken now would recover.",
+            "title": "Schema Is Ahead",
+            "type": "boolean"
+          },
+          "schema_is_current": {
+            "title": "Schema Is Current",
+            "type": "boolean"
+          },
+          "schema_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the database reports. Null on an unmigrated database.",
+            "title": "Schema Revision"
+          }
+        },
+        "required": [
+          "controller_version",
+          "schema_revision",
+          "head_revision",
+          "pending_revisions",
+          "schema_is_current",
+          "schema_is_ahead",
+          "connected_hosts",
+          "hosts_with_open_updates",
+          "advice"
+        ],
+        "title": "UpgradeReadinessResponse",
+        "type": "object"
+      },
       "UserCreateRequest": {
         "additionalProperties": false,
         "description": "Create an account.\n\n``extra=\"forbid\"``: a request naming a field this model does not declare\nis rejected. That is the mass-assignment guard at the boundary \u2014 a\nforwarded ``password_hash`` or ``id`` fails validation rather than being\nsilently dropped, and a client that believed it set one finds out.",
@@ -4199,6 +4280,48 @@
         "summary": "The authenticated identity",
         "tags": [
           "authentication"
+        ]
+      }
+    },
+    "/api/v1/controller/upgrade-readiness": {
+      "get": {
+        "description": "Report, never act. See the note above this handler.\n\nAvailable to every authenticated role: \"is the controller current\" is a\nquestion anybody looking after this installation may ask, and the answer\nholds no secret \u2014 a schema revision and two counts.",
+        "operationId": "upgrade_readiness_api_v1_controller_upgrade_readiness_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpgradeReadinessResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error"
+          }
+        },
+        "summary": "What a controller upgrade would involve",
+        "tags": [
+          "updates"
         ]
       }
     },
