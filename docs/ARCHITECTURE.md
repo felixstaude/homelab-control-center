@@ -3207,6 +3207,119 @@ since Tuesday" is not a question this schema can answer. That is the right
 trade for a monitoring product — nobody asks it — and it is stated here so
 the absence is a decision rather than a surprise.
 
+### ADR-066: Collector failure is stored against the module, not inferred from absence
+
+**Decision.** A new table, `host_module_health`, holds one row per host per
+module: when the controller last heard about it, when it last collected
+without an error, when it last failed, the agent's own words for that
+failure, and how many collections have failed since the last success.
+Upserted on the ingestion path in the same transaction as the samples.
+
+**Why a table and not an inference.** "This module has no recent samples"
+has four causes with four different remedies — nobody enabled it, the agent
+is offline, it was enabled a second ago, or the collector is raising an
+error every interval — and only the first three were answerable. The fourth
+is the interesting one and was entirely invisible: a removed disk, a stopped
+Docker daemon or a `systemctl` that started refusing produced an enabled
+module, a connected agent, no data and no explanation, indefinitely.
+
+**The protocol already carried it.** `TelemetryEntry.error` has existed
+since phase 3 and its own description says "a module that has been failing
+for an hour is information an operator needs". `MetricsService.ingest` read
+`entry.samples` and discarded the rest. This ADR is mostly a record that the
+field is now read.
+
+**Why not a column on `host_module_overrides`.** That row is what the
+operator *wants*; this one is what is *happening*. A module inheriting the
+global default has no override row at all and still has health, and
+resetting an override deletes a row that must not take the failure history
+with it.
+
+**Why every timestamp is the controller's clock.** Unlike
+`metric_series.last_sample_at`, which records when the agent says it took a
+measurement. A host whose clock is four hours out is one of the conditions
+this table reports — the controller refuses every sample it sends — and a
+diagnostic timestamped by the thing being diagnosed is not a diagnostic.
+That case is recorded too, with the controller's own words, because from
+inside that host nothing is wrong and the agent cannot report it.
+
+**Consequence.** An error string from a possibly-compromised host is stored
+and rendered in a browser. It is bounded twice (the protocol refuses a
+longer frame; the service truncates before the UPSERT), stored verbatim
+rather than pre-escaped, and escaped by React at the point of rendering. A
+collection that ran and produced *no samples* is a **success** — a rate
+collector's first interval legitimately produces nothing — and the error
+survives a later success so that a module which fails and recovers every few
+minutes is visible rather than self-erasing.
+
+### ADR-067: The rollup bound is a bound on series, and the lag is reported
+
+**Decision.** `MAX_BUCKETS_PER_RUN` stays at 5,000. The maintenance pass now
+reports `rollup_lag_seconds` per tier and logs `metric_rollup_behind` when a
+tier is more than three bucket widths behind.
+
+**The measurement.** The five-minute tier writes one row per series per
+five-minute bucket, and the job runs every five minutes, so a steady-state
+pass has exactly one bucket per series to write. The bound is therefore a
+bound on **series in the installation** — and since five of the eleven
+modules are label-keyed, that is far fewer hosts than it sounds:
+`scripts/measure-metrics.py --profile full` measures 164 series on a
+well-populated host, so the ceiling is **thirty hosts** with everything
+enabled, against 357 on the two-module profile the earlier figures used.
+
+Past the ceiling the job does not degrade, it never catches up: each pass
+writes 5,000 of the buckets that accrued and falls behind by the remainder,
+every five minutes, for ever. The tiers keep answering queries, about last
+week, and nothing in the data shows it.
+
+**Why not raise the bound.** 5,000 buckets took about half a second in the
+benchmark, so the 82,000 that 500 full-profile hosts would need is an
+eight-second transaction every five minutes. That is a different trade from
+the one the constant currently makes — progress every run rather than one
+enormous transaction — and the contention it would cause with live ingestion
+is exactly what has not been measured. The likely eventual answer is a
+**time-bounded** pass rather than a larger count.
+
+**Why the lag is derived rather than remembered.** `RetentionService`
+declares itself stateless and `__slots__` enforces it, which is what makes
+it restart-safe. A consecutive-capped-runs counter was tried first and
+failed immediately and correctly. The lag is read from the database: the
+newest bucket each tier holds against the newest the *data* says it should.
+
+**Measured against the data, not the clock.** A series with gaps has no
+bucket for a window nothing sampled, so comparing the watermark with "now
+minus the grace period" reports a caught-up tier as permanently five minutes
+behind. The first version did exactly that.
+
+### ADR-068: The browser's module fixture is generated, not transcribed
+
+**Decision.** `apps/web/src/test/module-catalogue.generated.ts` is written by
+`scripts/contracts.sh` from the controller's registry, and
+`make check-contract` fails when the committed file is stale.
+`FAKE_MODULES` re-exports it.
+
+**Why.** It was a hand-written copy of `contracts/monitoring-modules.json`,
+kept in step by a comment asking the next reader to keep it in step. Six
+modules landed in the registry during Operation Horizon and the fixture
+claimed five throughout — so every browser test ran against a five-module
+world, a page that renders eleven rows was never rendered with eleven, and a
+test seeding one of the new modules asserted against something the fixture
+had never heard of. **Nothing failed**, because the only thing that could
+have noticed the drift was the copy itself.
+
+**Why not import `contracts/monitoring-modules.json` directly.** The client
+image is built from `apps/web` alone, so a file importing
+`../../../../contracts/` type-checks locally and breaks `docker compose
+build` with "Cannot find module". The generated file lives inside the build
+context; a comparison test that read the contract with `node:fs` would also
+have needed `@types/node`, a dependency added for a fixture.
+
+**Consequence.** `description` was added to the contract document so the
+fixture could be generated whole. The Go agent ignores it — `encoding/json`
+reads named fields and skips the rest — and the contract test's struct is
+unchanged.
+
+
 ---
 
 ## 14. Open design questions

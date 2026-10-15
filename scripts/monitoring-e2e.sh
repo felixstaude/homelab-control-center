@@ -1205,7 +1205,85 @@ else
 fi
 
 # ===========================================================================
-info "== 19. Disabling a module stops its collection =="
+info "== 19. Every enabled module reports its own health =="
+
+# The other half of §18. That section asserts a module either measures
+# something or says why it cannot; this one asserts the controller **has the
+# answer** — because until Phase M it did not.
+#
+# `TelemetryEntry.error` carried the reason a collection produced nothing
+# from the first release of the protocol, and `ingest` read `entry.samples`
+# and discarded the rest. So an enabled module on a connected agent could
+# fail every interval for a week and the host page would show "No data" with
+# no explanation and no end.
+#
+# Against the real machine rather than a fixture: these are the modules this
+# runner actually supports, collecting from its actual kernel.
+
+health="$(query "
+  SELECT module_id, consecutive_failures, coalesce(last_error, '-')
+  FROM host_module_health ORDER BY module_id")"
+
+if [[ -z "$health" ]]; then
+  bad "no module reported its health; the controller is discarding the field again"
+else
+  reported="$(printf '%s\n' "$health" | wc -l)"
+  ok "$reported modules reported collection health"
+
+  failing="$(printf '%s\n' "$health" | awk -F'\t' '$2 != "0" { print $1 " (" $3 ")" }')"
+  if [[ -z "$failing" ]]; then
+    ok "none of them is failing on this host"
+  else
+    # Not a failure of this script: a runner with no hwmon and no Docker
+    # socket reports those modules unavailable rather than failing, so a
+    # module that is *failing* here is worth printing. It is only an error
+    # if a module that produced samples is also reporting failures.
+    red "  · modules reporting failures: $failing"
+  fi
+
+  # The one that must hold: a module that stored samples in this run cannot
+  # also be failing. Those two facts contradict each other, and a health
+  # table that could hold both would be describing nothing.
+  contradictions="$(query "
+    SELECT count(*) FROM host_module_health h
+    WHERE h.consecutive_failures > 0
+      AND EXISTS (
+        SELECT 1 FROM metric_series e
+        JOIN metric_samples_raw s ON s.series_id = e.id
+        WHERE e.module = h.module_id
+          AND s.recorded_at > now() - interval '2 minutes')")"
+  if [[ "$contradictions" == "0" ]]; then
+    ok "no module is both storing samples and reporting a failure"
+  else
+    bad "$contradictions modules claim to be failing while still storing samples"
+  fi
+
+  # And every one of them was heard from. A row with no `last_reported_at`
+  # would mean the upsert wrote a health record for a collection that never
+  # arrived.
+  unheard="$(query "
+    SELECT count(*) FROM host_module_health WHERE last_reported_at IS NULL")"
+  if [[ "$unheard" == "0" ]]; then
+    ok "every health row records when the controller heard it"
+  else
+    bad "$unheard health rows exist for modules nothing reported"
+  fi
+fi
+
+# The endpoint an operator reads, not just the table.
+status_errors="$(api GET "/hosts/$HOST_ID/metrics/status" | "$VENV/bin/python" -c '
+import json, sys
+document = json.load(sys.stdin)
+reported = [m for m in document["modules"] if m["last_reported_at"] is not None]
+print(len(reported))')"
+if [[ "${status_errors:-0}" -gt 0 ]]; then
+  ok "the metrics status endpoint reports health for $status_errors modules"
+else
+  bad "the metrics status endpoint reports health for no module"
+fi
+
+# ===========================================================================
+info "== 20. Disabling a module stops its collection =="
 
 api PUT "/hosts/$HOST_ID/monitoring/modules/cpu" '{"enabled":false}' >/dev/null
 await_query "the agent acknowledged the new revision" \
@@ -1254,7 +1332,7 @@ else
 fi
 
 # ===========================================================================
-info "== 20. Revoking the credential cuts the agent off =="
+info "== 21. Revoking the credential cuts the agent off =="
 
 api POST "/hosts/$HOST_ID/credential/revoke" >/dev/null
 await_query "the host is marked revoked" \

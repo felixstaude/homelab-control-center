@@ -196,10 +196,10 @@ default — `Environment` can hold secrets. Running it against a deliberately
 absent unit found that `systemctl show` answers for units it has never heard
 of, so `LoadState` is checked.
 
-### Phase L — end-to-end coverage for the new modules — partly done
+### Phase L — end-to-end coverage for the new modules — complete
 
-`scripts/monitoring-e2e.sh` §17 and §18, run by CI on every change. **87
-checks pass** locally (was 60).
+`scripts/monitoring-e2e.sh` §17, §18 and §19, run by CI on every change.
+**92 checks pass** locally (was 60).
 
 Every assertion cross-checks the agent against the machine it runs on rather
 than against itself:
@@ -219,11 +219,19 @@ correctly-reported unavailability, never silence. A runner with no sensors
 produces "this host exposes no hwmon temperature sensors, and none were
 invented" — a result, not a skip.
 
+§19 closes the loop on Phase M: every enabled module reports its own health,
+no module is both storing samples and reporting a failure, and the metrics
+status endpoint has the answer. On the development machine it demonstrates
+the feature working — `docker` reports
+`dial unix /var/run/docker.sock: connect: no such file or directory`,
+because this machine runs Podman, which is exactly the operator-visible
+explanation that did not exist before.
+
 Three pinned counts fired and were replaced with reads of the registry
 rather than updated numbers: a literal asserts that somebody remembered to
 edit a second file, which is how one came to say 5 while the registry had 11.
 
-### Phase B — staged rollouts — the engine exists
+### Phase B — staged rollouts — complete
 
 Evergreen created `update_rollouts` and `update_rollout_members` — a canary
 batch, a batch size, a failure tolerance, an offline deadline — and nothing
@@ -267,8 +275,12 @@ interval with nothing left to do, and the "already running the target
 version" skip reason said "this host is already pinned" — true of the
 question the planner was asked and nonsense as an explanation.
 
-**Not yet done in this phase:** the frontend. The API is complete and tested;
-the Updates page does not render rollouts.
+**Done since:** the Updates page renders rollouts, and there is a creation
+form. One canary, batches of five, zero failures tolerated, a two-minute
+health check — the cautious defaults, with a summary line built from the
+current values rather than described in prose, because a static sentence
+would be right until somebody changed a field and this is the sentence
+somebody reads before replacing software on machines they own.
 
 ### Phase C — safe controller upgrades — done
 
@@ -308,7 +320,7 @@ which reports an unknown head *as the head alone* — deliberately, so a
 blocker can name it — which made the unknown revision look applied. There is
 now a `knows_revision` helper that asks the history directly.
 
-### Phase J — the host detail page — in progress
+### Phase J — the host detail page — complete
 
 `resource-panels.tsx`: filesystems, disks and interfaces as **tables**, not
 tiles. A laptop with three filesystems, four devices and two interfaces
@@ -317,6 +329,119 @@ somewhere in it. Scalars stay as tiles.
 
 Verified in a real browser against the running demo, not only in jsdom —
 which is how the duplicate `Used` column heading was found.
+
+### Phase M — failure injection — complete
+
+Started as "break things and see what happens" and found its first defect
+before anything was injected.
+
+**`TelemetryEntry.error` had never been read.** The agent has reported why a
+collection produced nothing since phase 3; the protocol validates the field
+and bounds it; its own description says "a module that has been failing for
+an hour is information an operator needs"; and `MetricsService.ingest` read
+`entry.samples` and discarded the rest. So the symptom this phase was about
+to go looking for — pull a disk, stop Docker, break `systemctl` — produced
+an enabled module, a connected agent, no data and no explanation, for ever.
+
+`host_module_health` is where it lands now, with migration 0013. One row per
+host per module, upserted on the ingest path inside the same transaction as
+the samples. Four things it deliberately is not: not a column on
+`host_module_overrides` (configuration and observation are different
+tables); not the agent's clock (a wrong clock is one of the conditions it
+reports); not "produced no samples" (a rate collector's first interval is a
+success); and not self-erasing (the error survives a later success, only the
+count resets). ADR-066.
+
+**Then the injection.** `scripts/reliability-e2e.sh` §5 and §6, against a
+synthetic `/proc` and `/sys` built as a symlink farm under the script's own
+mktemp directory: `stat`, `meminfo`, `loadavg` and `uptime` point at the
+real kernel and only `diskstats` and `net/dev` are files the script writes.
+That is what makes the breakage *targeted* — "one module failed and the
+others did not" is an assertion rather than a hope, because `memory` is
+reading the real machine throughout. Nothing on the developer's host is
+enumerated, let alone altered.
+
+§5 pulls `vdb` out and takes `eth1` down while `vda` and `eth0` keep moving:
+the survivors keep reporting, the removed pair report **zero** samples after
+— not "near zero", because a device that is gone is not idle and one
+zero-valued sample renders as a flat line through the removal — and no
+negative or absurd rate comes out of the transition. §6 deletes the file
+`diskio` reads and walks the whole chain: the agent errors, the controller
+records it, the agent's own words survive, the API reports them, `network`
+keeps collecting, and recovery resets the count while keeping the error as a
+dated fact.
+
+Four Go tests for cases the fixtures never covered. Device and interface
+*appearance* was tested; *disappearance* was not, in either collector. Plus
+the realistic hot-swap — a drive pulled and another inserted under the same
+name with counters from zero, which takes three collections to express.
+
+One of those tests was **vacuous when written**: the link-state assertion
+used `wg0`, and WireGuard reports `operstate=unknown`, which this collector
+deliberately does not turn into a link state — so the absence it asserted
+held whether or not the interface was there. Found by mutation-testing it.
+It uses `enp6s0` through an explicit interface list now and fails first if
+the fixture does not report a link state while the interface is present.
+
+And one cosmetic defect the run surfaced, which stopped being cosmetic the
+moment these strings reached a web page: eight sites wrapped an
+`*fs.PathError` with its own path, so `open /proc/diskstats: no such file`
+was stored as `cannot read /proc/diskstats: open /proc/diskstats: no such
+file`. Half a 256-character field, duplicated.
+
+### Phase I — monitoring data model and performance — complete
+
+`make measure-metrics` had one profile — cpu and memory, nine samples a
+collection — and every figure in `PERFORMANCE.md` §4 was measured against
+it. Five of the six modules this run added are **label-keyed**, so a host's
+series count stopped being a property of the module list and became a
+property of the machine, and the document was describing a fleet nobody will
+have.
+
+`--profile full` collects all eleven at a well-populated host's cardinality
+and honours **each module's own default interval** rather than a flat ten
+seconds. The samples are built from the registry, so a module added later is
+measured without anybody remembering. That found its own bug on the first
+run: `load.average` is keyed by `window`, the label table had no entry, and
+every one of those samples was *rejected* by the ingestion path — so the
+benchmark was reporting throughput for a batch the controller was throwing a
+third of away. It raises now rather than emitting an unlabelled sample.
+
+Ten hosts, two hours, same machine:
+
+| | guide | full |
+| --- | --- | --- |
+| Series per host | 14 | **164** |
+| Per batch, median | 2.09 ms | **18.38 ms** |
+| 100 hosts, 7 days raw | 7.1 GiB | **50.7 GiB** |
+| Raw:5m ratio | 16.1:1 | **85.9:1** |
+
+**The finding:** `MAX_BUCKETS_PER_RUN` is a bound on *series*, not on hosts.
+The five-minute tier writes one row per series per bucket and the job runs
+every five minutes, so a steady-state pass has one bucket per series — a
+ceiling of 5,000 series, which is 357 hosts on the guide profile and **30**
+on the full one. Past it the job never catches up. The pass now reports
+`rollup_lag_seconds` and warns; the bound was not raised, because the
+contention an eight-second transaction would cause is exactly what is not
+measured. ADR-067.
+
+### Phase N — security review — complete
+
+[`docs/security/2026-10-15-product-maturity-review.md`](../security/2026-10-15-product-maturity-review.md).
+Nine findings: four fixed, four accepted with reasoning, one residual. The
+reviews are now indexed in `SECURITY.md` rather than only discoverable by
+listing a directory.
+
+The review's own finding worth repeating here: **the upgrade-readiness
+endpoint lied in every production image**, and it was `deployment-e2e.sh`
+that caught it — the only test that runs against the built artefact.
+
+### Phase P — documentation — complete
+
+ADR-066, ADR-067 and ADR-068. `MONITORING_MODULES.md` §5.6 documents the
+health surface; `PERFORMANCE.md` §4 carries the two profiles and the rollup
+ceiling, and §7 lists what measuring it left unmeasured; `SECURITY.md` gains
+a review index.
 
 ---
 
@@ -361,21 +486,49 @@ Recorded as they are taken, with the alternative that was rejected.
 | 11 | The demo leaked `HCC_AGENT_*` into the controller, which refuses unknown `HCC_` variables — a good rule tripped by the demo's own sloppiness | low | fixed, `b4357c2` |
 | 12 | A demo database created before a module existed silently refuses it, because an applied migration is never re-run; surfaced as HTTP 500 with `CheckViolationError` | low (development only) | guarded, `b4357c2` |
 | 13 | `systemctl show` answers for units it has never heard of, so a typo in the watch list became a series permanently reporting a stopped service that does not exist, restart count zero | medium (fabricated measurement) | fixed, `e4f6aa6` |
-| 14 | `monitoring-e2e.sh` used a relative `$VENV` after a `cd`, producing `command not found` reported against a line that looked like a comment | low (test) | fixed in this commit |
+| 14 | `monitoring-e2e.sh` used a relative `$VENV` after a `cd`, producing `command not found` reported against a line that looked like a comment | low (test) | fixed, `9cf1199` |
+| 15 | **`TelemetryEntry.error` was never read.** The agent reported why a collection produced nothing, the protocol validated it, and `ingest` discarded it — so a removed disk, a stopped Docker daemon or a broken `systemctl` produced an enabled module with no data, no explanation and no end | medium (the product's core promise: no silent wrongness) | fixed, `4f9b6e8` |
+| 16 | `FAKE_MODULES` fell six modules behind the registry and nothing failed, because the only thing that could notice the drift was the copy. Every browser test ran against a five-module world | medium (test coverage, silently absent) | fixed by generating it, `2ab478e` |
+| 17 | `test_every_module_is_in_the_database_allow_list` was keyed to the variable name `_AFTER`, so a migration using another name made it read the f-string placeholder as the whole allow-list and report every module missing | low (guard, fails loudly) | generalised, `4f9b6e8` |
+| 18 | A test left `9999_from_the_future` in CI's shared `alembic_version` and the next job's `alembic upgrade head` failed three steps away. Invisible locally, where the suite drops its database | medium (CI, misattributed) | fixed + `db_session` now checks the marker, `2ab478e` |
+| 19 | **The upgrade-readiness endpoint lied in every production image.** `parents[2] / "alembic"` resolves to `site-packages/alembic` in the container — Alembic's own library — and `ScriptDirectory` reports an empty history for it without raising. So `head_revision()` was `None`, nothing logged, and the endpoint answered "the schema is current" to a database from the future | **high (false reassurance, in the one direction a backup cannot recover)** | fixed, `2ab478e` |
+| 20 | A reconnection wrote NULL over `agent_version`, `platform` and `agent_started_at`, so the update planner saw `unknown_version` for every host at once after a controller restart | medium | fixed, `2ab478e` |
+| 21 | `measure-metrics.py` emitted `load.average` without its `window` label, so a third of every batch was rejected and the throughput figure described a batch the controller was discarding | low (benchmark) | fixed + raises now, `1ff818c` |
+| 22 | `TestLinkStateIsNotReportedForAnInterfaceThatIsGone` asserted the absence of a `wg0` link state, which WireGuard never reports anyway — the test passed whether or not the interface was there | low (vacuous test) | fixed, `6e93afb` |
+| 23 | Eight collectors wrapped an `*fs.PathError` with its own path, doubling it. Harmless in a log, not harmless once these strings are shown on the host page in a 256-character field | low | fixed, `6e93afb` |
 
 ---
 
 ## Remaining work
 
-Phases B–P. See the mission brief.
+Every phase of the brief is complete. What is **not** done, and why:
+
+| Not done | Why |
+| --- | --- |
+| Raising `MAX_BUCKETS_PER_RUN` | The ceiling is measured and signalled. Raising it trades transaction length for headroom and the contention is unmeasured; the likely right answer is a time-bounded pass, which is a design change, not a constant |
+| Container start/stop/restart | Forbidden for this phase by the brief, and absent structurally — there is no write path in the Docker client and a test asserts it |
+| Publishing anything | No release, no tag, no image, no signing key outside a test run |
+| Merging PR #9 | Explicitly forbidden |
 
 ---
 
 ## Next task
 
-Phase B — real staged rollouts. It is the mission's Priority 1 and the
-largest remaining gap: Evergreen evaluates every eligible host together, and
-the replacement needs canary selection, batches, maintenance windows,
-pause/resume/cancel, durable progress across a controller restart, and health
-criteria that do not equate "the process restarted" with "the upgrade
-succeeded".
+Nothing in this brief. The five things worth doing next, in the order they
+would pay off:
+
+1. **A time-bounded rollup pass.** The ceiling in ADR-067 is a consequence of
+   bounding by row count. Bounding by wall clock instead removes the cliff
+   without the eight-second transaction, and makes the limit "how much work
+   fits in a pass" rather than "how many series exist".
+2. **Capability reporting.** The agent still does not tell the controller
+   which modules it *could* run, so an administrator can enable `sensors` on
+   a host with no hwmon and find out from the health surface rather than
+   from the control. Gap 3 in `SECURITY.md`.
+3. **A rollout over more than one real host.** Every rollout assertion so far
+   runs against one machine, so batching, the canary gate and the straggler
+   skip are tested in the engine and not in the field.
+4. **The host page's chart for label-keyed series.** 164 series on a
+   well-populated host makes the single-series picker the wrong control;
+   "every filesystem on one axis" is the chart somebody actually wants.
+5. **Session pruning on a schedule.** Still gap 11, still growing a table.

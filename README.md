@@ -165,9 +165,14 @@ make demo
 
 It starts an isolated PostgreSQL container, the real controller serving the
 real web client on `http://127.0.0.1:8900`, and a **real agent reporting this
-machine's own `/proc` and `/sys`** — CPU, memory, load, uptime, filesystem
-usage, disk throughput and network traffic. Then it prints a URL, a username
-and a generated password.
+machine's own `/proc` and `/sys`** — CPU, memory, swap, load, uptime,
+filesystem usage, disk throughput, network traffic, temperatures and systemd
+services. Then it prints a URL, a username and a generated password.
+
+A module this machine cannot support says so, with the reason, rather than
+showing an empty chart: a host with no `hwmon` devices reports that it has
+none, and one without a readable Docker socket says the socket is missing
+rather than that it has no containers.
 
 It uses its own database port, its own controller port and its own state
 directory, so it cannot disturb a development setup. It does **not** enrol

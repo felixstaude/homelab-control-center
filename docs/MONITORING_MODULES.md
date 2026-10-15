@@ -424,6 +424,58 @@ this host has no thermal sensors" and "no data because collection is broken"
 must be distinguishable — the same principle as a host that has not reported
 showing **Unknown** rather than 0%.
 
+### 5.6 Collection health, and the fourth reason a chart is empty
+
+The paragraph above states the requirement. Until Operation Horizon the
+product met three quarters of it.
+
+"This module has no recent samples" has four causes:
+
+1. Nothing enabled it — the monitoring endpoint answers this.
+2. The agent is offline — the host endpoint answers this.
+3. It was enabled a moment ago and has not collected yet —
+   `GET /hosts/{id}/metrics/status` answers this.
+4. **It is enabled, the agent is connected, and every collection is raising
+   an error.**
+
+The fourth was unreported. The agent had always sent the reason —
+`TelemetryEntry.error` carries it and the protocol has validated it since
+phase 3 — and the controller parsed the field and discarded it. So pulling a
+disk, stopping the Docker daemon or breaking `systemctl` produced an enabled
+module with no data, no explanation and no end, and the only evidence was a
+warning line in the agent's log on the machine nobody is looking at.
+
+`host_module_health` is where that field lands. Per host and module:
+
+| Field | Means |
+| --- | --- |
+| `last_reported_at` | When the controller last heard anything about this module. Null means it has never reported, which is **not** the same as healthy |
+| `last_success_at` | When a collection last arrived without an error |
+| `last_error_at`, `last_error` | When the last failure arrived, and the agent's own words for it |
+| `consecutive_failures` | Failures since the last success. Zero both for a working module and for one that has never reported — `last_reported_at` tells them apart |
+
+Reported through `GET /hosts/{id}/metrics/status`, and shown on the host page
+against the module's name. When the failure is why the page has nothing on
+it, it is shown as the page's own alert instead of the "turn on a module"
+advice, which is actively wrong for a module that is on and erroring.
+
+Three distinctions the schema keeps, each because collapsing it would
+mislead:
+
+* **Ran and produced nothing is a success.** A rate collector reports
+  nothing on its first interval and on any interval where a counter went
+  backwards. Calling those failures would make the first minute after every
+  agent restart look broken and bury the real failures in noise.
+* **Recovered is not "never failed".** The error survives a later success
+  and only the count resets, so a module that fails and recovers every few
+  minutes is visible.
+* **Every timestamp is the controller's clock**, unlike
+  `metric_series.last_sample_at`. A host whose clock is wrong is one of the
+  conditions this reports, and a diagnostic timestamped by the thing being
+  diagnosed is not a diagnostic.
+
+See [ADR-066](ARCHITECTURE.md#adr-066-collector-failure-is-stored-against-the-module-not-inferred-from-absence).
+
 ---
 
 ## 6. Recommended defaults

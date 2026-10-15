@@ -346,6 +346,41 @@ async def test_the_longest_error_the_protocol_allows_still_fits(
     assert row.last_error == longest
 
 
+async def test_an_over_long_controller_refusal_is_truncated_rather_than_refused(
+    db_session: AsyncSession, metrics: MetricsService
+) -> None:
+    """The second bound, for the strings the protocol does not check.
+
+    An agent's error is bounded by the protocol before it ever reaches here.
+    The controller's own refusals are not: they are f-strings over values
+    from the frame, and `_timestamp_problem` interpolates a skew count that
+    nothing bounds. One character too long raises
+    ``StringDataRightTruncationError`` inside the WebSocket handler, which
+    the agent sees only as ``protocol_error`` and retries for ever.
+
+    Built with ``model_construct``, which skips validation — the protocol
+    bound would refuse this frame, and skipping it is how "suppose that
+    bound were relaxed, or suppose the controller writes a longer refusal of
+    its own" is expressed. Through ``ingest`` rather than the private
+    recorder, so what is asserted is the behaviour of the path that runs.
+    """
+    host = await insert_host(db_session)
+    overlong = TelemetryEntry.model_construct(
+        module="diskio",
+        schema_version=1,
+        collected_at=datetime.now(UTC),
+        duration_ms=3,
+        error="y" * (MAX_COLLECTOR_ERROR_LENGTH * 3),
+        samples=[],
+    )
+    await metrics.ingest(db_session, host_id=host.id, entries=[overlong], enabled_modules=ENABLED)
+    await db_session.commit()
+
+    row = await health_of(db_session, host, "diskio")
+    assert row is not None
+    assert row.last_error == "y" * MAX_COLLECTOR_ERROR_LENGTH
+
+
 async def test_an_error_containing_markup_is_stored_verbatim(
     db_session: AsyncSession, metrics: MetricsService
 ) -> None:

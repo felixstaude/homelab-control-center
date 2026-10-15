@@ -79,7 +79,7 @@ from hcc.models.metrics import (
     MetricSeries,
     canonical_labels_key,
 )
-from hcc.models.monitoring import HostModuleHealth
+from hcc.models.monitoring import MAX_COLLECTOR_ERROR_LENGTH, HostModuleHealth
 from hcc.monitoring import modules as registry
 
 if TYPE_CHECKING:
@@ -539,8 +539,22 @@ class MetricsService:
             return
 
         modules = list(outcomes)
-        errors = [outcomes[module].error for module in modules]
-        failed = [outcomes[module].error is not None for module in modules]
+        # Truncated here rather than trusted to be short.
+        #
+        # The protocol bounds the agent's string at the same length, so for
+        # an agent-reported error this is a second check of the same thing.
+        # It is not redundant for the controller's own refusals: those are
+        # f-strings over values from the frame, and `_timestamp_problem`
+        # interpolates a second count that nothing bounds. A string one
+        # character too long raises `StringDataRightTruncationError` inside
+        # the WebSocket handler, which the agent sees only as
+        # `protocol_error` and retries for ever — defect 5 of this run, on
+        # `metric_series.unit`, and not worth having twice.
+        reasons = [outcomes[module].error for module in modules]
+        errors = [
+            None if reason is None else reason[:MAX_COLLECTOR_ERROR_LENGTH] for reason in reasons
+        ]
+        failed = [reason is not None for reason in reasons]
 
         await db.execute(
             text(
