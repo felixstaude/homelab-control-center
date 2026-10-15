@@ -98,6 +98,10 @@ VENV="$SERVER_DIR/.venv"
 # unavailable, which is correct and looks like a failure to somebody seeing
 # the product for the first time.
 DEMO_MODULES="cpu:5 memory:5 load:5 uptime:60 filesystem:15 diskio:5 network:5 sensors:10"
+# `docker` is deliberately absent. It needs a socket grant the demo must not
+# make on somebody's behalf — see docs/MONITORING_MODULES.md §3.2. Enable it
+# from Hosts → demo-localhost → Monitoring after setting
+# HCC_AGENT_DOCKER_SOCKET, which `make demo` tells you about below.
 
 green() { printf "${GREEN}%s${RESET}\n" "$1"; }
 red()   { printf "${RED}%s${RESET}\n" "$1"; }
@@ -452,6 +456,7 @@ cmd_up() {
       HCC_AGENT_CREDENTIAL_FILE="$DEMO_DIR/agent/credential" \
       HCC_AGENT_CONFIG_FILE="$DEMO_DIR/agent/config.json" \
       HCC_AGENT_LOG_FORMAT=json \
+      HCC_AGENT_DOCKER_SOCKET="${HCC_AGENT_DOCKER_SOCKET:-}" \
       nohup "$DEMO_DIR/agent/hcc-agent" run >"$DEMO_DIR/agent.log" 2>&1 &
       echo $! >"$DEMO_DIR/agent.pid"
     )
@@ -495,6 +500,12 @@ print_summary() {
   printf "\n"
   dim "  The password is also in .demo/credentials (mode 600)."
   dim "  Both ports are bound to 127.0.0.1 and are not reachable from the network."
+  printf "\n"
+  printf "  ${BOLD}Containers, if you want them${RESET}\n"
+  dim "    The docker module is off. Reading the Docker socket is equivalent to"
+  dim "    root, so it is granted on the machine rather than by the controller:"
+  dim "      HCC_AGENT_DOCKER_SOCKET=/var/run/docker.sock ./scripts/demo.sh up --rebuild"
+  dim "    then enable Containers on the host's Monitoring tab. Read-only."
   printf "\n"
   printf "  ${BOLD}What to look at${RESET}\n"
   dim "    Hosts → demo-localhost       live tiles and history for this machine"

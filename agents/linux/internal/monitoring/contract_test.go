@@ -139,20 +139,45 @@ func TestRegistryMatchesTheContract(t *testing.T) {
 	}
 }
 
-// TestNoModuleInThisPhaseNeedsPrivileges pins the claim that the agent never
-// needs root to collect.
+// TestOnlyNamedModulesNeedAPrivilegeGrant pins *which* modules need more than
+// the unprivileged agent account.
+//
+// Pinned as a set rather than asserted empty, because it stopped being empty:
+// `docker` reads the Docker Engine socket, and access to that socket is
+// equivalent to root on the host — anything that can talk to it can start a
+// privileged container with the host filesystem mounted. The value of this
+// test is that the set stays small and named, so a second one is something a
+// reviewer sees rather than something that slips in.
 //
 // Asserted against the contract rather than against the agent's own registry,
 // because the agent deliberately does not carry this field — it has no use for
 // it — so the controller's declaration is the only copy and this is the only
 // place it is checked on the agent side.
-func TestNoModuleInThisPhaseNeedsPrivileges(t *testing.T) {
+func TestOnlyNamedModulesNeedAPrivilegeGrant(t *testing.T) {
+	permitted := map[string]bool{"docker": true}
+
 	for _, module := range loadContract(t).Modules {
-		if module.RequiresPrivileges {
+		if module.RequiresPrivileges && !permitted[module.ID] {
 			t.Errorf(
-				"module %s declares that it needs privileges; no module in this phase should",
+				"module %s declares that it needs privileges and is not one of the "+
+					"modules known to need one. That is a security decision; make it "+
+					"deliberately and add it here.",
 				module.ID,
 			)
+		}
+	}
+	// And the other way round: a module that stops needing a grant should
+	// leave this list, so the list does not quietly become a place where
+	// anything is allowed.
+	for id := range permitted {
+		found := false
+		for _, module := range loadContract(t).Modules {
+			if module.ID == id && module.RequiresPrivileges {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s is listed as needing a privilege grant and no longer declares one", id)
 		}
 	}
 }

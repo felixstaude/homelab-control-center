@@ -178,6 +178,16 @@ var registry = []Descriptor{
 		MinIntervalSeconds: 5,
 		DataSchemaVersion:  1,
 	},
+	{
+		// Five seconds: each running container costs two API calls, so this
+		// module's cost scales with the host in a way the pseudo-file
+		// readers do not.
+		ID:                 "docker",
+		Name:               "Containers",
+		ScheduleKinds:      intervalOnly,
+		MinIntervalSeconds: 5,
+		DataSchemaVersion:  1,
+	},
 }
 
 // Modules returns every module this agent knows, in catalogue order.

@@ -319,6 +319,7 @@ const MODULE_ORDER = [
   'diskio',
   'network',
   'sensors',
+  'docker',
 ];
 
 export function compareSeries(left: MetricSeries, right: MetricSeries): number {
@@ -353,4 +354,5 @@ export const RESOURCE_MODULES: ReadonlySet<string> = new Set([
   'diskio',
   'network',
   'sensors',
+  'docker',
 ]);

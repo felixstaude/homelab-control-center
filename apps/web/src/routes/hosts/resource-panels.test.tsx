@@ -4,7 +4,13 @@ import { describe, expect, it } from 'vitest';
 import type { LatestValue } from '@/api/types';
 import { makeLatest, makeSeries } from '@/test/fake-backend';
 
-import { DiskPanel, FilesystemPanel, NetworkPanel, SensorPanel } from './resource-panels';
+import {
+  ContainerPanel,
+  DiskPanel,
+  FilesystemPanel,
+  NetworkPanel,
+  SensorPanel,
+} from './resource-panels';
 
 /**
  * The three panels that render a *set* rather than a scalar.
@@ -280,6 +286,76 @@ describe('SensorPanel', () => {
 
   it('renders nothing when the host has no sensors', () => {
     const { container } = render(<SensorPanel values={[]} />);
+
+    expect(container).toBeEmptyDOMElement();
+  });
+});
+
+describe('ContainerPanel', () => {
+  const containers = [
+    value('docker', 'containers_total', {}, 'count', 3),
+    value('docker', 'containers_running', {}, 'count', 1),
+    value('docker', 'running', { container: 'web' }, 'count', 1),
+    value('docker', 'cpu_utilisation', { container: 'web' }, 'percent', 212.5),
+    value('docker', 'memory_bytes', { container: 'web' }, 'bytes', 128 * 1024 * 1024),
+    value('docker', 'memory_utilisation', { container: 'web' }, 'percent', 12.4),
+    value('docker', 'restart_count', { container: 'web' }, 'count', 2),
+    value('docker', 'running', { container: 'old-worker' }, 'count', 0),
+  ];
+
+  it('lists stopped containers too, because that is the question people ask', () => {
+    render(<ContainerPanel values={containers} />);
+
+    const stopped = screen.getByText('old-worker').closest('tr');
+    expect(within(stopped as HTMLElement).getByText('stopped')).toBeInTheDocument();
+    // And its empty columns are em dashes, not zeros: the agent does not
+    // query a stopped container, so there is nothing to render.
+    expect(within(stopped as HTMLElement).getAllByText('—').length).toBeGreaterThan(0);
+  });
+
+  it('says it cannot change anything', () => {
+    // This is monitoring. A reader should not have to find out by looking
+    // for buttons that are not there.
+    render(<ContainerPanel values={containers} />);
+
+    expect(screen.getByText(/cannot start, stop or change anything/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /stop|restart|start/i })).toBeNull();
+  });
+
+  it('reports CPU above 100% without clamping it', () => {
+    // A container using two cores reads 200% in `docker stats`, and
+    // rescaling it to a share of the host would disagree with every other
+    // tool the operator has.
+    render(<ContainerPanel values={containers} />);
+
+    const row = screen.getByText('web').closest('tr');
+    expect(within(row as HTMLElement).getByText('212.5%')).toBeInTheDocument();
+  });
+
+  it('shows no health badge where the image declares no healthcheck', () => {
+    render(<ContainerPanel values={containers} />);
+
+    const row = screen.getByText('web').closest('tr');
+    expect(within(row as HTMLElement).queryByText('healthy')).toBeNull();
+    expect(within(row as HTMLElement).queryByText('unhealthy')).toBeNull();
+  });
+
+  it('badges an unhealthy container', () => {
+    render(
+      <ContainerPanel
+        values={[
+          ...containers,
+          value('docker', 'healthy', { container: 'web' }, 'count', 0),
+        ]}
+      />,
+    );
+
+    const row = screen.getByText('web').closest('tr');
+    expect(within(row as HTMLElement).getByText('unhealthy')).toBeInTheDocument();
+  });
+
+  it('renders nothing when the host runs no container monitoring', () => {
+    const { container } = render(<ContainerPanel values={[]} />);
 
     expect(container).toBeEmptyDOMElement();
   });

@@ -1,6 +1,6 @@
 """Widen the module allow-lists, and the unit column, for the new modules.
 
-Phases D, E and F of Operation Horizon. No new tables and no new columns: three
+Phases D, E, F and G of Operation Horizon. No new tables and no new columns: three
 CHECK constraints are replaced, each of which hard-codes the set of module
 identifiers the registry knew when it was written, and one column is widened.
 
@@ -51,7 +51,7 @@ hundreds of millions.
 ## The downgrade narrows, and will refuse if it would lose data
 
 Dropping back to the five-module set is only valid if nothing is using the
-four new ones. The downgrade therefore deletes nothing: it re-adds the
+five new ones. The downgrade therefore deletes nothing: it re-adds the
 narrow constraint, and PostgreSQL refuses the statement if a row violates it.
 A migration that silently deleted an operator's monitoring configuration in
 order to go backwards would be a worse outcome than a failed downgrade with a
@@ -76,7 +76,7 @@ depends_on: str | Sequence[str] | None = None
 #: every time a module is added — which is exactly how a migration history
 #: stops being a record of anything.
 _BEFORE = ("cpu", "memory", "swap", "load", "uptime")
-_AFTER = (*_BEFORE, "filesystem", "diskio", "network", "sensors")
+_AFTER = (*_BEFORE, "filesystem", "diskio", "network", "sensors", "docker")
 
 #: (table, column, constraint name). The two monitoring-configuration tables
 #: name the column `module_id` and the series table names it `module`; that

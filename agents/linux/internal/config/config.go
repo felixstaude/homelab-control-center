@@ -66,6 +66,7 @@ const (
 	EnvProcRoot         = "HCC_AGENT_PROC_ROOT"
 	EnvSysRoot          = "HCC_AGENT_SYS_ROOT"
 	EnvNetworkIfaces    = "HCC_AGENT_NETWORK_INTERFACES"
+	EnvDockerSocket     = "HCC_AGENT_DOCKER_SOCKET"
 	EnvCollectPerCore   = "HCC_AGENT_COLLECT_PER_CORE"
 	EnvEnrollmentToken  = "HCC_AGENT_ENROLLMENT_TOKEN" //nolint:gosec // a variable name, not a credential
 	EnvEnrollmentFile   = "HCC_AGENT_ENROLLMENT_TOKEN_FILE"
@@ -187,6 +188,24 @@ type Config struct {
 	// module options do not exist in the document model yet.
 	NetworkInterfaces []string
 
+	// DockerSocket is the Docker Engine API socket the `docker` module
+	// reads. **Empty by default, and that is the security boundary.**
+	//
+	// Access to the Docker socket is equivalent to root on the host:
+	// anything that can talk to it can start a privileged container with the
+	// host filesystem mounted. So the capability is granted here, locally,
+	// by an administrator on the machine — and the controller can then only
+	// decide whether to *use* a capability the host has already given.
+	//
+	// Two switches, both of which must be on: this one, and the `docker`
+	// module being enabled for the host. The same shape as
+	// HCC_AGENT_AUTO_UPDATE, and for the same reason.
+	//
+	// There is no default path. An unset value makes the module report
+	// itself unavailable with a reason that names the variable and says what
+	// granting it means.
+	DockerSocket string
+
 	// CollectPerCore adds a series per logical CPU to the cpu module.
 	//
 	// Off by default and deliberately a *local* setting rather than part of
@@ -303,6 +322,9 @@ func Load(lookupEnv func(string) (string, bool)) (Config, error) {
 	}
 	if value, ok := lookupEnv(EnvSysRoot); ok && strings.TrimSpace(value) != "" {
 		cfg.SysRoot = strings.TrimSpace(value)
+	}
+	if value, ok := lookupEnv(EnvDockerSocket); ok {
+		cfg.DockerSocket = strings.TrimSpace(value)
 	}
 	if value, ok := lookupEnv(EnvNetworkIfaces); ok {
 		for _, name := range strings.Split(value, ",") {

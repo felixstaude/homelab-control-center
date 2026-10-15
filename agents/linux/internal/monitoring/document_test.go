@@ -8,6 +8,13 @@ import (
 	"github.com/felixstaude/homelab-control-center/agents/linux/internal/monitoring"
 )
 
+// unknownModuleID is a module identifier that will never be real.
+//
+// These tests used "docker" until it was implemented, at which point two of
+// them started asserting that a module in the registry is not in the
+// registry. A placeholder has to be a name nobody would ever ship.
+const unknownModuleID = "not_a_real_module"
+
 // validDocument is a document the agent will run: every module present, all
 // disabled, which is exactly what a freshly enrolled host receives.
 func validDocument() map[string]any {
@@ -314,7 +321,7 @@ func TestAnUnknownScheduleKindIsRefused(t *testing.T) {
 
 func TestAnEnabledUnknownModuleIsRefused(t *testing.T) {
 	document := validDocument()
-	setModule(document, "docker", enabledInterval(10))
+	setModule(document, unknownModuleID, enabledInterval(10))
 	_, problems := parse(t, document)
 	if !containsSubstring(problems, "this agent does not have it") {
 		t.Errorf("expected an unknown-module problem, got %v", problems)
@@ -329,7 +336,7 @@ func TestADisabledUnknownModuleIsAccepted(t *testing.T) {
 	// older agent in the fleet — which is exactly what the protocol is
 	// versioned to survive.
 	document := validDocument()
-	setModule(document, "docker", map[string]any{
+	setModule(document, unknownModuleID, map[string]any{
 		"enabled":  false,
 		"schedule": map[string]any{"kind": "interval", "interval_seconds": 10},
 	})

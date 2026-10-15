@@ -86,19 +86,114 @@ Scheduling kinds are defined in
 
 ### 3.2 What is implemented today
 
-The table above is the designed catalogue across the whole product. **Five
+The table above is the designed catalogue across the whole product. **Nine
 modules exist**, and this is them — generated from
 `contracts/monitoring-modules.json`, which is produced from the server's
 registry and drift-checked by `make check-contract`, so this table cannot
 quietly stop matching the code.
 
-| Id | Name | Metrics | Kinds | Default | Floor |
-| --- | --- | --- | --- | --- | --- |
-| `cpu` | CPU utilisation | `utilisation`, `core_utilisation` (by core), `logical_cpus` | interval | 10 s | 1 s |
-| `memory` | Memory | `utilisation`, `total`, `available`, `used` | interval | 10 s | 1 s |
-| `swap` | Swap | `utilisation`, `total`, `used` | interval | 10 s | 1 s |
-| `load` | Load average | `average` (by window) | interval | 30 s | 5 s |
-| `uptime` | System uptime | `seconds` | interval | 300 s | 60 s |
+| Id | Name | Metrics | Kinds | Default | Floor | Needs a grant |
+| --- | --- | --- | --- | --- | --- | --- |
+| `cpu` | CPU utilisation | `utilisation`, `core_utilisation` (by core), `logical_cpus` | interval | 10 s | 1 s | no |
+| `memory` | Memory | `utilisation`, `total`, `available`, `used` | interval | 10 s | 1 s | no |
+| `swap` | Swap | `utilisation`, `total`, `used` | interval | 10 s | 1 s | no |
+| `load` | Load average | `average` (by window) | interval | 30 s | 5 s | no |
+| `uptime` | System uptime | `seconds` | interval | 300 s | 60 s | no |
+| `filesystem` | Filesystem usage | `total`, `used`, `available`, `utilisation`, `inodes_utilisation`, `readonly` (all by mount) | interval | 60 s | 10 s | no |
+| `diskio` | Disk throughput | `read_bytes`, `write_bytes`, `read_ops`, `write_ops`, `utilisation` (all by device) | interval | 10 s | 1 s | no |
+| `network` | Network traffic | `receive_bytes`, `transmit_bytes`, `receive_packets`, `transmit_packets`, `receive_errors`, `transmit_errors`, `receive_drops`, `transmit_drops`, `up`, `speed` (all by interface) | interval | 10 s | 1 s | no |
+| `sensors` | Temperatures and fans | `temperature`, `fan_speed` (by sensor) | interval | 30 s | 5 s | no |
+| `docker` | Containers | `containers_total`, `containers_running`, and by container: `running`, `cpu_utilisation`, `memory_bytes`, `memory_limit`, `memory_utilisation`, `receive_bytes`, `transmit_bytes`, `restart_count`, `uptime_seconds`, `healthy` | interval | 15 s | 5 s | **yes** |
+
+### What each of the newer ones deliberately does not report
+
+Every exclusion is a decision, and each is the difference between a useful
+list and one nobody reads.
+
+**`filesystem` is capacity, not disk size.** `statfs` reports what a
+filesystem holds, which is smaller than its block device (metadata, the
+reserved-blocks percentage) and on LVM or btrfs can span several. Excluded:
+pseudo-filesystems, `tmpfs` and `ramfs` (they are memory — reporting `/run`
+as a disk invents one), `overlay` (container roots, dozens of them, all
+showing the host's free space), `squashfs` (read-only, therefore permanently
+100% full and permanently alarming), and **network filesystems** — that last
+one not for noise but because `statfs` on a mount whose server has gone away
+blocks in uninterruptible sleep and no context deadline cancels a syscall in
+D state.
+
+Duplicates are removed twice over: by device number, which catches bind
+mounts, and by source device, which catches btrfs subvolumes — those get
+their own anonymous device numbers, so a host with `/` and `/home` on one
+pool would otherwise report its free space twice. **ZFS datasets are not
+caught** and are reported once per dataset; their source is `pool/dataset`
+rather than a device path.
+
+**`diskio` is whole devices only.** A device appears when `/sys/block/<name>`
+exists, which excludes partitions — their I/O is already counted on the disk
+containing them. Loop, ram and zram devices are excluded. Device-mapper and
+md devices are **included**, because LVM and RAID are what a homelab's
+storage usually is.
+
+**`network` excludes what is already counted elsewhere**: loopback, anything
+enslaved to a bridge or bond (its traffic appears on the master, which is
+also what makes a bridged VM host come out right — the slave is dropped and
+`br0` is kept), and container plumbing by name (`veth*`, `docker0`, `br-*`,
+`cni*`, `virbr*`, `vnet*`). `HCC_AGENT_NETWORK_INTERFACES` names an exact set
+and replaces the rule entirely.
+
+**`sensors` reads `/sys/class/hwmon` and not `/sys/class/thermal`.** The
+thermal zone interface looks like extra coverage and is mostly a second view
+of the same silicon — on the machine this was developed against,
+`thermal_zone0` and `hwmon5` resolve to the same device path, and
+`thermal_zone1` is `x86_pkg_temp`, which is the sensor `coretemp` already
+reports as "Package id 0" through a different device. A zone's `type` is also
+a vendor string with no reliable mapping to a component, so calling one "CPU"
+would be a guess. The cost: a host with thermal zones and no hwmon reports no
+temperatures, and says so.
+
+Sensor identity is the chip's `name` plus the sensor's `label`, never the
+hwmon number — those are assigned in probe order and change between boots,
+so a series keyed on one would silently continue a chart with another chip's
+readings. The device basename disambiguates two chips with the same name,
+which is not hypothetical: a machine with two NVMe drives has two chips
+called `nvme`, each reporting `Composite`.
+
+### Nothing is summed across entries, anywhere
+
+Stacked storage reports the same bytes at every layer: a write to a
+filesystem on LVM on LUKS on a partition appears in `dm-1`, `dm-0` and
+`sda`. A packet leaving a container is counted on its veth, its bridge and
+the physical NIC. So there is **no aggregate metric** in any of these
+modules and the interface charts per entry — a "total disk throughput" would
+be inflated by however many layers each host happens to have, which is a
+number nobody can see from the interface.
+
+The one place network counters *are* added together is a container's own
+interfaces, in `docker`, because a container's interfaces are its own and do
+not overlap.
+
+### `docker` is the one module that needs a privilege grant
+
+**Access to the Docker socket is equivalent to root on the host.** Anything
+that can talk to it can start a privileged container with the host
+filesystem mounted. So the capability is granted *locally and explicitly*,
+and the controller can only decide whether to use one the host has already
+given. Two switches, both of which must be on:
+
+1. **The host administrator** sets `HCC_AGENT_DOCKER_SOCKET=/var/run/docker.sock`
+   in `/etc/hcc-agent/agent.env` and makes the agent account able to read
+   that socket. There is no default path; a compromised controller cannot do
+   this.
+2. **An operator** enables the `docker` module for the host, like any other.
+
+Unset, the module reports itself unavailable with a reason naming the
+variable and saying what granting it means. The agent issues only
+`GET /containers/json`, `GET /containers/{id}/json` and
+`GET /containers/{id}/stats` — there is no start, no stop, no exec, and a
+test asserts that the only HTTP method the daemon ever sees is `GET`.
+
+The **controller** never touches a Docker socket. It stores numbers an agent
+sent it, exactly as it does for CPU.
 
 Three differences from §3 worth naming rather than leaving to be noticed:
 
@@ -116,10 +211,16 @@ Three differences from §3 worth naming rather than leaving to be noticed:
   gauge in this set and the only one whose natural interval is minutes, which
   is what proves the schedule is per-module rather than per-host.
 
-Everything else in §3 — `disk_usage`, `disk_io`, `temperature`, `network`,
-`docker`, the log modules, SMART, `raid`, `systemd`, `sessions` — **does not
-exist yet**. The interface lists exactly these five, so a module that is
-absent is absent rather than appearing with no data.
+§3's `disk_usage`, `disk_io` and `temperature` are implemented under the
+names `filesystem`, `diskio` and `sensors`. The names changed for the reasons
+above: "disk usage" conflates filesystem capacity with disk size, and
+"temperature" would not cover the fan readings that come from the same
+sysfs tree.
+
+Everything else in §3 — the log modules, SMART, `raid`, `systemd`,
+`sessions` — **does not exist yet**. The interface lists exactly the nine
+above, so a module that is absent is absent rather than appearing with no
+data.
 
 ### 3.1 Notes on specific modules
 

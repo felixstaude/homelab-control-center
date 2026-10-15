@@ -741,6 +741,136 @@ SENSORS: Final = ModuleDescriptor(
 )
 
 
+DOCKER: Final = ModuleDescriptor(
+    id="docker",
+    name="Containers",
+    description=(
+        "Container state, CPU, memory and network from the Docker Engine API. "
+        "Read-only. Needs the host administrator to grant socket access first: "
+        "the Docker socket is equivalent to root."
+    ),
+    platform=Platform.LINUX,
+    schedule_kinds=_SAMPLER_KINDS,
+    # Five seconds. Each running container costs two API calls, so this
+    # module's cost scales with the host in a way the pseudo-file readers do
+    # not, and a floor of one would let an operator ask a busy daemon forty
+    # questions a second.
+    min_interval_seconds=5,
+    default_interval_seconds=15,
+    data_schema_version=1,
+    # The only module so far that says True, and the field exists for exactly
+    # this. The agent cannot read the Docker socket as an ordinary service
+    # account: an administrator has to grant it, on the machine, and the
+    # interface must be able to say so before somebody enables this and
+    # watches it report unavailable.
+    requires_privileges=True,
+    allows_duplicate_runs=True,
+    metrics=(
+        MetricDescriptor(
+            id="containers_total",
+            name="Containers",
+            unit=MetricUnit.COUNT,
+            kind=MetricKind.GAUGE,
+        ),
+        MetricDescriptor(
+            id="containers_running",
+            name="Running",
+            unit=MetricUnit.COUNT,
+            kind=MetricKind.GAUGE,
+        ),
+        MetricDescriptor(
+            # 1 while the container is running. A gauge, because the
+            # transition is the signal: a container that stops at 03:00 is
+            # visible as a series that drops, which no "current state" field
+            # could show afterwards.
+            id="running",
+            name="Running",
+            unit=MetricUnit.COUNT,
+            kind=MetricKind.GAUGE,
+            # The container *name*, not its id: an id changes every time a
+            # container is recreated, so `docker compose up` would end every
+            # series and start new ones.
+            label_keys=("container",),
+        ),
+        MetricDescriptor(
+            # Docker's own convention: a percentage of one CPU times the
+            # core count, so a container saturating four cores reads 400%.
+            # That is what `docker stats` prints and what an operator
+            # expects; rescaling it to a share of the host would disagree
+            # with every other tool.
+            id="cpu_utilisation",
+            name="CPU",
+            unit=MetricUnit.PERCENT,
+            kind=MetricKind.GAUGE,
+            label_keys=("container",),
+        ),
+        MetricDescriptor(
+            id="memory_bytes",
+            name="Memory",
+            unit=MetricUnit.BYTES,
+            kind=MetricKind.GAUGE,
+            label_keys=("container",),
+        ),
+        MetricDescriptor(
+            id="memory_limit",
+            name="Memory limit",
+            unit=MetricUnit.BYTES,
+            kind=MetricKind.GAUGE,
+            label_keys=("container",),
+        ),
+        MetricDescriptor(
+            id="memory_utilisation",
+            name="Memory used",
+            unit=MetricUnit.PERCENT,
+            kind=MetricKind.GAUGE,
+            label_keys=("container",),
+        ),
+        MetricDescriptor(
+            id="receive_bytes",
+            name="Download",
+            unit=MetricUnit.BYTES_PER_SECOND,
+            kind=MetricKind.GAUGE,
+            label_keys=("container",),
+        ),
+        MetricDescriptor(
+            id="transmit_bytes",
+            name="Upload",
+            unit=MetricUnit.BYTES_PER_SECOND,
+            kind=MetricKind.GAUGE,
+            label_keys=("container",),
+        ),
+        MetricDescriptor(
+            # A gauge rather than a counter, like uptime and for the same
+            # reason: the daemon resets it when a container is recreated,
+            # and a counter's reset handling would turn that into a gap
+            # instead of showing it.
+            id="restart_count",
+            name="Restarts",
+            unit=MetricUnit.COUNT,
+            kind=MetricKind.GAUGE,
+            label_keys=("container",),
+        ),
+        MetricDescriptor(
+            id="uptime_seconds",
+            name="Uptime",
+            unit=MetricUnit.SECONDS,
+            kind=MetricKind.GAUGE,
+            label_keys=("container",),
+        ),
+        MetricDescriptor(
+            # Absent when the image declares no healthcheck, which is most
+            # images. 0 would say unhealthy and 1 would say healthy, and
+            # neither is true of a container nobody is checking.
+            id="healthy",
+            name="Healthy",
+            unit=MetricUnit.COUNT,
+            kind=MetricKind.GAUGE,
+            label_keys=("container",),
+        ),
+    ),
+)
+
+
 #: Every module that exists, in display order.
 #:
 #: A tuple rather than a dict literal so the order is the interface's order and
@@ -755,6 +885,7 @@ MODULE_LIST: Final[tuple[ModuleDescriptor, ...]] = (
     DISKIO,
     NETWORK,
     SENSORS,
+    DOCKER,
 )
 
 #: Lookup by identifier. The closed set §1 of the docstring describes.

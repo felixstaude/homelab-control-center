@@ -84,6 +84,7 @@ def test_the_registry_holds_the_modules_this_release_implements() -> None:
         "diskio",
         "network",
         "sensors",
+        "docker",
     )
 
 
@@ -158,15 +159,41 @@ def test_every_module_is_consistent(module_id: str) -> None:
     assert module.metrics, "a module that produces no series collects nothing"
 
 
-@pytest.mark.parametrize("module_id", MODULE_IDS)
-def test_no_module_in_this_phase_needs_privileges(module_id: str) -> None:
-    """All five read world-readable pseudo-files.
+def test_exactly_one_module_needs_a_privilege_grant() -> None:
+    """Which modules need more than the unprivileged agent account.
 
-    Pinned so that a module which *does* need a grant cannot be added without
-    the declaration — and so "the agent never needs root to collect" stays a
-    checkable claim rather than a sentence in a document.
+    Pinned as a *set*, not asserted to be empty, because it stopped being
+    empty: ``docker`` reads the Docker Engine socket, and access to that
+    socket is equivalent to root on the host — anything that can talk to it
+    can start a privileged container with the host filesystem mounted.
+
+    The value of this test is that the set is small and named. "The agent
+    never needs root to collect" was a checkable claim and is now a claim
+    with exactly one documented exception, which a reviewer sees when a
+    second one is proposed.
     """
-    assert descriptor(module_id).requires_privileges is False
+    privileged = {module for module in MODULE_IDS if descriptor(module).requires_privileges}
+
+    assert privileged == {"docker"}
+
+
+@pytest.mark.parametrize("module_id", MODULE_IDS)
+def test_a_privileged_module_says_so_in_its_description(module_id: str) -> None:
+    """The declaration is not enough on its own.
+
+    The interface renders the description at the point of enabling, and an
+    operator about to grant root-equivalent access to a daemon should read
+    that in the sentence they are deciding from — not discover it later in a
+    document.
+    """
+    module = descriptor(module_id)
+    if not module.requires_privileges:
+        return
+    lowered = module.description.lower()
+    assert "root" in lowered or "privilege" in lowered, (
+        f"{module_id} needs a privilege grant and its description does not say so: "
+        f"{module.description!r}"
+    )
 
 
 @pytest.mark.parametrize("module_id", MODULE_IDS)
@@ -215,11 +242,19 @@ def test_every_module_in_this_phase_is_interval_only() -> None:
         assert descriptor(module_id).schedule_kinds == (ScheduleKind.INTERVAL,)
 
 
+#: A module identifier that will never be real.
+#:
+#: These tests used ``"docker"`` until Phase G implemented it, at which point
+#: three of them started asserting that a module in the registry is not in
+#: the registry. A placeholder has to be a name nobody would ever ship.
+UNKNOWN_MODULE = "not_a_real_module"
+
+
 def test_an_unknown_module_is_refused_and_the_refusal_names_the_alternatives() -> None:
     with pytest.raises(UnknownModuleError) as caught:
-        descriptor("docker")
+        descriptor(UNKNOWN_MODULE)
     message = str(caught.value)
-    assert "docker" in message
+    assert UNKNOWN_MODULE in message
     for module_id in MODULE_IDS:
         assert module_id in message
 
@@ -540,11 +575,11 @@ def test_a_schedule_kind_the_module_no_longer_permits_falls_back_and_is_reported
 def test_configuration_for_a_module_the_registry_dropped_is_ignored_and_reported() -> None:
     """Refusing to produce a configuration would strand the host."""
     effective = resolve_host_configuration(
-        global_defaults={"docker": ModuleSetting(enabled=True)}, host_overrides={}
+        global_defaults={UNKNOWN_MODULE: ModuleSetting(enabled=True)}, host_overrides={}
     )
     assert set(effective.to_document()) == set(MODULE_IDS)
     assert effective.problems == (
-        "configuration exists for unknown module 'docker' and was ignored",
+        f"configuration exists for unknown module '{UNKNOWN_MODULE}' and was ignored",
     )
 
 
@@ -607,7 +642,7 @@ def test_a_kind_the_module_does_not_accept_is_refused_at_save_time() -> None:
 
 def test_an_unknown_module_is_refused_at_save_time() -> None:
     with pytest.raises(UnknownModuleError):
-        validate_setting("docker", enabled=True, schedule=None)
+        validate_setting(UNKNOWN_MODULE, enabled=True, schedule=None)
 
 
 @pytest.mark.parametrize("kind", ["event", "manual"])

@@ -432,6 +432,125 @@
       "schedule_kinds": [
         "interval"
       ]
+    },
+    {
+      "allows_duplicate_runs": true,
+      "data_schema_version": 1,
+      "default_interval_seconds": 15,
+      "id": "docker",
+      "metrics": [
+        {
+          "id": "containers_total",
+          "kind": "gauge",
+          "label_keys": [],
+          "name": "Containers",
+          "unit": "count"
+        },
+        {
+          "id": "containers_running",
+          "kind": "gauge",
+          "label_keys": [],
+          "name": "Running",
+          "unit": "count"
+        },
+        {
+          "id": "running",
+          "kind": "gauge",
+          "label_keys": [
+            "container"
+          ],
+          "name": "Running",
+          "unit": "count"
+        },
+        {
+          "id": "cpu_utilisation",
+          "kind": "gauge",
+          "label_keys": [
+            "container"
+          ],
+          "name": "CPU",
+          "unit": "percent"
+        },
+        {
+          "id": "memory_bytes",
+          "kind": "gauge",
+          "label_keys": [
+            "container"
+          ],
+          "name": "Memory",
+          "unit": "bytes"
+        },
+        {
+          "id": "memory_limit",
+          "kind": "gauge",
+          "label_keys": [
+            "container"
+          ],
+          "name": "Memory limit",
+          "unit": "bytes"
+        },
+        {
+          "id": "memory_utilisation",
+          "kind": "gauge",
+          "label_keys": [
+            "container"
+          ],
+          "name": "Memory used",
+          "unit": "percent"
+        },
+        {
+          "id": "receive_bytes",
+          "kind": "gauge",
+          "label_keys": [
+            "container"
+          ],
+          "name": "Download",
+          "unit": "bytes_per_second"
+        },
+        {
+          "id": "transmit_bytes",
+          "kind": "gauge",
+          "label_keys": [
+            "container"
+          ],
+          "name": "Upload",
+          "unit": "bytes_per_second"
+        },
+        {
+          "id": "restart_count",
+          "kind": "gauge",
+          "label_keys": [
+            "container"
+          ],
+          "name": "Restarts",
+          "unit": "count"
+        },
+        {
+          "id": "uptime_seconds",
+          "kind": "gauge",
+          "label_keys": [
+            "container"
+          ],
+          "name": "Uptime",
+          "unit": "seconds"
+        },
+        {
+          "id": "healthy",
+          "kind": "gauge",
+          "label_keys": [
+            "container"
+          ],
+          "name": "Healthy",
+          "unit": "count"
+        }
+      ],
+      "min_interval_seconds": 5,
+      "name": "Containers",
+      "platform": "linux",
+      "requires_privileges": true,
+      "schedule_kinds": [
+        "interval"
+      ]
     }
   ],
   "registry_version": 1
