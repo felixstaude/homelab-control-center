@@ -320,6 +320,7 @@ const MODULE_ORDER = [
   'network',
   'sensors',
   'docker',
+  'systemd',
 ];
 
 export function compareSeries(left: MetricSeries, right: MetricSeries): number {
@@ -355,4 +356,5 @@ export const RESOURCE_MODULES: ReadonlySet<string> = new Set([
   'network',
   'sensors',
   'docker',
+  'systemd',
 ]);

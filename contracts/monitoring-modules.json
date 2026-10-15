@@ -551,6 +551,73 @@
       "schedule_kinds": [
         "interval"
       ]
+    },
+    {
+      "allows_duplicate_runs": true,
+      "data_schema_version": 1,
+      "default_interval_seconds": 60,
+      "id": "systemd",
+      "metrics": [
+        {
+          "id": "units_failed",
+          "kind": "gauge",
+          "label_keys": [],
+          "name": "Failed units",
+          "unit": "count"
+        },
+        {
+          "id": "active",
+          "kind": "gauge",
+          "label_keys": [
+            "unit"
+          ],
+          "name": "Active",
+          "unit": "count"
+        },
+        {
+          "id": "failed",
+          "kind": "gauge",
+          "label_keys": [
+            "unit"
+          ],
+          "name": "Failed",
+          "unit": "count"
+        },
+        {
+          "id": "restarts",
+          "kind": "gauge",
+          "label_keys": [
+            "unit"
+          ],
+          "name": "Restarts",
+          "unit": "count"
+        },
+        {
+          "id": "enabled",
+          "kind": "gauge",
+          "label_keys": [
+            "unit"
+          ],
+          "name": "Enabled at boot",
+          "unit": "count"
+        },
+        {
+          "id": "uptime_seconds",
+          "kind": "gauge",
+          "label_keys": [
+            "unit"
+          ],
+          "name": "Running for",
+          "unit": "seconds"
+        }
+      ],
+      "min_interval_seconds": 15,
+      "name": "Services",
+      "platform": "linux",
+      "requires_privileges": false,
+      "schedule_kinds": [
+        "interval"
+      ]
     }
   ],
   "registry_version": 1

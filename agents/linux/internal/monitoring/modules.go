@@ -188,6 +188,16 @@ var registry = []Descriptor{
 		MinIntervalSeconds: 5,
 		DataSchemaVersion:  1,
 	},
+	{
+		// Fifteen seconds: each collection is two `systemctl` invocations,
+		// and a service's state does not need sub-second resolution — a
+		// restart is caught by the restart count moving.
+		ID:                 "systemd",
+		Name:               "Services",
+		ScheduleKinds:      intervalOnly,
+		MinIntervalSeconds: 15,
+		DataSchemaVersion:  1,
+	},
 }
 
 // Modules returns every module this agent knows, in catalogue order.

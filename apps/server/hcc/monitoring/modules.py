@@ -871,6 +871,90 @@ DOCKER: Final = ModuleDescriptor(
 )
 
 
+SYSTEMD: Final = ModuleDescriptor(
+    id="systemd",
+    name="Services",
+    description=(
+        "State, restart count and uptime for named systemd units, plus the "
+        "host's failed-unit count. Read-only. Names the units to watch, "
+        "because a host has hundreds and almost none of them are interesting."
+    ),
+    platform=Platform.LINUX,
+    schedule_kinds=_SAMPLER_KINDS,
+    # Fifteen seconds. Each collection is two `systemctl` invocations, which
+    # is cheap and is not free — and a service's state is not a thing that
+    # needs sub-second resolution. A restart is caught by `restarts` moving,
+    # not by sampling fast enough to see the gap.
+    min_interval_seconds=15,
+    default_interval_seconds=60,
+    data_schema_version=1,
+    # No. `systemctl list-units` and `systemctl show` work for any local
+    # user; what needs root is *controlling* services, which this module
+    # does not do.
+    requires_privileges=False,
+    allows_duplicate_runs=True,
+    metrics=(
+        MetricDescriptor(
+            # The host-wide answer, which needs no unit list and has
+            # cardinality one. "Is anything broken on this machine" is the
+            # first question systemd can answer and the one most worth
+            # having on every host.
+            id="units_failed",
+            name="Failed units",
+            unit=MetricUnit.COUNT,
+            kind=MetricKind.GAUGE,
+        ),
+        MetricDescriptor(
+            # 1 while the unit is active. A gauge, because the series over
+            # time *is* the availability history — which is what "track
+            # service availability" means, and what no current-state field
+            # could show after the fact.
+            id="active",
+            name="Active",
+            unit=MetricUnit.COUNT,
+            kind=MetricKind.GAUGE,
+            label_keys=("unit",),
+        ),
+        MetricDescriptor(
+            # Separate from `active`, because `inactive` and `failed` are
+            # different things: a unit an operator stopped on purpose and a
+            # unit that died. One metric with three values would need the
+            # interface to know an encoding.
+            id="failed",
+            name="Failed",
+            unit=MetricUnit.COUNT,
+            kind=MetricKind.GAUGE,
+            label_keys=("unit",),
+        ),
+        MetricDescriptor(
+            id="restarts",
+            name="Restarts",
+            unit=MetricUnit.COUNT,
+            kind=MetricKind.GAUGE,
+            label_keys=("unit",),
+        ),
+        MetricDescriptor(
+            # Absent for `static`, `generated` and `transient` units, where
+            # "is it set to start at boot" does not apply — answering anyway
+            # would make every such unit permanently report "not enabled",
+            # which reads as a misconfiguration and is not one.
+            id="enabled",
+            name="Enabled at boot",
+            unit=MetricUnit.COUNT,
+            kind=MetricKind.GAUGE,
+            label_keys=("unit",),
+        ),
+        MetricDescriptor(
+            id="uptime_seconds",
+            name="Running for",
+            unit=MetricUnit.SECONDS,
+            kind=MetricKind.GAUGE,
+            label_keys=("unit",),
+        ),
+    ),
+)
+
+
 #: Every module that exists, in display order.
 #:
 #: A tuple rather than a dict literal so the order is the interface's order and
@@ -886,6 +970,7 @@ MODULE_LIST: Final[tuple[ModuleDescriptor, ...]] = (
     NETWORK,
     SENSORS,
     DOCKER,
+    SYSTEMD,
 )
 
 #: Lookup by identifier. The closed set §1 of the docstring describes.

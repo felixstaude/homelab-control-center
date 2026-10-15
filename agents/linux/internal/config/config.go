@@ -67,6 +67,7 @@ const (
 	EnvSysRoot          = "HCC_AGENT_SYS_ROOT"
 	EnvNetworkIfaces    = "HCC_AGENT_NETWORK_INTERFACES"
 	EnvDockerSocket     = "HCC_AGENT_DOCKER_SOCKET"
+	EnvSystemdUnits     = "HCC_AGENT_SYSTEMD_UNITS"
 	EnvCollectPerCore   = "HCC_AGENT_COLLECT_PER_CORE"
 	EnvEnrollmentToken  = "HCC_AGENT_ENROLLMENT_TOKEN" //nolint:gosec // a variable name, not a credential
 	EnvEnrollmentFile   = "HCC_AGENT_ENROLLMENT_TOKEN_FILE"
@@ -206,6 +207,20 @@ type Config struct {
 	// granting it means.
 	DockerSocket string
 
+	// SystemdUnits names the units the `systemd` module watches, from
+	// HCC_AGENT_SYSTEMD_UNITS.
+	//
+	// Empty means only the host-wide failed-unit count is reported. A host
+	// has hundreds of units and collecting all of them would be a
+	// cardinality decision made on the operator's behalf, with nearly every
+	// series a unit nobody has ever thought about.
+	//
+	// A local setting rather than part of the controller's configuration
+	// document, like the network interface list: which services matter is a
+	// fact about one machine, and module options do not exist in the
+	// document model yet.
+	SystemdUnits []string
+
 	// CollectPerCore adds a series per logical CPU to the cpu module.
 	//
 	// Off by default and deliberately a *local* setting rather than part of
@@ -325,6 +340,13 @@ func Load(lookupEnv func(string) (string, bool)) (Config, error) {
 	}
 	if value, ok := lookupEnv(EnvDockerSocket); ok {
 		cfg.DockerSocket = strings.TrimSpace(value)
+	}
+	if value, ok := lookupEnv(EnvSystemdUnits); ok {
+		for _, unit := range strings.Split(value, ",") {
+			if trimmed := strings.TrimSpace(unit); trimmed != "" {
+				cfg.SystemdUnits = append(cfg.SystemdUnits, trimmed)
+			}
+		}
 	}
 	if value, ok := lookupEnv(EnvNetworkIfaces); ok {
 		for _, name := range strings.Split(value, ",") {

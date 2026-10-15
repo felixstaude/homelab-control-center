@@ -10,6 +10,7 @@ import {
   FilesystemPanel,
   NetworkPanel,
   SensorPanel,
+  ServicePanel,
 } from './resource-panels';
 
 /**
@@ -356,6 +357,63 @@ describe('ContainerPanel', () => {
 
   it('renders nothing when the host runs no container monitoring', () => {
     const { container } = render(<ContainerPanel values={[]} />);
+
+    expect(container).toBeEmptyDOMElement();
+  });
+});
+
+describe('ServicePanel', () => {
+  it('shows the failed count even when no units are named', () => {
+    // It needs no configuration and is the first question systemd can
+    // answer. A panel that showed nothing until somebody typed a list would
+    // be a panel most hosts never benefit from.
+    render(<ServicePanel values={[value('systemd', 'units_failed', {}, 'count', 2)]} />);
+
+    expect(screen.getByText('2')).toBeInTheDocument();
+    expect(screen.getByText(/failed units on this host/i)).toBeInTheDocument();
+    expect(screen.getByText(/HCC_AGENT_SYSTEMD_UNITS/)).toBeInTheDocument();
+  });
+
+  it('distinguishes inactive from failed', () => {
+    // A unit an operator stopped on purpose and a unit that died are
+    // different facts with different remedies.
+    render(
+      <ServicePanel
+        values={[
+          value('systemd', 'units_failed', {}, 'count', 1),
+          value('systemd', 'active', { unit: 'ssh.service' }, 'count', 0),
+          value('systemd', 'failed', { unit: 'ssh.service' }, 'count', 0),
+          value('systemd', 'active', { unit: 'nginx.service' }, 'count', 0),
+          value('systemd', 'failed', { unit: 'nginx.service' }, 'count', 1),
+        ]}
+      />,
+    );
+
+    const ssh = screen.getByText('ssh.service').closest('tr');
+    expect(within(ssh as HTMLElement).getByText('inactive')).toBeInTheDocument();
+    const nginx = screen.getByText('nginx.service').closest('tr');
+    expect(within(nginx as HTMLElement).getByText('failed')).toBeInTheDocument();
+  });
+
+  it('omits the enabled badge where the question does not apply', () => {
+    // A static unit cannot be enabled or disabled, and "not enabled" about
+    // one reads as a misconfiguration that is not there.
+    render(
+      <ServicePanel
+        values={[
+          value('systemd', 'units_failed', {}, 'count', 0),
+          value('systemd', 'active', { unit: 'dbus.service' }, 'count', 1),
+        ]}
+      />,
+    );
+
+    const row = screen.getByText('dbus.service').closest('tr');
+    expect(within(row as HTMLElement).queryByText('enabled')).toBeNull();
+    expect(within(row as HTMLElement).queryByText('not enabled')).toBeNull();
+  });
+
+  it('renders nothing when the module is not collecting', () => {
+    const { container } = render(<ServicePanel values={[]} />);
 
     expect(container).toBeEmptyDOMElement();
   });

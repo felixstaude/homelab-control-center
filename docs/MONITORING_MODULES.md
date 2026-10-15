@@ -86,7 +86,7 @@ Scheduling kinds are defined in
 
 ### 3.2 What is implemented today
 
-The table above is the designed catalogue across the whole product. **Nine
+The table above is the designed catalogue across the whole product. **Ten
 modules exist**, and this is them — generated from
 `contracts/monitoring-modules.json`, which is produced from the server's
 registry and drift-checked by `make check-contract`, so this table cannot
@@ -104,6 +104,7 @@ quietly stop matching the code.
 | `network` | Network traffic | `receive_bytes`, `transmit_bytes`, `receive_packets`, `transmit_packets`, `receive_errors`, `transmit_errors`, `receive_drops`, `transmit_drops`, `up`, `speed` (all by interface) | interval | 10 s | 1 s | no |
 | `sensors` | Temperatures and fans | `temperature`, `fan_speed` (by sensor) | interval | 30 s | 5 s | no |
 | `docker` | Containers | `containers_total`, `containers_running`, and by container: `running`, `cpu_utilisation`, `memory_bytes`, `memory_limit`, `memory_utilisation`, `receive_bytes`, `transmit_bytes`, `restart_count`, `uptime_seconds`, `healthy` | interval | 15 s | 5 s | **yes** |
+| `systemd` | Services | `units_failed`, and by unit: `active`, `failed`, `restarts`, `enabled`, `uptime_seconds` | interval | 60 s | 15 s | no |
 
 ### What each of the newer ones deliberately does not report
 
@@ -172,6 +173,46 @@ The one place network counters *are* added together is a container's own
 interfaces, in `docker`, because a container's interfaces are its own and do
 not overlap.
 
+### `systemd` is the one module that runs a command
+
+systemd has no pseudo-file interface. The alternatives are its D-Bus API,
+which means a D-Bus implementation inside an agent whose whole point is being
+one static binary, or `systemctl` — which is a command, and
+[ARCHITECTURE §10.5](ARCHITECTURE.md#105-explicitly-excluded-permanently)
+excludes arbitrary command execution on hosts.
+
+[§4.3](#43-external-binaries--the-one-genuinely-new-risk) is where the eight
+rules that make that a difference were written down, before any module needed
+them. This module satisfies all of them: `/usr/bin/systemctl` or
+`/bin/systemctl`, compiled in and resolved absolutely rather than through
+`PATH`; fixed argument vectors with only validated unit names substituted; no
+shell; `list-units` and `show` only; a timeout, an output cap and one
+invocation at a time; no root; and `LC_ALL=C`, so the bytes are the same on
+every machine.
+
+It also uses `--output=json`, which is a *structured* interface. That is the
+difference between this and parsing `df`: systemd's JSON does not move
+between releases, and a systemd too old to produce it (before 246) is a clear
+refusal naming the version rather than a column-counting guess.
+
+`systemctl show` is asked for **six named properties**. Without
+`--property`, it prints around two hundred fields per unit including
+`Environment`, which can hold secrets — asking for six is both cheaper and
+the difference between a monitoring agent and an exfiltration tool.
+
+**An explicit list is required for per-unit series**, from
+`HCC_AGENT_SYSTEMD_UNITS`. A host has hundreds of units and collecting all of
+them would be a cardinality decision made on the operator's behalf. Without a
+list the module reports only `units_failed` — cardinality one, no
+configuration, and the first question systemd can answer: is anything broken
+on this machine.
+
+A unit the operator named and systemd does not have is **absent**, not
+inactive. `systemctl show` answers for a unit it has never heard of, with
+`LoadState=not-found`, so a typo would otherwise become a series permanently
+reporting a stopped service that does not exist — with a restart count of
+zero to make it look measured.
+
 ### `docker` is the one module that needs a privilege grant
 
 **Access to the Docker socket is equivalent to root on the host.** Anything
@@ -217,10 +258,9 @@ above: "disk usage" conflates filesystem capacity with disk size, and
 "temperature" would not cover the fan readings that come from the same
 sysfs tree.
 
-Everything else in §3 — the log modules, SMART, `raid`, `systemd`,
-`sessions` — **does not exist yet**. The interface lists exactly the nine
-above, so a module that is absent is absent rather than appearing with no
-data.
+Everything else in §3 — the log modules, SMART, `raid`, `sessions` — **does
+not exist yet**. The interface lists exactly the ten above, so a module that
+is absent is absent rather than appearing with no data.
 
 ### 3.1 Notes on specific modules
 

@@ -329,6 +329,7 @@ func New(cfg config.Config, logger *slog.Logger, opts ...Option) (*Agent, error)
 				collect.NewNetwork(cfg.ProcRoot, cfg.SysRoot, cfg.NetworkInterfaces),
 				collect.NewSensors(cfg.SysRoot),
 				collect.NewDocker(cfg.DockerSocket),
+				collect.NewSystemdUnits(cfg.SystemdUnits, cfg.ProcRoot),
 			},
 		)
 	}

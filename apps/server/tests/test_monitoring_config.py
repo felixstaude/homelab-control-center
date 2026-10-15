@@ -85,6 +85,7 @@ def test_the_registry_holds_the_modules_this_release_implements() -> None:
         "network",
         "sensors",
         "docker",
+        "systemd",
     )
 
 

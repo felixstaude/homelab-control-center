@@ -97,7 +97,11 @@ VENV="$SERVER_DIR/.venv"
 # `swap` is deliberately absent: a host with no swap reports the module
 # unavailable, which is correct and looks like a failure to somebody seeing
 # the product for the first time.
-DEMO_MODULES="cpu:5 memory:5 load:5 uptime:60 filesystem:15 diskio:5 network:5 sensors:10"
+DEMO_MODULES="cpu:5 memory:5 load:5 uptime:60 filesystem:15 diskio:5 network:5 sensors:10 systemd:30"
+# `systemd` is included: with no HCC_AGENT_SYSTEMD_UNITS it reports only the
+# host's failed-unit count, which needs no configuration and is the first
+# question systemd can answer.
+#
 # `docker` is deliberately absent. It needs a socket grant the demo must not
 # make on somebody's behalf — see docs/MONITORING_MODULES.md §3.2. Enable it
 # from Hosts → demo-localhost → Monitoring after setting
@@ -540,6 +544,7 @@ print(' '.join(MODULE_IDS))
       HCC_AGENT_CONFIG_FILE="$DEMO_DIR/agent/config.json" \
       HCC_AGENT_LOG_FORMAT=json \
       HCC_AGENT_DOCKER_SOCKET="${HCC_AGENT_DOCKER_SOCKET:-}" \
+      HCC_AGENT_SYSTEMD_UNITS="${HCC_AGENT_SYSTEMD_UNITS:-}" \
       nohup "$DEMO_DIR/agent/hcc-agent" run >"$DEMO_DIR/agent.log" 2>&1 &
       echo $! >"$DEMO_DIR/agent.pid"
     )
@@ -589,6 +594,11 @@ print_summary() {
   dim "    root, so it is granted on the machine rather than by the controller:"
   dim "      HCC_AGENT_DOCKER_SOCKET=/var/run/docker.sock ./scripts/demo.sh up --rebuild"
   dim "    then enable Containers on the host's Monitoring tab. Read-only."
+  printf "\n"
+  printf "  ${BOLD}Services, if you want them${RESET}\n"
+  dim "    Services is on and reports how many units have failed. To watch"
+  dim "    specific ones — a host has hundreds and almost none are interesting:"
+  dim "      HCC_AGENT_SYSTEMD_UNITS=sshd,nginx ./scripts/demo.sh up --rebuild"
   printf "\n"
   printf "  ${BOLD}What to look at${RESET}\n"
   dim "    Hosts → demo-localhost       live tiles and history for this machine"
