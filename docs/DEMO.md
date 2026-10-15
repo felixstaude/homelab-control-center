@@ -16,6 +16,7 @@ It prints a URL, a username and a generated password. Open the URL.
 - [Commands](#commands)
 - [What to look at](#what-to-look-at)
 - [What is real and what is labelled sample data](#what-is-real-and-what-is-labelled-sample-data)
+- [Containers](#containers)
 - [Troubleshooting](#troubleshooting)
 - [Why not Compose](#why-not-compose)
 
@@ -30,14 +31,18 @@ Four real things, none of them simulated:
 | **An administrator** | `demo-admin`, with a password generated at first start and written to `.demo/credentials` (mode 0600) |
 | **A real agent** | built from source, enrolled with a one-time credential, running as your user and reporting this machine's own `/proc` and `/sys` |
 
-Seven monitoring modules are enabled on it: `cpu`, `memory`, `load`,
-`uptime`, `filesystem`, `diskio` and `network`. Every number you see came
-from this computer's kernel in the last few seconds.
+Eight monitoring modules are enabled on it: `cpu`, `memory`, `load`,
+`uptime`, `filesystem`, `diskio`, `network` and `sensors`. Every number you
+see came from this computer's kernel in the last few seconds.
 
-`swap` is deliberately left off. A host with no swap configured reports the
-module *unavailable*, which is correct behaviour and looks like a failure to
-somebody seeing the product for the first time. Turn it on from
-**Hosts → demo-localhost → Monitoring** if your machine has swap.
+Two are deliberately left off:
+
+- **`swap`**, because a host with no swap configured reports the module
+  *unavailable* — correct behaviour that looks like a failure to somebody
+  seeing the product for the first time. Turn it on from
+  **Hosts → demo-localhost → Monitoring** if your machine has swap.
+- **`docker`**, because it needs a socket grant the demo must not make on
+  your behalf. See [Containers](#containers) below.
 
 First start takes a couple of minutes — it pulls a PostgreSQL image, builds
 the web bundle and compiles the agent. After that it is seconds.
@@ -98,6 +103,7 @@ agent's enrolment and the logs.
   load                  3  05:29:29
   memory                4  05:29:34
   network              19  05:29:34
+  sensors              20  05:29:30
   uptime                1  05:28:40
 ```
 
@@ -136,6 +142,8 @@ collected from this machine:
 | `filesystem` | `statfs` per mount, from `/proc/self/mountinfo` |
 | `diskio` | `/proc/diskstats`, with whole disks selected via `/sys/block` |
 | `network` | `/proc/net/dev`, with link state and speed from `/sys/class/net` |
+| `sensors` | `/sys/class/hwmon`, named by the chip reporting each reading |
+| `docker` | the Docker Engine API, read-only, after a local socket grant |
 
 The **Overview** page's container and log cards are **labelled sample data**
 and say so on screen. Docker and log collection are not built yet, and the
@@ -151,6 +159,26 @@ Two things you will see that are correct and look odd at first:
 - **btrfs subvolumes of one pool are reported once.** If `/` and `/home` are
   subvolumes sharing a pool, only `/` appears: they have the same free space,
   and listing both would be the same number twice.
+
+## Containers
+
+Off by default, and deliberately not something `make demo` turns on for you.
+Reading the Docker socket is equivalent to root on the host, so it is granted
+on the machine:
+
+```bash
+HCC_AGENT_DOCKER_SOCKET=/var/run/docker.sock ./scripts/demo.sh up --rebuild
+```
+
+Then enable **Containers** on the host's Monitoring tab. On a Podman host the
+socket is `/run/user/$UID/podman/podman.sock` after
+`systemctl --user start podman.socket` — Podman's Docker-compatible API is
+what this was developed against.
+
+The view is read-only: container state, CPU, memory, network, restarts,
+uptime and health. There are no start/stop controls and the agent issues no
+request other than `GET`. Stopped containers are listed too — "the container
+I expected is not running" is the commonest question this answers.
 
 ## Troubleshooting
 
@@ -203,24 +231,6 @@ make demo-clean && make demo
 Only possible while developing on a branch that adds modules; a released
 installation gets each module in its own migration.
 
-### Containers
-
-Off by default, and deliberately not something `make demo` turns on for you.
-Reading the Docker socket is equivalent to root on the host, so it is granted
-on the machine:
-
-```bash
-HCC_AGENT_DOCKER_SOCKET=/var/run/docker.sock ./scripts/demo.sh up --rebuild
-```
-
-Then enable **Containers** on the host's Monitoring tab. On a Podman host the
-socket is `/run/user/$UID/podman/podman.sock` after
-`systemctl --user start podman.socket` — Podman's Docker-compatible API is
-what this was developed against.
-
-The view is read-only: container state, CPU, memory, network, restarts,
-uptime and health. There are no start/stop controls and the agent issues no
-request other than `GET`.
 
 ### Starting over
 
