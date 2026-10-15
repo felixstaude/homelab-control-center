@@ -97,7 +97,7 @@ VENV="$SERVER_DIR/.venv"
 # `swap` is deliberately absent: a host with no swap reports the module
 # unavailable, which is correct and looks like a failure to somebody seeing
 # the product for the first time.
-DEMO_MODULES="cpu:5 memory:5 load:5 uptime:60 filesystem:15 diskio:5 network:5"
+DEMO_MODULES="cpu:5 memory:5 load:5 uptime:60 filesystem:15 diskio:5 network:5 sensors:10"
 
 green() { printf "${GREEN}%s${RESET}\n" "$1"; }
 red()   { printf "${RED}%s${RESET}\n" "$1"; }

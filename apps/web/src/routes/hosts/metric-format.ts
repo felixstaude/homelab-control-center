@@ -27,7 +27,9 @@ export type MetricUnit =
   | 'bytes_per_second'
   | 'operations_per_second'
   | 'packets_per_second'
-  | 'bits_per_second';
+  | 'bits_per_second'
+  | 'celsius'
+  | 'rpm';
 
 /** A formatted value, split so a tile can style the unit separately. */
 export type FormattedMetric = {
@@ -176,6 +178,29 @@ export function formatEventRate(perSecond: number, noun: string): FormattedMetri
  * and 125 MB/s, and rendering it as 125 would make an operator doubt the
  * whole panel.
  */
+/**
+ * A temperature.
+ *
+ * One decimal, and the degree sign attached with no space — "32.9°C", which
+ * is how every thermal tool prints it. The sensors report millidegrees, so
+ * the first decimal is real precision rather than noise; a second would be,
+ * since no consumer thermistor resolves a hundredth of a degree.
+ */
+export function formatCelsius(value: number): FormattedMetric {
+  return { value: value.toFixed(1), unit: '°C' };
+}
+
+/**
+ * A fan speed.
+ *
+ * No decimals: a tachometer counts pulses over an interval, so the units
+ * digit is already an approximation and a tenth of an RPM is invented
+ * precision.
+ */
+export function formatRpm(value: number): FormattedMetric {
+  return { value: Math.round(value).toLocaleString(), unit: 'RPM' };
+}
+
 export function formatBitRate(bitsPerSecond: number): FormattedMetric {
   const { scaled, prefix } = scaleDecimal(bitsPerSecond);
   return {
@@ -222,6 +247,10 @@ export function formatMetric(value: number, unit: string): FormattedMetric {
       return formatEventRate(value, 'pkt/s');
     case 'bits_per_second':
       return formatBitRate(value);
+    case 'celsius':
+      return formatCelsius(value);
+    case 'rpm':
+      return formatRpm(value);
     default:
       // A unit this release does not know about. The number is shown with the
       // unit as a literal suffix rather than hidden: the data exists, and an
@@ -233,9 +262,11 @@ export function formatMetric(value: number, unit: string): FormattedMetric {
 /** The formatted value and unit joined, for a tooltip or an aria-label. */
 export function formatMetricInline(value: number, unit: string): string {
   const formatted = formatMetric(value, unit);
-  return formatted.unit === undefined
-    ? formatted.value
-    : `${formatted.value}${formatted.unit === '%' ? '' : ' '}${formatted.unit}`;
+  if (formatted.unit === undefined) return formatted.value;
+  // No space before a percent sign or a degree sign; one before everything
+  // else. "32.9 °C" and "9.6 %" read as typographical mistakes.
+  const tight = formatted.unit === '%' || formatted.unit.startsWith('°');
+  return `${formatted.value}${tight ? '' : ' '}${formatted.unit}`;
 }
 
 /**
@@ -287,6 +318,7 @@ const MODULE_ORDER = [
   'filesystem',
   'diskio',
   'network',
+  'sensors',
 ];
 
 export function compareSeries(left: MetricSeries, right: MetricSeries): number {
@@ -320,4 +352,5 @@ export const RESOURCE_MODULES: ReadonlySet<string> = new Set([
   'filesystem',
   'diskio',
   'network',
+  'sensors',
 ]);

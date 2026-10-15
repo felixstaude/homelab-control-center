@@ -399,6 +399,39 @@
       "schedule_kinds": [
         "interval"
       ]
+    },
+    {
+      "allows_duplicate_runs": true,
+      "data_schema_version": 1,
+      "default_interval_seconds": 30,
+      "id": "sensors",
+      "metrics": [
+        {
+          "id": "temperature",
+          "kind": "gauge",
+          "label_keys": [
+            "sensor"
+          ],
+          "name": "Temperature",
+          "unit": "celsius"
+        },
+        {
+          "id": "fan_speed",
+          "kind": "gauge",
+          "label_keys": [
+            "sensor"
+          ],
+          "name": "Fan speed",
+          "unit": "rpm"
+        }
+      ],
+      "min_interval_seconds": 5,
+      "name": "Temperatures and fans",
+      "platform": "linux",
+      "requires_privileges": false,
+      "schedule_kinds": [
+        "interval"
+      ]
     }
   ],
   "registry_version": 1

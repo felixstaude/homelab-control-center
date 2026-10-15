@@ -168,6 +168,16 @@ var registry = []Descriptor{
 		MinIntervalSeconds: 1,
 		DataSchemaVersion:  1,
 	},
+	{
+		// Five seconds: a sysfs read is cheap and a die temperature can move
+		// several degrees in one, but not usefully faster — a thermal trend
+		// is what an operator reads.
+		ID:                 "sensors",
+		Name:               "Temperatures and fans",
+		ScheduleKinds:      intervalOnly,
+		MinIntervalSeconds: 5,
+		DataSchemaVersion:  1,
+	},
 }
 
 // Modules returns every module this agent knows, in catalogue order.

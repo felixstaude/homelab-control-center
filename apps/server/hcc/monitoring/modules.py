@@ -244,6 +244,14 @@ class MetricUnit(enum.StrEnum):
     BYTES_PER_SECOND = "bytes_per_second"
     OPERATIONS_PER_SECOND = "operations_per_second"
     PACKETS_PER_SECOND = "packets_per_second"
+    #: Degrees Celsius. One unit, not a preference: the kernel reports
+    #: millidegrees Celsius and converting to Fahrenheit for display is an
+    #: interface decision, not a storage one. Storing both would be two
+    #: series of the same measurement that could disagree after a rounding
+    #: change.
+    CELSIUS = "celsius"
+    #: Revolutions per minute, as fan tachometers report.
+    RPM = "rpm"
     #: Link speed. Bits, not bytes, because that is the unit every network
     #: interface is sold and configured in — a "1 Gb" port is 125 MB/s, and
     #: rendering it as 125 would make an operator doubt the whole panel.
@@ -692,6 +700,47 @@ NETWORK: Final = ModuleDescriptor(
 )
 
 
+SENSORS: Final = ModuleDescriptor(
+    id="sensors",
+    name="Temperatures and fans",
+    description=(
+        "Temperature and fan readings from /sys/class/hwmon, named by the chip "
+        "that reports them. Only what the hardware actually exposes — a host "
+        "with no sensors reports the module unavailable rather than inventing one."
+    ),
+    platform=Platform.LINUX,
+    schedule_kinds=_SAMPLER_KINDS,
+    # Five seconds. A sysfs read is cheap, and a die temperature can move
+    # several degrees in a second under a sudden load — but not usefully
+    # faster than that, and a thermal trend is what an operator reads.
+    min_interval_seconds=5,
+    default_interval_seconds=30,
+    data_schema_version=1,
+    requires_privileges=False,
+    allows_duplicate_runs=True,
+    metrics=(
+        MetricDescriptor(
+            id="temperature",
+            name="Temperature",
+            unit=MetricUnit.CELSIUS,
+            kind=MetricKind.GAUGE,
+            # The chip and the sensor's own label, joined — never a position
+            # like "hwmon3". hwmon numbering is assigned in probe order and
+            # changes between boots, so a series keyed on it would silently
+            # continue one chart with another chip's readings.
+            label_keys=("sensor",),
+        ),
+        MetricDescriptor(
+            id="fan_speed",
+            name="Fan speed",
+            unit=MetricUnit.RPM,
+            kind=MetricKind.GAUGE,
+            label_keys=("sensor",),
+        ),
+    ),
+)
+
+
 #: Every module that exists, in display order.
 #:
 #: A tuple rather than a dict literal so the order is the interface's order and
@@ -705,6 +754,7 @@ MODULE_LIST: Final[tuple[ModuleDescriptor, ...]] = (
     FILESYSTEM,
     DISKIO,
     NETWORK,
+    SENSORS,
 )
 
 #: Lookup by identifier. The closed set §1 of the docstring describes.

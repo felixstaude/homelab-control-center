@@ -286,3 +286,24 @@ describe('series ordering across the storage and network modules', () => {
     ]);
   });
 });
+
+describe('sensor units', () => {
+  it('renders a temperature with no space before the degree sign', () => {
+    // "32.9 °C" reads as a typographical mistake. Every thermal tool prints
+    // it tight, and so does this.
+    expect(formatMetricInline(32.9, 'celsius')).toBe('32.9°C');
+    expect(formatMetricInline(-5, 'celsius')).toBe('-5.0°C');
+  });
+
+  it('renders a fan speed as a whole number', () => {
+    // A tachometer counts pulses over an interval, so the units digit is
+    // already an approximation and a tenth of an RPM is invented precision.
+    expect(formatMetricInline(1190.4, 'rpm')).toBe('1,190 RPM');
+    expect(formatMetricInline(0, 'rpm')).toBe('0 RPM');
+  });
+
+  it('still puts a space before every other unit', () => {
+    expect(formatMetricInline(1024, 'bytes')).toBe('1.00 KiB');
+    expect(formatMetricInline(9.6, 'percent')).toBe('9.6%');
+  });
+});

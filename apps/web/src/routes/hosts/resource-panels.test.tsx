@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import type { LatestValue } from '@/api/types';
 import { makeLatest, makeSeries } from '@/test/fake-backend';
 
-import { DiskPanel, FilesystemPanel, NetworkPanel } from './resource-panels';
+import { DiskPanel, FilesystemPanel, NetworkPanel, SensorPanel } from './resource-panels';
 
 /**
  * The three panels that render a *set* rather than a scalar.
@@ -244,5 +244,43 @@ describe('column headings', () => {
     const headings = screen.getAllByRole('columnheader').map((cell) => cell.textContent);
 
     expect(new Set(headings).size).toBe(headings.length);
+  });
+});
+
+describe('SensorPanel', () => {
+  it('names each reading by its chip and keeps two drives apart', () => {
+    // The whole point of the identity scheme: a machine with two NVMe
+    // drives has two chips called `nvme`, each reporting `Composite`.
+    render(
+      <SensorPanel
+        values={[
+          value('sensors', 'temperature', { sensor: 'nvme-nvme0 Composite' }, 'celsius', 32.9),
+          value('sensors', 'temperature', { sensor: 'nvme-nvme1 Composite' }, 'celsius', 34.9),
+        ]}
+      />,
+    );
+
+    expect(screen.getByText('nvme-nvme0 Composite')).toBeInTheDocument();
+    expect(screen.getByText('nvme-nvme1 Composite')).toBeInTheDocument();
+    expect(screen.getByText('32.9°C')).toBeInTheDocument();
+  });
+
+  it('shows a stopped fan as 0 RPM rather than hiding it', () => {
+    // On a machine with a dead fan this is the most important number on the
+    // page, and omitting it would make a failure look like a fan nobody is
+    // watching.
+    render(
+      <SensorPanel
+        values={[value('sensors', 'fan_speed', { sensor: 'z53 Fan speed' }, 'rpm', 0)]}
+      />,
+    );
+
+    expect(screen.getByText('0 RPM')).toBeInTheDocument();
+  });
+
+  it('renders nothing when the host has no sensors', () => {
+    const { container } = render(<SensorPanel values={[]} />);
+
+    expect(container).toBeEmptyDOMElement();
   });
 });
