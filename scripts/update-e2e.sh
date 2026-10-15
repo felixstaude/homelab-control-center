@@ -1092,6 +1092,94 @@ else
 fi
 
 # ===========================================================================
+info "== 17. A staged rollout, driven by the controller's own background pass =="
+
+# What this proves, and what it does not.
+#
+# **Proves:** the whole rollout loop runs in a real controller — create
+# through the API, the background task picking it up on its own interval,
+# batch assignment, the per-member decision, and the terminal state — with no
+# test reaching into the service.
+#
+# **Does not prove:** a canary installing and then gating a second batch.
+# That needs two hosts and a version this one is not already on, and the
+# fixture has one container and no spare build. It is covered by the 30
+# integration tests in `test_rollout_service_integration.py`, which drive
+# real jobs through real state transitions against a real database.
+#
+# The member here is **skipped**, because the host already runs
+# $VERSION_NEW — which is itself one of the behaviours worth proving at this
+# level: "already on the target version" must not be a failure, or a rollout
+# re-run over a partly-updated fleet would pause on the hosts that were
+# already done.
+
+rollout_body="$("$VENV/bin/python" - "$HOST_ID" "$VERSION_NEW" <<'PY'
+import json
+import sys
+
+print(
+    json.dumps(
+        {
+            "name": "end-to-end rollout",
+            "to_version": sys.argv[2],
+            "host_ids": [sys.argv[1]],
+            # No settle: the member is skipped rather than installed, so
+            # there is nothing to wait for and a 120-second default would
+            # only make this scenario slower.
+            "health_check_seconds": 0,
+        }
+    )
+)
+PY
+)"
+created="$(api POST /updates/rollouts "$rollout_body")"
+ROLLOUT_ID="$(printf '%s' "$created" | json_field rollout_id 2>/dev/null || true)"
+if [ -n "$ROLLOUT_ID" ]; then
+  ok "a rollout was created over 1 host"
+else
+  bad "creating the rollout failed: $created"
+fi
+
+if [ -n "$ROLLOUT_ID" ]; then
+  # Pending, not started. The request creates; the background pass runs.
+  state="$(printf '%s' "$created" | json_field state)"
+  if [ "$state" = "pending" ]; then
+    ok "the rollout is pending — creating one starts nothing"
+  else
+    bad "a freshly created rollout is '$state', expected pending"
+  fi
+
+  # Now wait for the controller's own task, which runs every 30 seconds by
+  # default. Nothing here nudges it: if this passes, the background pass is
+  # genuinely running in the controller under test.
+  #
+  # `await_query` rather than `await_terminal`: the latter recognises *job*
+  # terminal states, and a rollout's are a different set.
+  await_query "the background pass carried the rollout to completion" \
+    "SELECT state FROM update_rollouts WHERE id = '$ROLLOUT_ID'" "completed" 120
+
+  skipped="$(query "SELECT coalesce(skipped_reason, '') FROM update_rollout_members
+                    WHERE rollout_id = '$ROLLOUT_ID'" | head -1)"
+  case "$skipped" in
+    *"already running"*)
+      ok "the host was skipped, not failed: $(printf '%s' "$skipped" | cut -c1-60)…" ;;
+    "")
+      bad "the member was neither skipped nor explained" ;;
+    *)
+      bad "the skip reason does not name the cause: '$skipped'" ;;
+  esac
+
+  # And no job was created for it. A skip must not leave an update attempt
+  # behind, or the history would show one that never happened.
+  rollout_jobs="$(query "SELECT count(*) FROM update_jobs WHERE rollout_id = '$ROLLOUT_ID'")"
+  if [ "$rollout_jobs" = "0" ]; then
+    ok "no update job was created for a skipped member"
+  else
+    bad "$rollout_jobs job(s) exist for a rollout that installed nothing"
+  fi
+fi
+
+# ===========================================================================
 info "== Result =="
 
 printf '\n'
