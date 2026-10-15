@@ -18,7 +18,18 @@ import type { LatestValue, MetricSeries } from '@/api/types';
  */
 
 /** Units the backend declares. Anything else is rendered as a bare number. */
-export type MetricUnit = 'percent' | 'bytes' | 'seconds' | 'count' | 'load';
+export type MetricUnit =
+  | 'percent'
+  | 'bytes'
+  | 'seconds'
+  | 'count'
+  | 'load'
+  | 'bytes_per_second'
+  | 'operations_per_second'
+  | 'packets_per_second'
+  | 'bits_per_second'
+  | 'celsius'
+  | 'rpm';
 
 /** A formatted value, split so a tile can style the unit separately. */
 export type FormattedMetric = {
@@ -116,6 +127,89 @@ export function formatCount(value: number): FormattedMetric {
 }
 
 /**
+ * A byte rate.
+ *
+ * Binary multiples, like {@link formatBytes}, and for the same reason: every
+ * other tool on the host reports transfer in MiB/s and a dashboard that
+ * disagreed by 4.8% would be read as broken.
+ *
+ * A separate function rather than `formatBytes(value).value + '/s'` because
+ * the rounding is different. A byte *count* of 1023 is "1023 B"; a byte
+ * *rate* of 1023 is also "1023 B/s", but a rate of 0 is extremely common —
+ * most interfaces are idle most of the time — and rendering it as "0 B/s"
+ * rather than "0.00 B/s" is what keeps a column of idle interfaces readable.
+ */
+export function formatRate(bytesPerSecond: number): FormattedMetric {
+  const formatted = formatBytes(bytesPerSecond);
+  return { value: formatted.value, unit: `${formatted.unit ?? 'B'}/s` };
+}
+
+/** Decimal multiples for a quantity that is counted rather than addressed. */
+const DECIMAL_UNITS = ['', 'k', 'M', 'G', 'T'] as const;
+
+function scaleDecimal(value: number): { scaled: number; prefix: string } {
+  const sign = value < 0 ? -1 : 1;
+  let remaining = Math.abs(value);
+  let index = 0;
+  while (remaining >= 1000 && index < DECIMAL_UNITS.length - 1) {
+    remaining /= 1000;
+    index += 1;
+  }
+  return { scaled: sign * remaining, prefix: DECIMAL_UNITS[index] ?? '' };
+}
+
+/**
+ * A rate of discrete things — disk operations, network packets.
+ *
+ * Decimal multiples, not binary: these are counts of events, and nobody has
+ * ever said "1 kibi-IOPS". The same reasoning that makes bytes binary makes
+ * these decimal — match what the rest of the world prints.
+ */
+export function formatEventRate(perSecond: number, noun: string): FormattedMetric {
+  const { scaled, prefix } = scaleDecimal(perSecond);
+  const digits = prefix === '' ? (Number.isInteger(scaled) ? 0 : 1) : 1;
+  return { value: scaled.toFixed(digits), unit: `${prefix}${noun}` };
+}
+
+/**
+ * A link speed, in the unit the hardware is sold in.
+ *
+ * Decimal, and bits rather than bytes: a "1 Gb" port is 1,000,000,000 bit/s
+ * and 125 MB/s, and rendering it as 125 would make an operator doubt the
+ * whole panel.
+ */
+/**
+ * A temperature.
+ *
+ * One decimal, and the degree sign attached with no space — "32.9°C", which
+ * is how every thermal tool prints it. The sensors report millidegrees, so
+ * the first decimal is real precision rather than noise; a second would be,
+ * since no consumer thermistor resolves a hundredth of a degree.
+ */
+export function formatCelsius(value: number): FormattedMetric {
+  return { value: value.toFixed(1), unit: '°C' };
+}
+
+/**
+ * A fan speed.
+ *
+ * No decimals: a tachometer counts pulses over an interval, so the units
+ * digit is already an approximation and a tenth of an RPM is invented
+ * precision.
+ */
+export function formatRpm(value: number): FormattedMetric {
+  return { value: Math.round(value).toLocaleString(), unit: 'RPM' };
+}
+
+export function formatBitRate(bitsPerSecond: number): FormattedMetric {
+  const { scaled, prefix } = scaleDecimal(bitsPerSecond);
+  return {
+    value: Number.isInteger(scaled) ? String(scaled) : scaled.toFixed(1),
+    unit: `${prefix}bit/s`,
+  };
+}
+
+/**
  * A configured interval, in the unit an operator thinks in.
  *
  * Distinct from {@link formatDuration}, which renders a *measured* duration
@@ -145,6 +239,18 @@ export function formatMetric(value: number, unit: string): FormattedMetric {
       return formatLoad(value);
     case 'count':
       return formatCount(value);
+    case 'bytes_per_second':
+      return formatRate(value);
+    case 'operations_per_second':
+      return formatEventRate(value, 'IOPS');
+    case 'packets_per_second':
+      return formatEventRate(value, 'pkt/s');
+    case 'bits_per_second':
+      return formatBitRate(value);
+    case 'celsius':
+      return formatCelsius(value);
+    case 'rpm':
+      return formatRpm(value);
     default:
       // A unit this release does not know about. The number is shown with the
       // unit as a literal suffix rather than hidden: the data exists, and an
@@ -156,9 +262,11 @@ export function formatMetric(value: number, unit: string): FormattedMetric {
 /** The formatted value and unit joined, for a tooltip or an aria-label. */
 export function formatMetricInline(value: number, unit: string): string {
   const formatted = formatMetric(value, unit);
-  return formatted.unit === undefined
-    ? formatted.value
-    : `${formatted.value}${formatted.unit === '%' ? '' : ' '}${formatted.unit}`;
+  if (formatted.unit === undefined) return formatted.value;
+  // No space before a percent sign or a degree sign; one before everything
+  // else. "32.9 °C" and "9.6 %" read as typographical mistakes.
+  const tight = formatted.unit === '%' || formatted.unit.startsWith('°');
+  return `${formatted.value}${tight ? '' : ' '}${formatted.unit}`;
 }
 
 /**
@@ -201,7 +309,19 @@ export function axisDomain(unit: string): [number, number] | undefined {
  * A stable order matters more than which order: values that reshuffle between
  * polls are unreadable, and the eye learns a fixed position.
  */
-const MODULE_ORDER = ['cpu', 'memory', 'swap', 'load', 'uptime'];
+const MODULE_ORDER = [
+  'cpu',
+  'memory',
+  'swap',
+  'load',
+  'uptime',
+  'filesystem',
+  'diskio',
+  'network',
+  'sensors',
+  'docker',
+  'systemd',
+];
 
 export function compareSeries(left: MetricSeries, right: MetricSeries): number {
   const leftModule = MODULE_ORDER.indexOf(left.module);
@@ -217,3 +337,24 @@ export function compareSeries(left: MetricSeries, right: MetricSeries): number {
 export function compareLatest(left: LatestValue, right: LatestValue): number {
   return compareSeries(left.series, right.series);
 }
+
+/**
+ * The modules rendered as tables rather than as tiles.
+ *
+ * A tile is right for a host-wide scalar and wrong for a *set*: a laptop
+ * with three filesystems, four block devices and two interfaces produces
+ * fifty-five labelled series, and fifty-five tiles is a wall with the one
+ * number somebody wanted somewhere in it. The question these modules answer
+ * is comparative — *which* filesystem is filling up — and that is a table.
+ *
+ * Here rather than in `resource-panels.tsx` so that file exports only
+ * components, which is what React fast refresh needs.
+ */
+export const RESOURCE_MODULES: ReadonlySet<string> = new Set([
+  'filesystem',
+  'diskio',
+  'network',
+  'sensors',
+  'docker',
+  'systemd',
+]);

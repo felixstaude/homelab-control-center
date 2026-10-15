@@ -19,6 +19,7 @@ import pytest
 
 from hcc.updates.signing import (
     ALGORITHM,
+    MAX_SIGNATURES,
     PUBLIC_KEY_BYTES,
     SIGNATURE_BYTES,
     SignatureStatus,
@@ -400,3 +401,124 @@ class TestTheControllerCannotSign:
         ]
 
         assert offenders == []
+
+
+class TestARotationOverlap:
+    """Several signatures over the same bytes.
+
+    The case that makes a key rotation possible at all. An agent built before
+    the rotation trusts only the old key; if the next manifest is signed with
+    the new one, that agent refuses it — *including* the update that would
+    have taught it the new key. The fleet the rotation is for is the fleet it
+    strands.
+    """
+
+    @staticmethod
+    def _set(*documents: dict[str, str]) -> bytes:
+        return json.dumps({"signatures": list(documents)}).encode()
+
+    def test_either_key_verifies_the_same_bytes(self) -> None:
+        payload = b'{"schema_version": 2}'
+        old_private, old_public = generate_keypair()
+        new_private, new_public = generate_keypair()
+        document = self._set(
+            sign_manifest(payload, old_private), sign_manifest(payload, new_private)
+        )
+
+        for name, public in (("the old key", old_public), ("the new key", new_public)):
+            store = TrustStore([encode_public_key(public)])
+            result = store.verify(payload, document)
+            assert result.status is SignatureStatus.VALID, f"{name} did not verify"
+
+    def test_the_trusted_signature_is_found_wherever_it_sits(self) -> None:
+        # A verifier that stopped at the first entry would pass a test with
+        # the trusted signature first and fail in production.
+        payload = b'{"schema_version": 2}'
+        private, public = generate_keypair()
+        foreign_private, _ = generate_keypair()
+        document = self._set(
+            sign_manifest(payload, foreign_private), sign_manifest(payload, private)
+        )
+
+        store = TrustStore([encode_public_key(public)])
+
+        assert store.verify(payload, document).status is SignatureStatus.VALID
+
+    def test_tampering_by_a_trusted_key_outranks_an_untrusted_one(self) -> None:
+        # The precedence that matters. A trusted key whose signature does not
+        # verify is the only alarm this system has; reporting the untrusted
+        # key instead would hide it behind the routine case.
+        payload = b'{"schema_version": 2}'
+        private, public = generate_keypair()
+        foreign_private, _ = generate_keypair()
+        document = self._set(
+            sign_manifest(payload, foreign_private),
+            sign_manifest(b"a different document", private),
+        )
+
+        result = TrustStore([encode_public_key(public)]).verify(payload, document)
+
+        assert result.status is SignatureStatus.INVALID
+
+    def test_no_trusted_key_is_untrusted_rather_than_invalid(self) -> None:
+        payload = b'{"schema_version": 2}'
+        _, public = generate_keypair()
+        first, _ = generate_keypair()
+        second, _ = generate_keypair()
+        document = self._set(sign_manifest(payload, first), sign_manifest(payload, second))
+
+        result = TrustStore([encode_public_key(public)]).verify(payload, document)
+
+        assert result.status is SignatureStatus.UNTRUSTED_KEY
+
+    def test_both_shapes_at_once_is_refused(self) -> None:
+        # Two statements about what signed this is not a thing to reconcile on
+        # a privilege boundary.
+        payload = b'{"schema_version": 2}'
+        private, public = generate_keypair()
+        single = sign_manifest(payload, private)
+        document = json.dumps({**single, "signatures": [single]}).encode()
+
+        result = TrustStore([encode_public_key(public)]).verify(payload, document)
+
+        assert result.status is SignatureStatus.MALFORMED
+
+    @pytest.mark.parametrize(
+        "document",
+        [
+            pytest.param(b'{"signatures": []}', id="empty"),
+            pytest.param(b'{"signatures": {}}', id="object rather than array"),
+            pytest.param(b'{"signatures": ["x"]}', id="entry is not an object"),
+        ],
+    )
+    def test_malformed_sets_are_refused(self, document: bytes) -> None:
+        _, public = generate_keypair()
+
+        result = TrustStore([encode_public_key(public)]).verify(b"x", document)
+
+        assert result.status is SignatureStatus.MALFORMED
+
+    def test_too_many_signatures_is_a_refusal_rather_than_work(self) -> None:
+        # Each entry costs a signature verification, and a verifier that does
+        # unbounded work on an unverified input has a denial of service in it.
+        payload = b'{"schema_version": 2}'
+        private, public = generate_keypair()
+        one = sign_manifest(payload, private)
+        document = json.dumps({"signatures": [one] * (MAX_SIGNATURES + 1)}).encode()
+
+        result = TrustStore([encode_public_key(public)]).verify(payload, document)
+
+        assert result.status is SignatureStatus.MALFORMED
+        assert "limit" in (result.detail or "")
+
+    def test_a_single_signature_document_still_works(self) -> None:
+        # The common case is one key, and wrapping it in an array would churn
+        # every signature that already exists for nothing.
+        payload = b'{"schema_version": 2}'
+        private, public = generate_keypair()
+
+        result = TrustStore([encode_public_key(public)]).verify(
+            payload, json.dumps(sign_manifest(payload, private)).encode()
+        )
+
+        assert result.status is SignatureStatus.VALID

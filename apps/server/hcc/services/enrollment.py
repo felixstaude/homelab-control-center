@@ -538,6 +538,32 @@ class AgentEnrollmentService:
         # restart — and `connection_epoch = connection_epoch + 1` is evaluated
         # against the committed row under PostgreSQL's row lock, so the
         # increments cannot be lost without the lock's cost.
+        #
+        # Self-description is written only when the agent supplies it, which
+        # on this path it usually does not: the connect handler has a
+        # credential and a protocol version and nothing else, so these three
+        # arrive as None on every ordinary reconnection.
+        #
+        # They were written unconditionally, and that erased what the host had
+        # already reported. The consequence was not cosmetic: `agent_version`
+        # is what the update planner compares against the manifest, so for the
+        # window between a reconnect and the first heartbeat every host's plan
+        # was `unknown_version` and the fleet's version distribution read
+        # "unknown" — across the *whole fleet at once* after a controller
+        # restart, which is exactly when somebody is looking. Found by
+        # `update-e2e.sh` §16, forty milliseconds after a reconnect.
+        #
+        # The same rule `record_heartbeat` already applied, and the same rule
+        # the protocol's `omitempty` fields are documented by: an agent that
+        # does not say must not be read as saying nothing.
+        description: dict[str, Any] = {}
+        if agent_version is not None:
+            description["agent_version"] = _bounded(agent_version, AGENT_VERSION_MAX_LENGTH)
+        if platform is not None:
+            description["platform"] = _bounded(platform, PLATFORM_MAX_LENGTH)
+        if agent_started_at is not None:
+            description["agent_started_at"] = agent_started_at
+
         epoch = (
             await db.execute(
                 sql_update(Host)
@@ -548,9 +574,7 @@ class AgentEnrollmentService:
                     last_connected_at=moment,
                     last_heartbeat_at=moment,
                     protocol_version=protocol_version,
-                    agent_version=_bounded(agent_version, AGENT_VERSION_MAX_LENGTH),
-                    platform=_bounded(platform, PLATFORM_MAX_LENGTH),
-                    agent_started_at=agent_started_at,
+                    **description,
                 )
                 .returning(Host.connection_epoch)
             )

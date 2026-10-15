@@ -47,10 +47,14 @@ import type {
   ModuleDescriptor,
   OwnSession,
   StoredSetting,
+  CreateRolloutRequest,
+  Rollout,
+  RolloutMember,
   UpdateJob,
   UpdatePlan,
   UserRole,
 } from '@/api/types';
+import { CONTRACT_MODULES } from '@/test/module-catalogue.generated';
 
 export const TEST_CSRF_TOKEN = 'test-csrf-token-value';
 
@@ -249,113 +253,23 @@ export function makeHost(overrides: Partial<Host> = {}): Host {
 
 /** One recorded request, for asserting on headers and bodies. */
 /**
- * The module catalogue, matching `contracts/monitoring-modules.json`.
+ * The module catalogue, as the controller's registry defines it.
  *
- * Five modules, because that is what the registry declares — not two. The
- * floors are the real ones: a test that used 1 s everywhere would not notice
- * an interface that offered an interval the server refuses.
+ * Re-exported from a generated file rather than written here. It used to be
+ * a hand-made transcription of `contracts/monitoring-modules.json`, kept
+ * faithful by a comment asking the next reader to keep it faithful — and it
+ * fell six modules behind during Operation Horizon without a single test
+ * failing, because the only thing that could have noticed the drift was the
+ * copy itself.
+ *
+ * `scripts/contracts.sh` writes `module-catalogue.generated.ts` from the same
+ * registry that produces the JSON, and `make check-contract` fails when the
+ * committed file is stale. The generated file lives under `apps/web` rather
+ * than being imported from `contracts/` because the client image is built
+ * from this directory alone: a test importing `../../../../contracts/`
+ * type-checks locally and breaks `docker compose build`.
  */
-/**
- * The module catalogue.
- *
- * Transcribed from `contracts/monitoring-modules.json`, which is generated
- * from the server's registry and drift-checked by `make check-contract`. That
- * file is the source of truth; this is a copy because Vite will not import
- * from outside the project root and widening its allowed paths for a test
- * fixture is not a trade worth making.
- *
- * Kept faithful on purpose. Five modules, because that is what the registry
- * declares — not the two that are most interesting — and the real interval
- * floors, which differ per module: a fixture using 1 s everywhere would not
- * notice an interface offering an interval the server refuses. The metric ids
- * are the registry's too (`used`, not `used_bytes`); the interface displays
- * `metric_name` and never branches on the id, but a fixture that disagrees
- * with reality misleads whoever reads it next.
- */
-export const FAKE_MODULES: readonly ModuleDescriptor[] = [
-  {
-    id: 'cpu',
-    name: 'CPU utilisation',
-    description: 'Processor utilisation, derived from /proc/stat deltas.',
-    platform: 'linux',
-    default_interval_seconds: 10,
-    min_interval_seconds: 1,
-    schedule_kinds: ['interval'],
-    requires_privileges: false,
-    allows_duplicate_runs: true,
-    data_schema_version: 1,
-    metrics: [
-      { id: 'utilisation', name: 'CPU utilisation', unit: 'percent', kind: 'gauge', label_keys: [] },
-      { id: 'core_utilisation', name: 'Per-core utilisation', unit: 'percent', kind: 'gauge', label_keys: ['core'] },
-      { id: 'logical_cpus', name: 'Logical CPUs', unit: 'count', kind: 'gauge', label_keys: [] },
-    ],
-  },
-  {
-    id: 'memory',
-    name: 'Memory',
-    description: 'Physical memory in use, from /proc/meminfo.',
-    platform: 'linux',
-    default_interval_seconds: 10,
-    min_interval_seconds: 1,
-    schedule_kinds: ['interval'],
-    requires_privileges: false,
-    allows_duplicate_runs: true,
-    data_schema_version: 1,
-    metrics: [
-      { id: 'utilisation', name: 'Memory used', unit: 'percent', kind: 'gauge', label_keys: [] },
-      { id: 'total', name: 'Total memory', unit: 'bytes', kind: 'gauge', label_keys: [] },
-      { id: 'available', name: 'Available memory', unit: 'bytes', kind: 'gauge', label_keys: [] },
-      { id: 'used', name: 'Used memory', unit: 'bytes', kind: 'gauge', label_keys: [] },
-    ],
-  },
-  {
-    id: 'swap',
-    name: 'Swap',
-    description: 'Swap in use. Reports nothing on a host with no swap.',
-    platform: 'linux',
-    default_interval_seconds: 10,
-    min_interval_seconds: 1,
-    schedule_kinds: ['interval'],
-    requires_privileges: false,
-    allows_duplicate_runs: true,
-    data_schema_version: 1,
-    metrics: [
-      { id: 'utilisation', name: 'Swap used', unit: 'percent', kind: 'gauge', label_keys: [] },
-      { id: 'total', name: 'Total swap', unit: 'bytes', kind: 'gauge', label_keys: [] },
-      { id: 'used', name: 'Used swap', unit: 'bytes', kind: 'gauge', label_keys: [] },
-    ],
-  },
-  {
-    id: 'load',
-    name: 'Load average',
-    description: 'One, five and fifteen minute load averages.',
-    platform: 'linux',
-    default_interval_seconds: 30,
-    min_interval_seconds: 5,
-    schedule_kinds: ['interval'],
-    requires_privileges: false,
-    allows_duplicate_runs: true,
-    data_schema_version: 1,
-    metrics: [
-      { id: 'average', name: 'Load average', unit: 'load', kind: 'gauge', label_keys: ['window'] },
-    ],
-  },
-  {
-    id: 'uptime',
-    name: 'System uptime',
-    description: 'How long the host has been running.',
-    platform: 'linux',
-    default_interval_seconds: 300,
-    min_interval_seconds: 60,
-    schedule_kinds: ['interval'],
-    requires_privileges: false,
-    allows_duplicate_runs: true,
-    data_schema_version: 1,
-    metrics: [
-      { id: 'seconds', name: 'System uptime', unit: 'seconds', kind: 'gauge', label_keys: [] },
-    ],
-  },
-];
+export const FAKE_MODULES: readonly ModuleDescriptor[] = CONTRACT_MODULES;
 
 /** A series descriptor, with the registry names the API decorates it with. */
 export function makeSeries(overrides: Partial<MetricSeries> = {}): MetricSeries {
@@ -519,6 +433,15 @@ export type FakeBackendState = {
   /** What `GET /updates/history` answers. */
   updateHistory: UpdateJob[];
 
+  /**
+   * What `GET /updates/rollouts` answers.
+   *
+   * Empty by default, which is the state of every installation: a rollout is
+   * something somebody creates, and a fake whose default was "a rollout is
+   * running" would make the empty state the one nobody tested.
+   */
+  rollouts: Rollout[];
+
   /* --- Phase 2: monitoring configuration --- */
 
   /**
@@ -553,6 +476,29 @@ export type FakeBackendState = {
   metricResolution: string;
   /** Total raw samples stored per host, for the status endpoint. */
   metricSampleCount: Record<string, number>;
+  /**
+   * Per-host, per-module collector health, keyed `hostId` then `moduleId`.
+   *
+   * Empty by default — "no module has ever failed" is the resting state of a
+   * working installation, and a fake whose default was "everything is
+   * failing" would make the ordinary case the one nobody tested.
+   */
+  moduleHealth: Record<string, Record<string, ModuleHealthSeed>>;
+};
+
+/**
+ * What one module's collector is doing, as a test states it.
+ *
+ * Deliberately not the full API shape: a test saying "docker is failing with
+ * this message" should not also have to supply four timestamps, and the
+ * handler derives the ones that follow from the two that matter.
+ */
+export type ModuleHealthSeed = {
+  /** The agent's own words. Null for a module that is collecting fine. */
+  last_error?: string | null;
+  consecutive_failures?: number;
+  /** Omit to derive from `consecutive_failures`. */
+  last_reported_at?: string | null;
 };
 
 export type FakeBackend = {
@@ -660,11 +606,13 @@ export function installFakeBackend(initial: Partial<FakeBackendState> = {}): Fak
     metricPoints: {},
     metricResolution: 'raw',
     metricSampleCount: {},
+    moduleHealth: {},
     enrollmentCredential: 'TEST-ENROLMENT-CREDENTIAL-0000000000000000',
     agentReleases: null,
     updateOverview: null,
     hostUpdateStatuses: [],
     updateHistory: [],
+    rollouts: [],
     ...initial,
   };
 
@@ -939,6 +887,69 @@ export function installFakeBackend(initial: Partial<FakeBackendState> = {}): Fak
       const refused = requireSession();
       if (refused) return refused;
       return json({ jobs: state.updateHistory, next_before: null });
+    }
+
+    if (path.endsWith('/updates/rollouts') && method === 'GET') {
+      const refused = requireSession();
+      if (refused) return refused;
+      return json(state.rollouts);
+    }
+
+    if (path.endsWith('/updates/rollouts') && method === 'POST') {
+      const refused = requireSession();
+      if (refused) return refused;
+      if (state.session && state.session.role !== 'admin') {
+        return envelope(403, 'insufficient_permissions', 'Administrator role required.');
+      }
+      const payload = (body ?? {}) as Partial<CreateRolloutRequest>;
+      const hostIds = payload.host_ids ?? [];
+      const created = {
+        ...makeRollout({
+          rollout_id: `r-${String(state.rollouts.length + 1)}`,
+          name: payload.name ?? 'rollout',
+          to_version: payload.to_version ?? '0.0.0',
+          state: 'pending' as const,
+          batch_size: payload.batch_size ?? 5,
+          failure_tolerance: payload.failure_tolerance ?? 0,
+          health_check_seconds: payload.health_check_seconds ?? 120,
+          total: hostIds.length,
+          pending: hostIds.length,
+          current_batch: 0,
+          members: hostIds.map((hostId, index) => ({
+            host_id: hostId,
+            batch: index === 0 ? 0 : 1,
+            state: 'pending' as const,
+            healthy: false,
+            detail: null,
+          })),
+        }),
+      };
+      state.rollouts.push(created);
+      return json(created, 201);
+    }
+
+    // Pause, resume and cancel. Administrator only, as the server enforces —
+    // asserted here so a client that offered the control to a viewer would
+    // fail rather than silently succeed against a permissive fake.
+    const rolloutControl = /\/updates\/rollouts\/([^/]+)\/(pause|resume|cancel)$/.exec(path);
+    if (rolloutControl && method === 'POST') {
+      const refused = requireSession();
+      if (refused) return refused;
+      if (state.session && state.session.role !== 'admin') {
+        return envelope(403, 'insufficient_permissions', 'Administrator role required.');
+      }
+      const [, rolloutId, action] = rolloutControl;
+      const found = state.rollouts.find((entry) => entry.rollout_id === rolloutId);
+      if (!found) {
+        return envelope(404, 'not_found', 'No such rollout.');
+      }
+      const payload = (body ?? {}) as { override_failures?: boolean };
+      found.state =
+        action === 'pause' ? 'paused' : action === 'cancel' ? 'cancelled' : 'running';
+      if (action === 'resume' && payload.override_failures === true) {
+        found.failures_overridden = true;
+      }
+      return json(found);
     }
 
     if (path.endsWith('/update-policy') && method === 'PUT') {
@@ -1651,11 +1662,24 @@ export function installFakeBackend(initial: Partial<FakeBackendState> = {}): Fak
               .filter((value): value is string => value !== null)
               .sort()
               .at(-1);
+            const seed = state.moduleHealth[hostId]?.[descriptor.id];
+            const failures = seed?.consecutive_failures ?? (seed?.last_error ? 1 : 0);
+            // A module with a health seed has been heard from; one without
+            // has not. That distinction is the whole point of the field —
+            // "never reported" is not "working" — so the fake has to be able
+            // to produce both, and does not default to the reassuring one.
+            const reported =
+              seed === undefined ? null : (seed.last_reported_at ?? last ?? new Date().toISOString());
             return {
               module: descriptor.id,
               module_name: descriptor.name,
               series_count: owned.length,
               last_sample_at: last ?? null,
+              last_reported_at: reported,
+              last_success_at: failures > 0 ? (last ?? null) : reported,
+              last_error_at: seed?.last_error ? reported : null,
+              last_error: seed?.last_error ?? null,
+              consecutive_failures: failures,
             };
           }),
         });
@@ -1731,4 +1755,55 @@ const USERNAME_BY_ROLE: Record<UserRole, string> = {
 
 export function userWithRole(role: UserRole): CurrentUser {
   return makeUser({ role, username: USERNAME_BY_ROLE[role] });
+}
+
+/**
+ * A rollout, with the cautious defaults the API has.
+ *
+ * `members` is empty by default and a caller supplies them; the counts are
+ * not derived from the members on purpose, because the server sends both and
+ * a test that wanted them to disagree — a member list that has not caught up
+ * with the counts — should be able to say so.
+ */
+export function makeRollout(overrides: Partial<Rollout> = {}): Rollout {
+  return {
+    rollout_id: 'r-1',
+    name: 'to 0.2.0',
+    to_version: '0.2.0',
+    state: 'canary',
+    canary_count: 1,
+    batch_size: 5,
+    failure_tolerance: 0,
+    health_check_seconds: 120,
+    offline_deadline_seconds: 3600,
+    failures_overridden: false,
+    window: null,
+    paused_reason: null,
+    created_at: new Date(Date.now() - 60_000).toISOString(),
+    started_at: new Date(Date.now() - 30_000).toISOString(),
+    finished_at: null,
+    total: 0,
+    succeeded: 0,
+    failed: 0,
+    skipped: 0,
+    running: 0,
+    pending: 0,
+    current_batch: 0,
+    members: [],
+    ...overrides,
+  };
+}
+
+/** One host's place in a rollout. */
+export function makeRolloutMember(
+  overrides: Partial<RolloutMember> = {},
+): RolloutMember {
+  return {
+    host_id: 'h-1',
+    batch: 0,
+    state: 'pending',
+    healthy: false,
+    detail: null,
+    ...overrides,
+  };
 }

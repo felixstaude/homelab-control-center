@@ -37,10 +37,11 @@ from __future__ import annotations
 import dataclasses
 import uuid
 from datetime import UTC, datetime, time
-from typing import TYPE_CHECKING, Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, Final, Literal
 
 from fastapi import APIRouter, Depends, Query, status
 from pydantic import BaseModel, Field, field_validator, model_validator
+from sqlalchemy import select
 from starlette.requests import HTTPConnection
 
 from hcc import __version__
@@ -52,9 +53,19 @@ from hcc.logging import get_logger
 from hcc.models.updates import (
     ROLLOUT_NAME_MAX_LENGTH,
     VERSION_MAX_LENGTH,
+    UpdateRollout,
+    UpdateState,
     UpdateTrigger,
 )
 from hcc.services.hosts import HostNotFoundError
+from hcc.services.rollouts import (
+    MAX_ROLLOUT_HOSTS,
+    MemberOutcome,
+    RolloutInvalidError,
+    RolloutNotFoundError,
+    RolloutNotResumableError,
+    RolloutService,
+)
 from hcc.services.updates import (
     MAX_HISTORY_LIMIT,
     UpdateAlreadyRunningError,
@@ -928,3 +939,569 @@ async def expire_stale_updates(
         expired = await updates.expire_stale(db, now=datetime.now(UTC))
         await db.commit()
     return [UpdateJobResponse.of(job) for job in expired]
+
+
+# ---------------------------------------------------------------------------
+# Staged rollouts
+#
+# Evergreen created the tables and nothing drove one. These are the endpoints
+# for hcc/services/rollouts.py — create, inspect, pause, resume, cancel.
+#
+# Creating a rollout starts nothing. A created rollout is `pending` until a
+# background pass picks it up, which is what makes "create it now, let it run
+# inside its window tonight" work and what keeps the request that creates it
+# from performing forty installs synchronously.
+# ---------------------------------------------------------------------------
+
+
+class RolloutMemberResponse(BaseModel):
+    """One host's place in a rollout, and where it has got to."""
+
+    host_id: uuid.UUID
+    batch: int = Field(description="0 is the canary; 1 and up are the batches, in order.")
+    state: str = Field(description="pending | running | succeeded | failed | skipped")
+    healthy: bool = Field(
+        description=(
+            "Whether the post-install health check has passed. False while a host "
+            "is still settling, and false for one that installed and then went "
+            "away — which is the distinction the next batch waits on."
+        )
+    )
+    detail: str | None = None
+
+
+class RolloutResponse(BaseModel):
+    """A rollout and its current progress."""
+
+    rollout_id: uuid.UUID
+    name: str
+    to_version: str
+    state: str = Field(description="pending | canary | running | paused | completed | cancelled")
+    canary_count: int
+    batch_size: int
+    failure_tolerance: int
+    health_check_seconds: int
+    offline_deadline_seconds: int
+    failures_overridden: bool
+    window: MaintenanceWindowResponse | None = None
+    paused_reason: str | None = None
+    created_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    total: int
+    succeeded: int
+    failed: int
+    skipped: int
+    running: int
+    pending: int
+    current_batch: int | None = None
+    members: list[RolloutMemberResponse] = Field(default_factory=list)
+
+    @classmethod
+    def of(
+        cls,
+        rollout: UpdateRollout,
+        outcomes: list[MemberOutcome],
+        window: MaintenanceWindow | None,
+    ) -> RolloutResponse:
+        unfinished = [outcome for outcome in outcomes if not outcome.is_finished]
+        return cls(
+            rollout_id=rollout.id,
+            name=rollout.name,
+            to_version=rollout.to_version,
+            state=rollout.state,
+            canary_count=rollout.canary_count,
+            batch_size=rollout.batch_size,
+            failure_tolerance=rollout.failure_tolerance,
+            health_check_seconds=rollout.health_check_seconds,
+            offline_deadline_seconds=rollout.offline_deadline_seconds,
+            failures_overridden=rollout.failures_overridden,
+            window=(
+                None
+                if window is None
+                else MaintenanceWindowResponse(
+                    timezone=window.timezone,
+                    weekdays=list(window.weekdays),
+                    start=window.start.strftime("%H:%M"),
+                    end=window.end.strftime("%H:%M"),
+                    description=window.describe(),
+                )
+            ),
+            paused_reason=rollout.paused_reason,
+            created_at=rollout.created_at,
+            started_at=rollout.started_at,
+            finished_at=rollout.finished_at,
+            total=len(outcomes),
+            succeeded=sum(1 for o in outcomes if o.state == "succeeded"),
+            failed=sum(1 for o in outcomes if o.state == "failed"),
+            skipped=sum(1 for o in outcomes if o.state == "skipped"),
+            running=sum(1 for o in outcomes if o.state == "running"),
+            pending=sum(1 for o in outcomes if o.state == "pending"),
+            current_batch=min((o.batch for o in unfinished), default=None),
+            members=[
+                RolloutMemberResponse(
+                    host_id=outcome.host_id,
+                    batch=outcome.batch,
+                    state=outcome.state,
+                    healthy=outcome.healthy,
+                    detail=outcome.detail,
+                )
+                for outcome in outcomes
+            ],
+        )
+
+
+class CreateRolloutRequest(BaseModel):
+    """Everything a rollout needs, with defaults that are the cautious ones."""
+
+    model_config = {"extra": "forbid"}
+
+    name: str = Field(min_length=1, max_length=120)
+    to_version: str = Field(min_length=1, max_length=64)
+    host_ids: list[uuid.UUID] = Field(min_length=1, max_length=MAX_ROLLOUT_HOSTS)
+    canary_host_ids: list[uuid.UUID] = Field(
+        default_factory=list,
+        max_length=MAX_ROLLOUT_HOSTS,
+        description=(
+            "Hosts to put in batch 0. Fewer than canary_count fills the rest "
+            "from the connected members, because a powered-off canary tells "
+            "nobody anything and would hold the rollout at the offline deadline."
+        ),
+    )
+    canary_count: int = Field(default=1, ge=1, le=50)
+    batch_size: int = Field(
+        default=5,
+        ge=1,
+        le=100,
+        description="How many hosts update at once after the canary, and so the concurrency limit.",
+    )
+    failure_tolerance: int = Field(
+        default=0,
+        ge=0,
+        le=100,
+        description=(
+            "Failures accepted before the rollout pauses itself. Zero by default: "
+            "the first failure stops it, which is what somebody rolling out to a "
+            "fleet they care about wants. Skipped hosts do not count."
+        ),
+    )
+    health_check_seconds: int = Field(
+        default=120,
+        ge=0,
+        le=3600,
+        description=(
+            "How long a host must stay healthy after its install before the next "
+            "batch starts. Zero skips the wait, which makes 'the process "
+            "restarted' the only evidence there is."
+        ),
+    )
+    offline_deadline_seconds: int = Field(default=3600, ge=60, le=7 * 24 * 3600)
+    window: MaintenanceWindowRequest | None = None
+
+
+class RolloutControlRequest(BaseModel):
+    """Pausing, resuming or cancelling, with a reason for the audit trail."""
+
+    model_config = {"extra": "forbid"}
+
+    reason: str = Field(default="", max_length=500)
+    override_failures: bool = Field(
+        default=False,
+        description=(
+            "On resume: go on despite the failures that paused it. Without "
+            "this, a rollout stopped by the failure gate pauses again on the "
+            "next pass — which is correct and would otherwise look like a bug."
+        ),
+    )
+
+
+def get_rollout_service(connection: HTTPConnection) -> RolloutService:
+    """Return the process-wide rollout service."""
+    service: RolloutService = connection.app.state.rollout_service
+    return service
+
+
+RolloutServiceDep = Annotated[RolloutService, Depends(get_rollout_service)]
+
+
+@read_router.get(
+    "/updates/rollouts",
+    summary="Every rollout, newest first",
+    response_model=list[RolloutResponse],
+)
+async def list_rollouts(
+    rollouts: RolloutServiceDep,
+    database: DatabaseDep,
+    limit: Annotated[int, Query(ge=1, le=100)] = 25,
+) -> list[RolloutResponse]:
+    """List rollouts with their progress. Any authenticated role may read."""
+    async with database.session_factory() as db:
+        rows = (
+            (
+                await db.execute(
+                    select(UpdateRollout).order_by(UpdateRollout.created_at.desc()).limit(limit)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return [
+            RolloutResponse.of(
+                rollout,
+                await rollouts.outcomes(db, rollout),
+                rollouts.window_of(rollout),
+            )
+            for rollout in rows
+        ]
+
+
+@read_router.get(
+    "/updates/rollouts/{rollout_id}",
+    summary="One rollout and every member's state",
+    response_model=RolloutResponse,
+)
+async def get_rollout(
+    rollout_id: uuid.UUID,
+    rollouts: RolloutServiceDep,
+    database: DatabaseDep,
+) -> RolloutResponse:
+    async with database.session_factory() as db:
+        try:
+            rollout = await rollouts.get(db, rollout_id)
+        except RolloutNotFoundError as error:
+            raise NotFoundError("No such rollout.") from error
+        return RolloutResponse.of(
+            rollout, await rollouts.outcomes(db, rollout), rollouts.window_of(rollout)
+        )
+
+
+@router.post(
+    "/updates/rollouts",
+    summary="Create a staged rollout",
+    status_code=status.HTTP_201_CREATED,
+    response_model=RolloutResponse,
+)
+async def create_rollout(
+    body: CreateRolloutRequest,
+    rollouts: RolloutServiceDep,
+    database: DatabaseDep,
+    audit: AuditContextDep,
+) -> RolloutResponse:
+    """Create a rollout. Administrator only, and audited.
+
+    **Nothing starts here.** The rollout is `pending` and a background pass
+    starts its canary — within the maintenance window, if one was given.
+    """
+    async with database.session_factory() as db:
+        try:
+            window = None if body.window is None else body.window.to_window()
+        except WindowError as error:
+            raise ValidationFailedError(str(error)) from error
+        try:
+            rollout = await rollouts.create(
+                db,
+                name=body.name,
+                to_version=body.to_version,
+                host_ids=body.host_ids,
+                canary_host_ids=body.canary_host_ids,
+                canary_count=body.canary_count,
+                batch_size=body.batch_size,
+                failure_tolerance=body.failure_tolerance,
+                health_check_seconds=body.health_check_seconds,
+                offline_deadline_seconds=body.offline_deadline_seconds,
+                window=window,
+                context=audit,
+            )
+        except RolloutInvalidError as error:
+            await db.rollback()
+            raise ValidationFailedError(str(error)) from error
+        outcomes = await rollouts.outcomes(db, rollout)
+        response = RolloutResponse.of(rollout, outcomes, rollouts.window_of(rollout))
+        await db.commit()
+        return response
+
+
+@router.post(
+    "/updates/rollouts/{rollout_id}/pause",
+    summary="Stop starting new hosts",
+    response_model=RolloutResponse,
+)
+async def pause_rollout(
+    rollout_id: uuid.UUID,
+    body: RolloutControlRequest,
+    rollouts: RolloutServiceDep,
+    database: DatabaseDep,
+    audit: AuditContextDep,
+) -> RolloutResponse:
+    """Pause. In-flight installs finish; nothing new starts.
+
+    Deliberately not a cancellation of what is running: an install halfway
+    through replacing a binary is the worst moment to abandon, and the
+    agent's own rollback is what handles a bad one.
+    """
+    async with database.session_factory() as db:
+        try:
+            rollout = await rollouts.pause(
+                db, rollout_id, reason=body.reason or "paused by an administrator"
+            )
+        except RolloutNotFoundError as error:
+            raise NotFoundError("No such rollout.") from error
+        except RolloutNotResumableError as error:
+            await db.rollback()
+            raise ValidationFailedError(str(error)) from error
+        response = RolloutResponse.of(
+            rollout, await rollouts.outcomes(db, rollout), rollouts.window_of(rollout)
+        )
+        await db.commit()
+        return response
+
+
+@router.post(
+    "/updates/rollouts/{rollout_id}/resume",
+    summary="Start it again",
+    response_model=RolloutResponse,
+)
+async def resume_rollout(
+    rollout_id: uuid.UUID,
+    body: RolloutControlRequest,
+    rollouts: RolloutServiceDep,
+    database: DatabaseDep,
+    audit: AuditContextDep,
+) -> RolloutResponse:
+    """Resume a paused rollout.
+
+    `override_failures` is the administrator saying "I have looked at the
+    canary that failed and I want the rest anyway". It is recorded on the
+    rollout rather than implied by the resume, because "resumed after a
+    failure" and "resumed after an administrator paused it" are different
+    facts and the second must not be able to look like the first.
+    """
+    async with database.session_factory() as db:
+        try:
+            rollout = await rollouts.resume(
+                db, rollout_id, override_failures=body.override_failures
+            )
+        except RolloutNotFoundError as error:
+            raise NotFoundError("No such rollout.") from error
+        except RolloutNotResumableError as error:
+            await db.rollback()
+            raise ValidationFailedError(str(error)) from error
+        response = RolloutResponse.of(
+            rollout, await rollouts.outcomes(db, rollout), rollouts.window_of(rollout)
+        )
+        await db.commit()
+        return response
+
+
+@router.post(
+    "/updates/rollouts/{rollout_id}/cancel",
+    summary="Abandon a rollout",
+    response_model=RolloutResponse,
+)
+async def cancel_rollout(
+    rollout_id: uuid.UUID,
+    body: RolloutControlRequest,
+    rollouts: RolloutServiceDep,
+    database: DatabaseDep,
+    audit: AuditContextDep,
+) -> RolloutResponse:
+    """Cancel. Members that have not started never will.
+
+    In-flight jobs are **not** cancelled: the job has its own cancel, per
+    host, and reaching for a fleet-level button to abandon an install that is
+    replacing a binary is a bigger hammer than anybody wants.
+    """
+    async with database.session_factory() as db:
+        try:
+            rollout = await rollouts.cancel(
+                db, rollout_id, reason=body.reason or "cancelled by an administrator"
+            )
+        except RolloutNotFoundError as error:
+            raise NotFoundError("No such rollout.") from error
+        response = RolloutResponse.of(
+            rollout, await rollouts.outcomes(db, rollout), rollouts.window_of(rollout)
+        )
+        await db.commit()
+        return response
+
+
+# ---------------------------------------------------------------------------
+# Controller upgrade readiness
+#
+# Read-only, and that is the design rather than a limitation. Replacing the
+# controller means replacing the container this endpoint is served from, and
+# for the application to do that to itself it would need the Docker socket —
+# which is root on the host. A web application with root on its host is a
+# worse problem than any upgrade it could perform.
+#
+# So the controller reports what an upgrade would involve and
+# `scripts/upgrade-controller.sh` performs it, run by an administrator on the
+# machine with the privileges they already have. There is no remote-command
+# API here for the same reason: an endpoint that runs what it is told is what
+# an attacker is looking for.
+# ---------------------------------------------------------------------------
+
+#: Every update state, for the "is anything in flight" count.
+#:
+#: Enumerated from the enum rather than written out in SQL, because
+#: `is_terminal` is the one place that knows which states are terminal and a
+#: second list would be a copy that drifts.
+_ALL_UPDATE_STATES: Final = tuple(state.value for state in UpdateState)
+
+
+class UpgradeReadinessResponse(BaseModel):
+    """What an administrator needs before upgrading the controller."""
+
+    controller_version: str
+    schema_revision: str | None = Field(
+        description="What the database reports. Null on an unmigrated database."
+    )
+    head_revision: str | None = Field(
+        description=(
+            "The newest revision this build's migration files contain. Null "
+            "means the history could not be read, which is 'cannot tell' "
+            "rather than 'nothing pending'."
+        )
+    )
+    pending_revisions: list[str] = Field(
+        description=(
+            "Migrations this build has and the database has not, in the order they would run."
+        )
+    )
+    schema_is_current: bool = Field(
+        description=(
+            "Nothing pending, nothing ahead, and the history was readable. "
+            "False when this build cannot read its own migrations: 'cannot "
+            "tell' is nearer to 'not current' than to 'current', and this "
+            "is the field a script would check before upgrading."
+        )
+    )
+    schema_is_ahead: bool = Field(
+        description=(
+            "The database reports a revision this build does not contain: an "
+            "older image against a newer schema. The dangerous direction, and "
+            "the one no backup taken now would recover."
+        )
+    )
+    connected_hosts: int = Field(
+        description="Agents connected right now. They reconnect by themselves after a restart."
+    )
+    hosts_with_open_updates: int = Field(
+        description=(
+            "Hosts with an update in flight. Restarting the controller during "
+            "one does not break it — the agent reports the result on its next "
+            "connection — but it is worth knowing before choosing the moment."
+        )
+    )
+    advice: list[str] = Field(
+        description="Sentences for an operator, strongest first. Never empty."
+    )
+
+
+@read_router.get(
+    "/controller/upgrade-readiness",
+    summary="What a controller upgrade would involve",
+    response_model=UpgradeReadinessResponse,
+)
+async def upgrade_readiness(database: DatabaseDep) -> UpgradeReadinessResponse:
+    """Report, never act. See the note above this handler.
+
+    Available to every authenticated role: "is the controller current" is a
+    question anybody looking after this installation may ask, and the answer
+    holds no secret — a schema revision and two counts.
+    """
+    from sqlalchemy import func as sql_func
+
+    from hcc.models.host import Host
+    from hcc.models.updates import UpdateJob, is_terminal
+    from hcc.updates.schema import (
+        current_revision,
+        head_revision,
+        knows_revision,
+        pending_revisions,
+    )
+
+    unfinished = [state for state in _ALL_UPDATE_STATES if not is_terminal(state)]
+
+    async with database.session_factory() as db:
+        revision = await current_revision(db)
+        applied = await applied_revisions(db)
+        head = head_revision()
+        pending = list(pending_revisions(applied))
+
+        connected = (
+            await db.execute(
+                select(sql_func.count())
+                .select_from(Host)
+                .where(Host.current_connection_id.is_not(None))
+            )
+        ).scalar_one()
+        open_updates = (
+            await db.execute(
+                select(sql_func.count())
+                .select_from(UpdateJob)
+                .where(UpdateJob.state.in_(unfinished))
+            )
+        ).scalar_one()
+
+    # The database is ahead when it reports a revision this build has never
+    # heard of. Checked before `schema_is_current`, because it is the case
+    # that looks current from a count of pending migrations and is not.
+    #
+    # Asked of the history directly rather than of `applied`: that reports an
+    # unknown head as the head alone — deliberately, so a blocker can name it
+    # — which would make an unknown revision look applied.
+    ahead = revision is not None and not knows_revision(revision)
+    # `head_revision()` is None when this build cannot read its own migration
+    # history. That is not "nothing is pending" and must not be reported as
+    # it: with the history unreadable, `knows_revision` fails open and
+    # `pending_revisions` is empty, so every signal below points at "current"
+    # — which is how a production image once reported "the schema is current"
+    # against a database from the future. See hcc/updates/schema.py.
+    unreadable = head is None
+    advice: list[str] = []
+    if unreadable:
+        advice.append(
+            "This build cannot read its own migration history, so it cannot "
+            "tell whether the schema is current. That is a packaging fault "
+            "rather than a database one: check the image contains its "
+            "`alembic/` directory. Do not read the absence of pending "
+            "migrations below as a reason to upgrade."
+        )
+    if ahead:
+        advice.append(
+            f"This database reports schema revision {revision}, which this build "
+            f"({__version__}) does not contain. It was migrated by a newer "
+            "controller. Running an older image against a newer schema is the one "
+            "direction a backup taken now cannot recover; deploy the newer image "
+            "again."
+        )
+    elif pending:
+        advice.append(
+            f"{len(pending)} migration(s) would run: {', '.join(pending)}. "
+            "Migrations are applied once and are not reversed automatically — take "
+            "a backup first, and verify that it restores."
+        )
+    if open_updates:
+        advice.append(
+            f"{open_updates} host update(s) are in flight. Restarting the controller "
+            "does not break them — the agent reports the result on its next "
+            "connection — but waiting makes the history easier to read."
+        )
+    if not advice:
+        advice.append("The schema is current and nothing is in flight.")
+
+    return UpgradeReadinessResponse(
+        controller_version=__version__,
+        schema_revision=revision,
+        head_revision=head,
+        pending_revisions=pending,
+        # False when the history is unreadable: "cannot tell" is nearer to
+        # "not current" than to "current", and this field is what an
+        # operator — or a script — reads to decide it is safe to proceed.
+        schema_is_current=not pending and not ahead and not unreadable,
+        schema_is_ahead=ahead,
+        connected_hosts=int(connected),
+        hosts_with_open_updates=int(open_updates),
+        advice=advice,
+    )

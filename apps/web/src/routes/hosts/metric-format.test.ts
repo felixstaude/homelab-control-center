@@ -236,3 +236,74 @@ describe('describeSeconds renders a configured interval', () => {
     expect(formatDuration(300).value).toBe('5m 0s');
   });
 });
+
+describe('rates', () => {
+  it('renders a byte rate in binary multiples with a per-second suffix', () => {
+    // Binary, matching formatBytes and every other tool on the host. A
+    // dashboard that disagreed with `iftop` by 4.8% would be read as broken.
+    expect(formatMetricInline(1024 * 1024, 'bytes_per_second')).toBe('1.00 MiB/s');
+    expect(formatMetricInline(0, 'bytes_per_second')).toBe('0 B/s');
+  });
+
+  it('renders disk operations in decimal multiples', () => {
+    // Decimal, not binary: these are counts of events, and nobody has ever
+    // said "1 kibi-IOPS".
+    expect(formatMetricInline(1500, 'operations_per_second')).toBe('1.5 kIOPS');
+    expect(formatMetricInline(42, 'operations_per_second')).toBe('42 IOPS');
+  });
+
+  it('renders packet rates in decimal multiples', () => {
+    expect(formatMetricInline(2_500_000, 'packets_per_second')).toBe('2.5 Mpkt/s');
+  });
+
+  it('renders a link speed in bits, which is the unit the port is sold in', () => {
+    // A "1 Gb" port is 125 MB/s. Rendering it as 125 would make an operator
+    // doubt the whole panel.
+    expect(formatMetricInline(1_000_000_000, 'bits_per_second')).toBe('1 Gbit/s');
+    expect(formatMetricInline(2_500_000_000, 'bits_per_second')).toBe('2.5 Gbit/s');
+  });
+
+  it('still renders an unknown unit as a bare number with a suffix', () => {
+    // The guard that keeps a new backend unit visible rather than hidden.
+    expect(formatMetricInline(4, 'jiffies')).toBe('4 jiffies');
+  });
+});
+
+describe('series ordering across the storage and network modules', () => {
+  it('keeps the catalogue order rather than sorting alphabetically', () => {
+    const ordered = [
+      makeSeries({ module: 'network', metric: 'receive_bytes' }),
+      makeSeries({ module: 'cpu', metric: 'utilisation' }),
+      makeSeries({ module: 'diskio', metric: 'read_bytes' }),
+      makeSeries({ module: 'filesystem', metric: 'used' }),
+    ].sort(compareSeries);
+
+    expect(ordered.map((entry) => entry.module)).toEqual([
+      'cpu',
+      'filesystem',
+      'diskio',
+      'network',
+    ]);
+  });
+});
+
+describe('sensor units', () => {
+  it('renders a temperature with no space before the degree sign', () => {
+    // "32.9 °C" reads as a typographical mistake. Every thermal tool prints
+    // it tight, and so does this.
+    expect(formatMetricInline(32.9, 'celsius')).toBe('32.9°C');
+    expect(formatMetricInline(-5, 'celsius')).toBe('-5.0°C');
+  });
+
+  it('renders a fan speed as a whole number', () => {
+    // A tachometer counts pulses over an interval, so the units digit is
+    // already an approximation and a tenth of an RPM is invented precision.
+    expect(formatMetricInline(1190.4, 'rpm')).toBe('1,190 RPM');
+    expect(formatMetricInline(0, 'rpm')).toBe('0 RPM');
+  });
+
+  it('still puts a space before every other unit', () => {
+    expect(formatMetricInline(1024, 'bytes')).toBe('1.00 KiB');
+    expect(formatMetricInline(9.6, 'percent')).toBe('9.6%');
+  });
+});

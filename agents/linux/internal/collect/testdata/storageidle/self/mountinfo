@@ -1,0 +1,2 @@
+25 30 0:23 / /proc rw,nosuid,nodev,noexec,relatime shared:12 - proc proc rw
+29 30 0:26 / /run rw,nosuid,nodev shared:4 - tmpfs tmpfs rw,size=1636684k

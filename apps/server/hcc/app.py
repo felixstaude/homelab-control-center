@@ -41,6 +41,7 @@ from hcc.services.hosts import HostService
 from hcc.services.metrics import MetricsService
 from hcc.services.monitoring import MonitoringConfigService
 from hcc.services.retention import RetentionService, policy_from_settings
+from hcc.services.rollouts import RolloutService
 from hcc.services.updates import UpdateService
 from hcc.services.users import UserService
 from hcc.updates.schema import applied_revisions
@@ -281,6 +282,72 @@ async def _run_update_policies(
             logger.exception("update_policy_pass_failed")
 
 
+async def _run_rollouts(
+    database: Database,
+    rollouts: RolloutService,
+    settings: Settings,
+    interval_seconds: int,
+) -> None:
+    """Advance every staged rollout on an interval.
+
+    ## Why this is a third task and not more work in the policy pass
+
+    They answer to different people and fail differently. A missed policy
+    pass means a host set to "automatic patch" does not update, which is
+    quiet. A missed rollout pass means an administrator who clicked "roll out
+    to the fleet" watches a canary finish and nothing follow — which looks
+    like the product is broken, because from where they are sitting it is.
+
+    Folding them together would also make one of them the other's blast
+    radius: a manifest that will not load should not stop a rollout whose
+    target version was decided when it was created.
+
+    ## Faster than the policy pass, deliberately
+
+    A rollout is something somebody is *watching*. Five minutes between a
+    canary going healthy and the first batch starting is a product that feels
+    broken; thirty seconds is a product that feels like it is working. The
+    cost is a handful of queries, and a pass with nothing to do returns after
+    one `SELECT`.
+
+    ## Every failure is caught and the loop continues
+
+    The same reasoning as the other two tasks: the task not running is the
+    failure that is invisible, and a rollout that silently stopped being
+    advanced looks exactly like one that is waiting for a health check.
+    """
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            metadata = _load_release_metadata(settings)
+            async with database.session_factory() as db:
+                result = await rollouts.run_pass(
+                    db,
+                    manifest=metadata.manifest,
+                    applied_schema_revisions=await applied_revisions(db),
+                    metadata_authentic=metadata.authentic,
+                )
+                await db.commit()
+            for progress in result.progressed:
+                if not progress.did_something:
+                    continue
+                logger.info(
+                    "rollout_pass",
+                    rollout_id=str(progress.rollout_id),
+                    state=progress.state,
+                    batch=progress.current_batch,
+                    started=len(progress.started),
+                    skipped=len(progress.skipped),
+                    became_healthy=len(progress.became_healthy),
+                    paused=progress.paused_reason is not None,
+                    completed=progress.completed,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("rollout_pass_failed")
+
+
 @dataclasses.dataclass(frozen=True, slots=True)
 class _ReleaseMetadata:
     """The manifest and whether its signature verified."""
@@ -423,11 +490,40 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 ),
             )
 
+        # Staged rollouts. A third task, for the reason _run_rollouts gives:
+        # they fail differently from policies, and folding them together
+        # would make one the other's blast radius.
+        rollout_task: asyncio.Task[None] | None = None
+        if settings.rollout_interval_seconds > 0:
+            rollout_task = asyncio.create_task(
+                _run_rollouts(
+                    database,
+                    app.state.rollout_service,
+                    settings,
+                    settings.rollout_interval_seconds,
+                )
+            )
+        else:
+            # Said at startup. With this off, a rollout an administrator
+            # created stays `pending` for ever — and the interface would show
+            # it as waiting, which is true and gives no hint why.
+            logger.warning(
+                "rollout_execution_disabled",
+                detail=(
+                    "HCC_ROLLOUT_INTERVAL_SECONDS is 0, so staged rollouts are "
+                    "created and never advanced. Nothing starts their canary."
+                ),
+            )
+
         try:
             yield
         finally:
             # Runs even if startup of a later resource fails, so connections
             # are never leaked.
+            if rollout_task is not None:
+                rollout_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+                    await asyncio.wait_for(rollout_task, MAINTENANCE_SHUTDOWN_TIMEOUT_SECONDS)
             if policies is not None:
                 policies.cancel()
                 with contextlib.suppress(asyncio.CancelledError, TimeoutError):
@@ -552,6 +648,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         controller_version=__version__,
         supported_protocol_versions=SUPPORTED_PROTOCOL_VERSIONS,
     )
+    # Staged rollouts, built on the update service rather than beside it: a
+    # rollout *is* a sequence of ordinary update jobs with a gate between the
+    # batches, and giving it its own way to start an update would be a second
+    # code path through the one thing that installs software on hosts.
+    app.state.rollout_service = RolloutService(app.state.update_service)
     # Per *process*, not per application and not shared across workers. This
     # is the honest statement of a real limitation rather than a cache: the
     # connections a worker holds are its own, and connectivity is derived from

@@ -119,6 +119,19 @@ const (
 	DefaultUpdateRequestPath = DefaultStateDir + "/update-request.json"
 	// DefaultUpdateOutcomePath is what the privileged unit writes back.
 	DefaultUpdateOutcomePath = DefaultStateDir + "/update-outcome.json"
+
+	// DefaultUpdateStateDir holds the state only root may change.
+	//
+	// A **sibling** of the state directory rather than a subdirectory of it,
+	// and that placement is the security property rather than a layout
+	// preference: permission to rename or delete a directory entry comes from
+	// the parent directory, so a root-owned directory inside the agent-owned
+	// state directory could be renamed away and replaced by the agent
+	// account. This one needs write access to /var/lib, which the agent does
+	// not have. See internal/install/floor.go.
+	DefaultUpdateStateDir = "/var/lib/" + ServiceName + "-update"
+	// DefaultVersionFloorPath is the anti-rollback floor. See [State].
+	DefaultVersionFloorPath = DefaultUpdateStateDir + "/version-floor.json"
 )
 
 // Modes for everything the installer creates.
@@ -150,6 +163,21 @@ const (
 	// 0640 rather than 0644 anyway — nothing needs to read them but root and
 	// the service account.
 	HandoffFileMode os.FileMode = 0o640
+	// The update state directory is root-owned and **world-readable**, which
+	// is the opposite choice from the state directory next to it and is
+	// deliberate: the agent account must be able to read the floor in order
+	// to refuse an update early and to report it, and must not be able to
+	// write it. Group- or world-writable bits here would defeat the whole
+	// mechanism, so [LoadState] refuses a directory that has them.
+	UpdateStateDirMode os.FileMode = 0o755
+	// The floor is a version number. Not a secret, and readable by the agent
+	// for the same reason the directory is.
+	VersionFloorMode os.FileMode = 0o644
+	// The privileged side's own copy of an archive it is installing from.
+	// 0600: nothing but root has any business reading it, and *nothing at
+	// all* has any business writing it — which is the entire reason the copy
+	// exists. See [ApplyOptions.stageArchivePrivately].
+	PrivateArchiveMode os.FileMode = 0o600
 )
 
 // ErrNoSuchUser reports that an account does not exist.
@@ -258,6 +286,8 @@ func (p Paths) UpdateRequest() string  { return p.join(DefaultUpdateRequestPath)
 func (p Paths) UpdateOutcome() string  { return p.join(DefaultUpdateOutcomePath) }
 func (p Paths) UpdateUnit() string     { return p.join(DefaultUpdateUnitPath) }
 func (p Paths) UpdatePathUnit() string { return p.join(DefaultUpdatePathUnitPath) }
+func (p Paths) UpdateStateDir() string { return p.join(DefaultUpdateStateDir) }
+func (p Paths) VersionFloor() string   { return p.join(DefaultVersionFloorPath) }
 
 // SystemdRuntimeDir is the directory whose existence means systemd is pid 1.
 //

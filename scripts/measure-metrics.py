@@ -35,10 +35,39 @@ What it does **not** measure, and the output says so:
 * A cold cache. PostgreSQL will have everything in shared buffers; a real
   ninety-day query reads from disk.
 
+Two profiles, because the fleet shape changed under this system and the old
+one is no longer representative:
+
+``--profile guide``
+    ``cpu`` and ``memory``, nine samples a collection, **9 series a host**.
+    What `development/ENABLING_MONITORING_DEBIAN.md` tells an operator to
+    enable first, and what every figure before Operation Horizon was measured
+    against.
+
+``--profile full``
+    All eleven modules at the label cardinality of a well-populated homelab
+    host — three filesystems, four block devices, two interfaces, six
+    temperature sensors, five containers, four watched units, eight cores.
+    **164 series a host**, eighteen times the guide profile.
+
+    Each module runs at **its own registry default interval**, not at one
+    flat rate. That matters by a factor of six on `filesystem` alone, whose
+    default is 60 s against `diskio`'s 10 s, and a benchmark that collected
+    everything every ten seconds would overstate a full installation's
+    storage several times over.
+
+The difference is the point. Five of the six modules Operation Horizon added
+are *label-keyed*, so a host's series count stopped being a property of the
+module list and became a property of the machine: a NAS with twelve disks
+and thirty containers produces several times what a laptop does. Everything
+downstream of series count — the latest-values query, the series list, the
+rollup's bucket count — scales with it, and nothing had measured that.
+
 Usage::
 
     make db-up
     ./scripts/measure-metrics.py [--hosts 20] [--hours 6] [--interval 10]
+    ./scripts/measure-metrics.py --profile full
 
 Safety: creates its own database, drops it on every exit path, and never
 connects to the developer's own.
@@ -55,13 +84,181 @@ import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING, Final
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SERVER_DIR = REPO_ROOT / "apps" / "server"
 sys.path.insert(0, str(SERVER_DIR))
 
+if TYPE_CHECKING:
+    from hcc.agents.protocol import MetricSample, TelemetryEntry
+
 # Local development credentials, matching deploy/compose.yaml. Not a secret.
 SUPERUSER_URL = "postgresql://hcc:hcc_local_dev@127.0.0.1:5432/hcc"
+
+#: Label values a reference host produces, per module and label key.
+#:
+#: Taken from the machine the demo runs on rather than invented: a laptop with
+#: three real filesystems (btrfs subvolumes deduplicated), four block devices,
+#: two reportable interfaces after the bridge rule, two hwmon chips with six
+#: temperature sensors between them, five containers and four watched units.
+#: That host produced 65 series, which is what `--profile full` reproduces.
+#:
+#: Written as *label values* rather than as counts so the series names in the
+#: output are readable, and so a reader can see what "four devices" means on
+#: a machine they might recognise.
+_REFERENCE_LABELS: Final = {
+    "cpu": {"core": [str(index) for index in range(8)]},
+    "load": {"window": ["1m", "5m", "15m"]},
+    "filesystem": {"mount": ["/", "/home", "/boot"]},
+    "diskio": {"device": ["nvme0n1", "sda", "dm-0", "md0"]},
+    "network": {"interface": ["br0", "wg0"]},
+    # Keyed by sensor alone, with the chip in the name — which is what the
+    # collector does, because two chips can both have a `temp1`.
+    "sensors": {
+        "sensor": [
+            "coretemp package",
+            "coretemp core0",
+            "coretemp core1",
+            "coretemp core2",
+            "nvme composite",
+            "nvme sensor1",
+        ]
+    },
+    "docker": {"container": ["hcc", "postgres", "caddy", "jellyfin", "syncthing"]},
+    "systemd": {"unit": ["sshd.service", "docker.service", "cron.service", "nginx.service"]},
+}
+
+#: What each profile collects.
+#:
+#: `guide` is pinned to the pair every figure before Operation Horizon was
+#: measured against, so re-running it reproduces the old numbers and the
+#: comparison in `docs/PERFORMANCE.md` §4 means something. `full` is read
+#: from the registry rather than listed, so a module added later is measured
+#: without anybody remembering to add it here.
+PROFILES: Final = {
+    "guide": ("cpu", "memory"),
+    "full": None,
+}
+
+
+def _modules_for(profile: str) -> tuple[str, ...]:
+    """The module ids a profile enables."""
+    from hcc.monitoring import modules as registry
+
+    listed = PROFILES[profile]
+    return listed if listed is not None else tuple(module.id for module in registry.MODULE_LIST)
+
+
+def _plausible(metric_id: str, unit: str, tick: int) -> float:
+    """A value that is in range for its unit and changes between collections.
+
+    In range because the ingestion path does not check ranges and a benchmark
+    storing nonsense would still be storing rows of the right size — but the
+    reliability scenario's "every value is within its unit's range" assertion
+    runs against databases this script's shape informs, and a benchmark that
+    could not satisfy it would be describing something other than the system.
+    Changing because a constant column compresses differently.
+    """
+    if unit == "percent":
+        return float(10 + (tick % 80))
+    if unit == "celsius":
+        return float(35 + (tick % 25))
+    if unit == "bytes":
+        return float(1_000_000_000 + tick * 4096)
+    if unit in {"bytes_per_second", "operations_per_second", "packets_per_second"}:
+        return float(tick % 5000)
+    if unit == "bits_per_second":
+        return 1_000_000_000.0
+    if unit == "rpm":
+        return float(800 + (tick % 1200))
+    if unit == "seconds":
+        return float(86_400 + tick)
+    if unit == "count":
+        # `readonly` and `up` are booleans in a count column, and `restarts`
+        # is a small integer. One expression for all of them: a count that
+        # stays small is true to every one.
+        return float(tick % 3)
+    return float(tick % 100)
+
+
+def _entries_for(
+    modules: tuple[str, ...], at: datetime, tick: int, interval: int
+) -> list[TelemetryEntry]:
+    """The modules due on this tick, built from the registry's declarations.
+
+    Driven by the registry rather than hand-written on both axes:
+
+    * **Which metrics and labels**, so the sample count is whatever the
+      modules actually declare. A hand-written generator would measure the
+      shape somebody remembered rather than the shape that ships.
+    * **How often**, because each module has its own default interval and a
+      real agent honours it. Collecting `filesystem` every ten seconds
+      rather than every sixty overstates its storage sixfold, and the
+      storage figure is the one that ends up in documentation.
+    """
+    from hcc.agents.protocol import MetricSample, TelemetryEntry
+    from hcc.monitoring import modules as registry
+
+    entries: list[TelemetryEntry] = []
+    for module_id in modules:
+        descriptor = registry.descriptor(module_id)
+        # The slower of the tick and the module's own default, rounded to a
+        # whole number of ticks so a 60 s module lands on every sixth tick
+        # of a 10 s run rather than drifting.
+        every = max(1, round(max(interval, descriptor.default_interval_seconds) / interval))
+        if tick % every:
+            continue
+        samples: list[MetricSample] = []
+        for metric in descriptor.metrics:
+            labels = _REFERENCE_LABELS.get(module_id, {})
+            missing = [key for key in metric.label_keys if key not in labels]
+            if missing:
+                # Loud, because the quiet version of this is what the first
+                # run did: `load.average` is keyed by `window`, the table had
+                # no entry for it, and every one of those samples was
+                # *rejected* by the ingestion path — so the benchmark was
+                # reporting throughput for a batch a third of which the
+                # controller threw away.
+                raise SystemExit(
+                    f"_REFERENCE_LABELS has no values for {module_id}.{metric.id} "
+                    f"label(s) {missing}. Add them: a module whose labels are "
+                    f"missing has its samples refused, and the run would measure "
+                    f"a batch the controller discards."
+                )
+            keys = list(metric.label_keys)
+            if not keys:
+                samples.append(
+                    MetricSample(
+                        metric=metric.id, value=_plausible(metric.id, metric.unit.value, tick)
+                    )
+                )
+                continue
+            # One sample per value of the *first* key, with the remaining
+            # keys held at their first value. The registry's metrics are
+            # keyed by one label each except `sensors`, which is keyed by
+            # chip and sensor together — and enumerating that product would
+            # claim twelve sensors on a host that has six.
+            primary = keys[0]
+            fixed = {key: labels[key][0] for key in keys[1:]}
+            for index, value in enumerate(labels[primary]):
+                samples.append(
+                    MetricSample(
+                        metric=metric.id,
+                        labels={primary: value, **fixed},
+                        value=_plausible(metric.id, metric.unit.value, tick + index),
+                    )
+                )
+        entries.append(
+            TelemetryEntry(
+                module=module_id,
+                schema_version=descriptor.data_schema_version,
+                collected_at=at,
+                duration_ms=2,
+                samples=samples,
+            )
+        )
+    return entries
 
 
 def log(message: str) -> None:
@@ -94,7 +291,22 @@ async def main() -> int:
         "--interval",
         type=int,
         default=10,
-        help="Collection interval in seconds. Default 10, the registry's default.",
+        help=(
+            "The tick, in seconds. Each module collects at the slower of this "
+            "and its own registry default, which is what a real agent does. "
+            "Default 10."
+        ),
+    )
+    parser.add_argument(
+        "--profile",
+        choices=sorted(PROFILES),
+        default="guide",
+        help=(
+            "Which modules each host collects. 'guide' is cpu and memory, the "
+            "pair the Debian guide enables and every pre-Horizon figure was "
+            "measured against. 'full' is all eleven at a reference host's "
+            "label cardinality. Default guide."
+        ),
     )
     arguments = parser.parse_args()
 
@@ -198,11 +410,9 @@ async def measure_everything(
     result("collections per host", str(per_host_ticks))
 
     # --- Hosts and the enabled modules ------------------------------------
-    #
-    # cpu and memory, which is what the Debian guide tells an operator to
-    # enable first — so the shape measured is the shape most installations
-    # will have.
-    enabled = frozenset({"cpu", "memory"})
+    modules = _modules_for(arguments.profile)
+    enabled = frozenset(modules)
+    result("profile", f"{arguments.profile} ({len(modules)} modules)")
     host_ids: list[uuid.UUID] = []
     async with session_factory() as db:
         for index in range(host_count):
@@ -240,33 +450,18 @@ async def measure_everything(
 
     def batch_for(host_index: int, tick: int) -> list[TelemetryEntry]:
         at = start + timedelta(seconds=tick * interval)
-        # The real shape: cpu reports utilisation and a logical-cpu count,
-        # memory reports four values. Nine samples per collection for the two
-        # modules the guide enables.
-        return [
-            TelemetryEntry(
-                module="cpu",
-                schema_version=1,
-                collected_at=at,
-                duration_ms=2,
-                samples=[
-                    MetricSample(metric="utilisation", value=10.0 + (tick % 70)),
-                    MetricSample(metric="logical_cpus", value=8),
-                ],
-            ),
-            TelemetryEntry(
-                module="memory",
-                schema_version=1,
-                collected_at=at,
-                duration_ms=1,
-                samples=[
-                    MetricSample(metric="utilisation", value=40.0 + (tick % 30)),
-                    MetricSample(metric="total", value=33_394_307_072),
-                    MetricSample(metric="available", value=20_000_000_000 - tick),
-                    MetricSample(metric="used", value=13_000_000_000 + tick),
-                ],
-            ),
-        ]
+        return _entries_for(modules, at, tick, interval)
+
+    # Per *hour*, not per collection: with each module on its own interval
+    # the per-collection figure varies, and an hour is the unit every
+    # extrapolation below multiplies. Counted by running a whole hour of
+    # ticks rather than by arithmetic, so a module's interval rounding is
+    # included rather than assumed away.
+    ticks_per_hour = max(1, 3600 // interval)
+    per_hour = sum(
+        len(entry.samples) for tick in range(ticks_per_hour) for entry in batch_for(0, tick)
+    )
+    result("samples per host per hour", f"{per_hour:,}")
 
     samples_written = 0
     durations: list[float] = []
@@ -327,16 +522,54 @@ async def measure_everything(
         if raw_rows:
             per_row = raw_bytes / raw_rows
             result("per sample", f"{per_row:.0f} bytes")
-            # Extrapolation, labelled. A hundred hosts collecting cpu and
-            # memory every ten seconds is 9 samples per 10 s per host.
-            daily = 100 * 9 * (86_400 / 10)
+            # Extrapolation, labelled, and now derived from the profile
+            # rather than from a hardcoded 9. The full profile is about
+            # eight times the guide's, which is the figure that matters:
+            # the old number was the only one in the documentation and it
+            # described a fleet nobody will have after Operation Horizon.
+            daily = 100 * per_hour * 24
             result(
-                "100 hosts, 7 days raw (extrapolated)",
+                f"100 hosts, 7 days raw, {arguments.profile} (extrapolated)",
                 f"{daily * 7 * per_row / 1024**3:.1f} GiB",
+            )
+            result(
+                f"100 hosts, 90 days at the 1h tier, {arguments.profile} (extrapolated)",
+                # The tier retention actually keeps for three months. Uses
+                # the measured 1h-row cost further down where there is one;
+                # here it is the raw cost, which overstates, and that is
+                # said rather than quietly corrected.
+                f"≤{100 * per_hour / 60 * 24 * 90 * per_row / 1024**3:.1f} GiB"
+                " (raw per-row cost; the 1h row is wider but there are 60x fewer)",
             )
     finally:
         await connection.close()
     result("live partitions", str(partitions))
+
+    # --- Series cardinality -----------------------------------------------
+    #
+    # The measurement Operation Horizon made necessary. Five of the six
+    # modules it added are label-keyed, so a host's series count stopped
+    # being a property of the module list and became a property of the
+    # machine. Everything that iterates series — the latest-values query,
+    # the series list, the rollup's bucket count — scales with this number,
+    # and before this section nothing reported it.
+    heading("== Series cardinality, which is now a property of the host ==")
+    connection = await asyncpg.connect(url)
+    try:
+        per_host = await connection.fetch(
+            "SELECT module, count(*) AS series FROM metric_series "
+            "WHERE host_id = $1 GROUP BY module ORDER BY count(*) DESC, module",
+            host_ids[0],
+        )
+        for row in per_host:
+            result(f"  series for {row['module']}", str(row["series"]))
+        per_host_series = sum(row["series"] for row in per_host)
+        result("series per host", str(per_host_series))
+        # The number a fleet multiplies. Quoted because the rollup job walks
+        # every series in the installation on every pass.
+        result("series in the installation", f"{series_rows:,}")
+    finally:
+        await connection.close()
 
     # --- Query latency ----------------------------------------------------
     heading("== Query latency, warm cache ==")
@@ -351,12 +584,16 @@ async def measure_everything(
                 samples.append(time.perf_counter() - began_at)
         result(label, f"median {statistics.median(samples) * 1000:.1f} ms")
 
+    # These three are the ones that scale with series count rather than with
+    # sample count, which is why the profile matters to them and not to the
+    # range queries below.
     await timed(
         "latest values for one host",
         lambda db: metrics.latest_for_host(db, probe_host, within=timedelta(hours=hours + 1)),
     )
     await timed("series list for one host", lambda db: metrics.series_for_host(db, probe_host))
     await timed("sample count for one host", lambda db: metrics.sample_count(db, probe_host))
+    await timed("module health for one host", lambda db: metrics.health_for_host(db, probe_host))
 
 
     async with session_factory() as db:
@@ -508,6 +745,39 @@ async def measure_everything(
         )
     else:
         result("hit the per-run bound", f"no (bound is {MAX_BUCKETS_PER_RUN:,})")
+
+    # The ceiling the bound implies, which is the number this whole section
+    # exists to produce.
+    #
+    # The five-minute tier writes one row per series per bucket, the
+    # maintenance job runs every `metrics_maintenance_interval_seconds` (300
+    # by default) and a bucket is five minutes wide — so a steady-state pass
+    # has exactly one bucket per series to write. The bound is therefore a
+    # bound on **series in the installation**, not on hosts, and with
+    # label-keyed modules those are very different numbers.
+    #
+    # Over the ceiling the job never catches up: each pass writes 5,000 of
+    # the N buckets that accrued and falls further behind every five
+    # minutes. That is a cliff rather than a slope, and it is why this is
+    # computed and printed rather than left as arithmetic in a document.
+    from hcc.config import Settings
+
+    maintenance_seconds = Settings.model_fields[
+        "metrics_maintenance_interval_seconds"
+    ].default
+    buckets_per_pass = max(1, round(maintenance_seconds / 300))
+    ceiling = MAX_BUCKETS_PER_RUN // buckets_per_pass
+    result("series the 5m tier can sustain", f"{ceiling:,}")
+    if per_host_series:
+        result(
+            f"  which is, at {per_host_series} series a host",
+            f"{ceiling // per_host_series:,} hosts on the {arguments.profile} profile",
+        )
+    if series_rows > ceiling:
+        result(
+            "  this installation",
+            f"{series_rows:,} series — OVER the ceiling; the rollup job would never catch up",
+        )
 
     connection = await asyncpg.connect(url)
     try:

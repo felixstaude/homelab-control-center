@@ -312,6 +312,44 @@ check-artifacts: artifacts ## Build, verify, and prove the verifier's refusals f
 	@./scripts/verify-artifacts.sh --execute
 	@./scripts/verify-artifacts.sh --self-test
 
+# ============================================================================
+# The demo
+# ============================================================================
+
+.PHONY: demo
+demo: ## Start an isolated Homelab Control Center you can sign in to
+	@./scripts/demo.sh up
+
+.PHONY: demo-status
+demo-status: ## What the demo is running, and whether telemetry is arriving
+	@./scripts/demo.sh status
+
+.PHONY: demo-logs
+demo-logs: ## Follow the demo's controller and agent logs
+	@./scripts/demo.sh logs
+
+.PHONY: demo-down
+demo-down: ## Stop the demo, keeping its data
+	@./scripts/demo.sh down
+
+.PHONY: demo-clean
+demo-clean: ## Stop the demo and delete its database, credentials and logs
+	@./scripts/demo.sh down --clean
+
+.PHONY: release-candidate
+release-candidate: ## Exercise the whole release pipeline with a throwaway key (publishes nothing)
+# Builds, verifies, describes and signs — with a key generated for this run
+# and destroyed at the end. The point is to find a broken release *pipeline*
+# before a release day rather than during one, and the signature it produces
+# establishes nothing about publisher identity; prepare-release.sh says so and
+# writes a marker file beside the manifest.
+	@./scripts/prepare-release.sh \
+		--version $$(cat VERSION) \
+		--base-url https://example.invalid/release-candidate \
+		--protocol-versions 1,2 \
+		--output dist/release-candidate \
+		--ephemeral-key
+
 .PHONY: check-reproducible
 check-reproducible: ## Build twice and compare every digest
 	@./scripts/check-reproducible.sh
@@ -388,8 +426,11 @@ install-matrix: ## Install the agent into a real-systemd container and exercise 
 	@./scripts/install-matrix.sh
 
 .PHONY: reliability-e2e
-reliability-e2e: ## Kill the controller, the agent and the database connections; check what survived (requires make db-up)
+reliability-e2e: ## Kill the controller, the agent and the database connections, pull a disk, delete a collector's source; check what survived (requires make db-up)
 # Its own disposable database and port. The "database outage" terminates only
 # this database's own sessions — the server is never stopped and the
-# developer's database is never touched. See scripts/reliability-e2e.sh.
+# developer's database is never touched. The failure injection runs against a
+# synthetic /proc and /sys under the script's own mktemp directory, so
+# "removing a disk" is a line deleted from a file it wrote and this machine's
+# real devices are never enumerated. See scripts/reliability-e2e.sh.
 	@./scripts/reliability-e2e.sh

@@ -447,6 +447,38 @@ func (c *collector) checkInstallation(information buildinfo.Info) {
 			"no unit at %s", paths.Unit(),
 		), "the agent is not installed as a service; `hcc-agent install` writes one")
 	}
+
+	c.checkVersionFloor()
+}
+
+// checkVersionFloor reports this host's anti-rollback state.
+//
+// Worth a line of its own because the floor is the one thing in the update
+// path that can refuse a correctly signed, correctly authorised instruction —
+// so "the controller says update and nothing happens" has an answer here, and
+// an operator who does not know the floor exists has no way to find it.
+func (c *collector) checkVersionFloor() {
+	path := c.options.Paths.VersionFloor()
+	state, err := install.LoadState(path)
+	switch {
+	case err != nil:
+		c.fail(sectionInstallation, "version floor", err.Error(),
+			fmt.Sprintf("every update is refused until this is resolved. Inspect %s; "+
+				"it should be a root-owned file in a root-owned directory", path))
+	case state == nil:
+		// Not a warning. It is the state of every host installed before the
+		// floor existed, and of every development build, and saying "problem"
+		// about the normal case trains people to ignore the output.
+		c.ok(sectionInstallation, "version floor", fmt.Sprintf(
+			"none recorded at %s; this host does not yet refuse older releases", path,
+		))
+	default:
+		detail := fmt.Sprintf("refuses anything older than %s", state.Floor)
+		if state.HighestInstalled != "" && state.HighestInstalled != state.Floor {
+			detail += fmt.Sprintf(" (highest ever installed: %s)", state.HighestInstalled)
+		}
+		c.ok(sectionInstallation, "version floor", detail)
+	}
 }
 
 // --- Configuration ----------------------------------------------------------

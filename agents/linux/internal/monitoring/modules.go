@@ -97,7 +97,7 @@ func (d Descriptor) Accepts(kind string) bool {
 	return false
 }
 
-// intervalOnly is every module in this phase: all five are samplers, and a
+// intervalOnly is every module so far: all of them are samplers, and a
 // sampler on a calendar is a measurement taken at a time chosen for human
 // convenience rather than for the signal.
 var intervalOnly = []string{KindInterval}
@@ -142,6 +142,60 @@ var registry = []Descriptor{
 		Name:               "System uptime",
 		ScheduleKinds:      intervalOnly,
 		MinIntervalSeconds: 60,
+		DataSchemaVersion:  1,
+	},
+	{
+		// Ten seconds: free space is the slowest-moving number here, and the
+		// read is a statfs per mount rather than one pseudo-file, so the cost
+		// scales with the host's mount table.
+		ID:                 "filesystem",
+		Name:               "Filesystem usage",
+		ScheduleKinds:      intervalOnly,
+		MinIntervalSeconds: 10,
+		DataSchemaVersion:  1,
+	},
+	{
+		ID:                 "diskio",
+		Name:               "Disk throughput",
+		ScheduleKinds:      intervalOnly,
+		MinIntervalSeconds: 1,
+		DataSchemaVersion:  1,
+	},
+	{
+		ID:                 "network",
+		Name:               "Network traffic",
+		ScheduleKinds:      intervalOnly,
+		MinIntervalSeconds: 1,
+		DataSchemaVersion:  1,
+	},
+	{
+		// Five seconds: a sysfs read is cheap and a die temperature can move
+		// several degrees in one, but not usefully faster — a thermal trend
+		// is what an operator reads.
+		ID:                 "sensors",
+		Name:               "Temperatures and fans",
+		ScheduleKinds:      intervalOnly,
+		MinIntervalSeconds: 5,
+		DataSchemaVersion:  1,
+	},
+	{
+		// Five seconds: each running container costs two API calls, so this
+		// module's cost scales with the host in a way the pseudo-file
+		// readers do not.
+		ID:                 "docker",
+		Name:               "Containers",
+		ScheduleKinds:      intervalOnly,
+		MinIntervalSeconds: 5,
+		DataSchemaVersion:  1,
+	},
+	{
+		// Fifteen seconds: each collection is two `systemctl` invocations,
+		// and a service's state does not need sub-second resolution — a
+		// restart is caught by the restart count moving.
+		ID:                 "systemd",
+		Name:               "Services",
+		ScheduleKinds:      intervalOnly,
+		MinIntervalSeconds: 15,
 		DataSchemaVersion:  1,
 	},
 }

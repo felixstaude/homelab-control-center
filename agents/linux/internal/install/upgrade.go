@@ -22,6 +22,38 @@ import (
 type UpgradeOptions struct {
 	// ArchivePath is a release archive already on this machine.
 	ArchivePath string
+	// ArchiveFile is an already-open handle on that archive, and when it is
+	// set the upgrader **never opens the path**.
+	//
+	// # The race, and exactly how much of it a descriptor closes
+	//
+	// The upgrade reads the archive twice: once to hash it against the digest
+	// from the publisher's signed metadata, once to extract the binary. If
+	// both reads open the *path*, an account that can write the directory can
+	// let the first see a genuine archive and the second see a different one
+	// — the digest verified against bytes that are not the bytes installed.
+	//
+	// Holding one descriptor and rewinding closes the **rename** form of that:
+	// a descriptor is pinned to an inode, so a different file moved over the
+	// name afterwards is not what gets read.
+	//
+	// It does **not** close the in-place form. `open(path, O_TRUNC)` and a
+	// rewrite modify the same inode, and a descriptor follows the inode. This
+	// was found by writing the test first: the substitution the test performed
+	// was `os.WriteFile`, which truncates in place, and it sailed straight
+	// through a single-descriptor implementation.
+	//
+	// So the descriptor is one layer and the privileged caller supplies the
+	// other: [ApplyOptions.stageArchivePrivately] copies the archive into a
+	// root-owned directory the agent account cannot write, and the upgrade
+	// runs against *that*. Nothing a less-privileged account does to its own
+	// staged file afterwards — rename, truncate, delete — reaches it.
+	//
+	// Nil for the operator path, where the path was typed by the root user
+	// running the command and a symlink to their own download is a reasonable
+	// thing for them to have. That path gets the descriptor property and not
+	// the private copy, which is the right trade for an archive root chose.
+	ArchiveFile *os.File
 	// ExpectedSHA256 is the digest the control plane showed for that archive.
 	// Required, and not optional by design — see [Upgrader.Run].
 	ExpectedSHA256 string
@@ -174,7 +206,20 @@ func (u *Upgrader) Run(ctx context.Context) error {
 		return fmt.Errorf("--sha256 is not hexadecimal: %w", err)
 	}
 
-	actual, size, err := digestFile(u.Options.ArchivePath)
+	// One handle for both reads. See [UpgradeOptions.ArchiveFile] for why
+	// reading the path twice is a privilege escalation when the directory
+	// belongs to a less-privileged account.
+	archive := u.Options.ArchiveFile
+	if archive == nil {
+		opened, err := os.Open(u.Options.ArchivePath) //nolint:gosec // an operator-supplied path, by design
+		if err != nil {
+			return fmt.Errorf("cannot read the archive %q: %w", u.Options.ArchivePath, err)
+		}
+		defer opened.Close()
+		archive = opened
+	}
+
+	actual, size, err := digestArchive(archive)
 	if err != nil {
 		return err
 	}
@@ -207,7 +252,7 @@ func (u *Upgrader) Run(ctx context.Context) error {
 		return fmt.Errorf("cannot clear the staging path %s: %w", staged, err)
 	}
 
-	payload, err := extractAgentBinary(u.Options.ArchivePath)
+	payload, err := extractAgentBinary(archive, u.Options.ArchivePath)
 	if err != nil {
 		return err
 	}
@@ -418,21 +463,26 @@ func (u *Upgrader) rollback(ctx context.Context, reason string) error {
 
 // --- archive handling -------------------------------------------------------
 
-func digestFile(path string) (digest string, size int64, err error) {
-	file, err := os.Open(path) //nolint:gosec // an operator-supplied path, by design
-	if err != nil {
-		return "", 0, fmt.Errorf("cannot read the archive %q: %w", path, err)
+// digestArchive hashes an open archive from its start.
+//
+// Takes a handle rather than a path, so the caller decides what was opened and
+// how — and so that this and [extractAgentBinary] can be given the *same*
+// handle, which is what makes "the bytes verified are the bytes installed"
+// true in the presence of a writable directory.
+func digestArchive(file *os.File) (digest string, size int64, err error) {
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return "", 0, fmt.Errorf("cannot rewind the archive %q: %w", file.Name(), err)
 	}
-	defer file.Close()
 
 	hash := sha256.New()
 	written, err := io.Copy(hash, io.LimitReader(file, MaxArchiveBytes+1))
 	if err != nil {
-		return "", 0, fmt.Errorf("cannot read the archive %q: %w", path, err)
+		return "", 0, fmt.Errorf("cannot read the archive %q: %w", file.Name(), err)
 	}
 	if written > MaxArchiveBytes {
 		return "", 0, fmt.Errorf(
-			"%q is larger than %d bytes, so it is not a release archive", path, MaxArchiveBytes,
+			"%q is larger than %d bytes, so it is not a release archive",
+			file.Name(), MaxArchiveBytes,
 		)
 	}
 	return hex.EncodeToString(hash.Sum(nil)), written, nil
@@ -454,12 +504,15 @@ func digestFile(path string) (digest string, size int64, err error) {
 //   - Links are refused outright.
 //   - The read is bounded, so a gzip bomb is a refusal rather than the
 //     machine's memory.
-func extractAgentBinary(path string) ([]byte, error) {
-	file, err := os.Open(path) //nolint:gosec // an operator-supplied path, by design
-	if err != nil {
-		return nil, fmt.Errorf("cannot read the archive %q: %w", path, err)
+//
+// Reads the handle the digest was taken over, rewound, rather than reopening
+// the path: see [UpgradeOptions.ArchiveFile]. `name` is for messages only and
+// never opened.
+func extractAgentBinary(file *os.File, name string) ([]byte, error) {
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("cannot rewind the archive %q: %w", name, err)
 	}
-	defer file.Close()
+	path := name
 
 	decompressed, err := gzip.NewReader(file)
 	if err != nil {

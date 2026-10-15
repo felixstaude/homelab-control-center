@@ -1423,6 +1423,21 @@ them.
 
 ---
 
+## Reviews
+
+Each large feature is reviewed as an attacker would, and the review is
+committed alongside it. Scope is the *new* surface each time; this document
+is the baseline and is not re-reviewed per feature.
+
+| Date | Scope | Findings |
+| --- | --- | --- |
+| [2026-10-13](security/2026-10-13-secret-scanning-investigation.md) | A secret-scanning alert | Investigated, no secret |
+| [2026-10-14](security/2026-10-14-installation-platform-review.md) | The installation platform | 6: 4 fixed, 2 accepted |
+| [2026-10-14](security/2026-10-14-update-management-review.md) | Release signing, the update engine, the privileged installer | 8: 4 fixed, 3 accepted, 1 residual |
+| [2026-10-15](security/2026-10-15-product-maturity-review.md) | The anti-rollback floor, multi-signature verification, six collectors, staged rollouts, controller upgrades, collector health | 9: 4 fixed, 4 accepted, 1 residual |
+
+---
+
 ## Known gaps
 
 Stated plainly rather than implied. Several of these must close before the

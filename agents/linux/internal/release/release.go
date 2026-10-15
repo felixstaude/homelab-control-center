@@ -74,6 +74,14 @@ const (
 	MaxSignatureBytes = 8 * 1024
 )
 
+// MaxSignatures is how many signatures one document may carry.
+//
+// Mirrors hcc.updates.signing.MAX_SIGNATURES. A rotation overlap needs two;
+// the bound exists because each entry costs a signature verification and a
+// verifier that will do unbounded work on an unverified input has a denial of
+// service in it.
+const MaxSignatures = 8
+
 // Status is the outcome of verifying release metadata.
 //
 // A closed set of named outcomes rather than a boolean, because they call for
@@ -203,9 +211,12 @@ type signatureDocument struct {
 	Algorithm string `json:"algorithm"`
 	KeyID     string `json:"key_id"`
 	Signature string `json:"signature"`
+	// Signatures is the rotation-overlap form: several signatures over the
+	// same bytes, any one of which may be by a key this agent trusts.
+	Signatures []signatureDocument `json:"signatures"`
 }
 
-// Verify checks signatureDocument over payload.
+// Verify checks signatureDoc over payload.
 //
 // payload must be the bytes that were signed, not a re-serialisation of them.
 // Two JSON libraries disagree about key order, integer rendering and non-ASCII
@@ -213,6 +224,23 @@ type signatureDocument struct {
 // whenever the writer and reader differ — and the failure looks exactly like
 // tampering. This agent already carries that lesson for the configuration
 // snapshot's checksum.
+//
+// # Several signatures, and why
+//
+// An agent built before a key rotation trusts only the old key. If the next
+// manifest is signed with the new one, that agent refuses it — including the
+// update that would have taught it the new key. The fleet that most needs the
+// rotation is the one it strands.
+//
+// So a document may carry several signatures over the same bytes, and this
+// accepts if **any one** of them is by a trusted key. During an overlap the
+// publisher signs with both; when the fleet has rolled over, the old one is
+// dropped.
+//
+// When nothing verifies, the outcome reported is the most alarming one
+// present: a trusted key whose signature fails is tampering and outranks an
+// untrusted key, which is a routine "not for me". Reporting them the other
+// way round would hide the only alarm here behind the common case.
 func (t *TrustStore) Verify(payload, signatureDoc []byte) Verification {
 	if len(signatureDoc) > MaxSignatureBytes {
 		return Verification{
@@ -230,6 +258,64 @@ func (t *TrustStore) Verify(payload, signatureDoc []byte) Verification {
 			Detail: fmt.Sprintf("the signature is not valid JSON: %v", err),
 		}
 	}
+
+	if document.Signatures != nil {
+		if document.Algorithm != "" || document.KeyID != "" || document.Signature != "" {
+			return Verification{
+				Status: StatusMalformed,
+				Detail: "the document has both a signatures array and top-level " +
+					"signature fields; it must have one or the other",
+			}
+		}
+		return t.verifySet(payload, document.Signatures)
+	}
+	return t.verifyOne(payload, document)
+}
+
+// verifySet tries each signature and reports the most alarming failure.
+func (t *TrustStore) verifySet(payload []byte, entries []signatureDocument) Verification {
+	switch {
+	case len(entries) == 0:
+		return Verification{Status: StatusMalformed, Detail: "the signatures array is empty"}
+	case len(entries) > MaxSignatures:
+		return Verification{
+			Status: StatusMalformed,
+			Detail: fmt.Sprintf(
+				"the signatures array has %d entries, over the %d limit",
+				len(entries), MaxSignatures,
+			),
+		}
+	}
+
+	outcomes := make([]Verification, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Signatures != nil {
+			return Verification{
+				Status: StatusMalformed,
+				Detail: "a signature entry carries its own signatures array",
+			}
+		}
+		outcome := t.verifyOne(payload, entry)
+		if outcome.Authentic() {
+			return outcome
+		}
+		outcomes = append(outcomes, outcome)
+	}
+	// Worst first. StatusInvalid means a key this agent trusts signed
+	// something that is not this document.
+	for _, wanted := range []Status{
+		StatusInvalid, StatusUnsupportedAlgorithm, StatusUntrustedKey, StatusMalformed,
+	} {
+		for _, outcome := range outcomes {
+			if outcome.Status == wanted {
+				return outcome
+			}
+		}
+	}
+	return outcomes[0]
+}
+
+func (t *TrustStore) verifyOne(payload []byte, document signatureDocument) Verification {
 	if document.Algorithm == "" {
 		return Verification{Status: StatusMalformed, Detail: "the signature names no algorithm"}
 	}

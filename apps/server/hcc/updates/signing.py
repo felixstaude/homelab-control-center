@@ -54,6 +54,25 @@ be retired by removing it from the trust store. The identifier is *not* a
 security boundary — it selects a key, it does not authorise one. An unknown
 identifier is reported as untrusted rather than as a bad signature, because
 those call for different actions.
+
+Several trusted keys on the *verifier* side is not enough on its own, and the
+gap is a chicken-and-egg one worth naming. An agent built before a rotation
+trusts only the old key. If the next manifest is signed with the new key, that
+agent refuses it — including the update that would have given it a binary
+trusting the new key. The fleet that most needs the rotation is the one it
+locks out.
+
+So a ``.sig`` may carry **several signatures over the same bytes**, and a
+verifier accepts if any one of them is made by a key it trusts. During an
+overlap the publisher signs with both keys: old agents verify with the old
+one, new agents with the new one, and nobody is stranded. When the fleet has
+rolled over, the old signature — and then the old key — is dropped. See
+``docs/UPDATES.md``.
+
+The precedence when nothing verifies is deliberate: a *trusted* key whose
+signature fails outranks an untrusted one in the report, because the first is
+an attack signal and the second is a routine "not for me". Masking the former
+behind the latter would be the quiet way to lose the only alarm this has.
 """
 
 from __future__ import annotations
@@ -102,6 +121,15 @@ KEY_ID_LENGTH: Final = 16
 #: Largest signature file that will be read. The document is a few hundred
 #: bytes; the bound stops a misconfigured path from being the process's memory.
 MAX_SIGNATURE_BYTES: Final = 8 * 1024
+
+#: How many signatures one document may carry.
+#:
+#: A rotation overlap needs two. Four would be an unusual mess and eight is
+#: past the point of asking what is going on, so the bound is there to make an
+#: absurd document a refusal rather than work — each entry costs a signature
+#: verification, and a verifier that will do unbounded work on an unverified
+#: input has a denial of service in it.
+MAX_SIGNATURES: Final = 8
 
 
 class SignatureStatus(enum.Enum):
@@ -239,12 +267,39 @@ class TrustStore:
 
         *payload* must be the bytes that were signed, not a re-serialisation of
         them. See the module docstring.
+
+        A document carrying several signatures verifies if **any one** of them
+        was made by a trusted key — that is the rotation overlap. The outcome
+        reported when none verifies is the most alarming one present, so a
+        tampered signature by a trusted key is never hidden behind an
+        untrusted one that happened to be listed after it.
         """
         try:
-            parsed = _parse_signature(signature_document)
+            candidates = _parse_signature_document(signature_document)
         except SigningError as error:
             return SignatureVerification(status=SignatureStatus.MALFORMED, detail=str(error))
 
+        outcomes = [self._verify_one(payload, candidate) for candidate in candidates]
+        for outcome in outcomes:
+            if outcome.is_authentic:
+                return outcome
+        # Ordered worst-first: INVALID means a key we trust signed something
+        # that is not this, which is the one outcome worth waking up for.
+        for status in (
+            SignatureStatus.INVALID,
+            SignatureStatus.UNSUPPORTED_ALGORITHM,
+            SignatureStatus.UNTRUSTED_KEY,
+            SignatureStatus.MALFORMED,
+        ):
+            for outcome in outcomes:
+                if outcome.status is status:
+                    return outcome
+        # Unreachable: _parse_signature_document refuses an empty set.
+        return SignatureVerification(
+            status=SignatureStatus.MALFORMED, detail="the signature document carries no signature"
+        )
+
+    def _verify_one(self, payload: bytes, parsed: _ParsedSignature) -> SignatureVerification:
         if parsed.algorithm != ALGORITHM:
             return SignatureVerification(
                 status=SignatureStatus.UNSUPPORTED_ALGORITHM,
@@ -288,17 +343,27 @@ class _ParsedSignature:
     signature: bytes
 
 
-def _parse_signature(document: bytes) -> _ParsedSignature:
-    """Read a ``.sig`` document.
+def _parse_signature_document(document: bytes) -> tuple[_ParsedSignature, ...]:
+    """Read a ``.sig`` document, which holds one signature or several.
+
+    One:
 
     ```json
     {"algorithm": "ed25519", "key_id": "0123456789abcdef", "signature": "<base64>"}
     ```
 
-    JSON rather than a bare base64 blob, because a bare blob cannot say which
-    key signed it — and a verifier that has to try every trusted key in turn
-    cannot distinguish "signed by a key I do not have" from "tampered with",
-    which is the distinction an operator most needs.
+    Several, for a rotation overlap:
+
+    ```json
+    {"signatures": [{...}, {...}]}
+    ```
+
+    Both shapes are read, and the single one is **not** deprecated: a release
+    signed by one key is the normal case and wrapping it in an array would
+    churn every existing signature for nothing. A document with both a
+    top-level ``signature`` and a ``signatures`` array is refused rather than
+    reconciled — two statements about what signed this is not a thing to guess
+    at on a privilege boundary.
     """
     if len(document) > MAX_SIGNATURE_BYTES:
         raise SigningError(
@@ -311,6 +376,30 @@ def _parse_signature(document: bytes) -> _ParsedSignature:
         raise SigningError(f"not valid JSON: {error}") from error
     if not isinstance(parsed, dict):
         raise SigningError("not a JSON object")
+
+    entries = parsed.get("signatures")
+    if entries is None:
+        return (_parse_signature(parsed),)
+    if "signature" in parsed or "key_id" in parsed or "algorithm" in parsed:
+        raise SigningError(
+            "the document has both a 'signatures' array and top-level signature "
+            "fields; it must have one or the other"
+        )
+    if not isinstance(entries, list):
+        raise SigningError("'signatures' is not an array")
+    if not entries:
+        raise SigningError("'signatures' is empty")
+    if len(entries) > MAX_SIGNATURES:
+        raise SigningError(
+            f"'signatures' has {len(entries)} entries, over the {MAX_SIGNATURES} limit"
+        )
+    return tuple(_parse_signature(entry) for entry in entries)
+
+
+def _parse_signature(parsed: object) -> _ParsedSignature:
+    """Read one signature object out of an already-decoded document."""
+    if not isinstance(parsed, dict):
+        raise SigningError("a signature entry is not a JSON object")
 
     algorithm = parsed.get("algorithm")
     identifier = parsed.get("key_id")

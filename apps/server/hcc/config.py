@@ -448,6 +448,19 @@ class Settings(BaseSettings):
         ),
     )
 
+    rollout_interval_seconds: int = Field(
+        default=30,
+        ge=0,
+        le=3600,
+        description=(
+            "How often staged rollouts are advanced. Much faster than the "
+            "policy pass on purpose: a rollout is something somebody is "
+            "watching, and five minutes between a canary going healthy and "
+            "the first batch starting is a product that feels broken. "
+            "0 disables rollout execution, leaving created rollouts pending."
+        ),
+    )
+
     # --- Security headers -------------------------------------------------
     # A strict Content-Security-Policy breaks the Vite dev server, which needs
     # inline scripts and a websocket for hot reload. Enabled in production,

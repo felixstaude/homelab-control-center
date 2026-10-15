@@ -15,7 +15,7 @@
  * itself rather than as "fine".
  */
 
-import type { HostUpdateStatus, UpdateJob, UpdatePlan } from '@/api/types';
+import type { HostUpdateStatus, RolloutMember, UpdateJob, UpdatePlan } from '@/api/types';
 
 /** Badge variants, matching `components/ui/badge.tsx`. */
 export type StatusTone = 'neutral' | 'ok' | 'warn' | 'critical' | 'info' | 'unknown' | 'accent';
@@ -268,4 +268,41 @@ export function jobProgress(job: UpdateJob | null): number | null {
   const index = order.indexOf(job.state);
   if (index < 0) return null;
   return (index + 1) / (order.length + 1);
+}
+
+/**
+ * A rollout member's state as an operator reads it.
+ *
+ * `succeeded` splits in two, and that split is the point. A member can be
+ * succeeded and not healthy: the job concludes when the agent reconnects
+ * reporting the target version, and the rollout then waits to see whether
+ * the host is still there, still acknowledging its configuration and still
+ * delivering telemetry.
+ *
+ * Rendering those as one state would make the wait look like a hang — and
+ * the first thing somebody does about a hang is press resume, which is
+ * exactly the wrong thing.
+ *
+ * `skipped` is neutral rather than a warning. A powered-off host, or one
+ * already on the target version, says nothing about the release, and
+ * colouring it would train somebody to ignore the colour.
+ */
+export function memberPresentation(member: RolloutMember): {
+  label: string;
+  variant: 'ok' | 'warn' | 'critical' | 'neutral' | 'info';
+} {
+  switch (member.state) {
+    case 'succeeded':
+      return member.healthy
+        ? { label: 'healthy', variant: 'ok' }
+        : { label: 'installed, checking', variant: 'info' };
+    case 'failed':
+      return { label: 'failed', variant: 'critical' };
+    case 'skipped':
+      return { label: 'skipped', variant: 'neutral' };
+    case 'running':
+      return { label: 'updating', variant: 'info' };
+    default:
+      return { label: 'waiting', variant: 'neutral' };
+  }
 }

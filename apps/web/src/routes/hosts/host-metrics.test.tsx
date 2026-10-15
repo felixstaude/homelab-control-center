@@ -110,11 +110,25 @@ describe('a host that has measured nothing', () => {
     await waitFor(() => {
       expect(within(card).getAllByText('No data').length).toBeGreaterThan(0);
     });
-    for (const name of ['CPU utilisation', 'Memory', 'Swap', 'Load average', 'System uptime']) {
+    for (const name of [
+      'CPU utilisation',
+      'Memory',
+      'Swap',
+      'Load average',
+      'System uptime',
+      'Filesystem usage',
+      'Disk throughput',
+      'Network traffic',
+      'Temperatures and fans',
+      'Containers',
+      'Services',
+    ]) {
       expect(within(card).getByText(name)).toBeInTheDocument();
     }
-    // One per module in the registry, including the four nobody enabled.
-    expect(within(card).getAllByText('No data')).toHaveLength(5);
+    // One per module in the registry, including the ten nobody enabled. The
+    // count is pinned rather than `> 0`: a registry that grew a module the
+    // page silently dropped would pass a loose assertion.
+    expect(within(card).getAllByText('No data')).toHaveLength(11);
   });
 
   it('offers no history chart, because there is no series to chart', async () => {
@@ -395,5 +409,126 @@ describe('a failed read', () => {
     const retry = screen.getByRole('button', { name: /try again|retry/i });
     await userEvent.click(retry);
     expect(retry).toBeInTheDocument();
+  });
+});
+
+describe('a collector that is failing', () => {
+  /**
+   * The fourth reason a chart is empty, and until Phase M the invisible one.
+   *
+   * `TelemetryEntry.error` had always carried the reason — the agent raises
+   * it, the protocol validates it — and the controller discarded it. A
+   * removed disk or a stopped Docker daemon produced an enabled module, a
+   * connected agent, no data, and no explanation, indefinitely.
+   *
+   * The three tests below are the three things that must not collapse back
+   * into one another: failing is not empty, failing is not stale, and
+   * "collected nothing" is not failing.
+   */
+
+  it('says which module is failing and why, instead of "turn on a module"', async () => {
+    // The advice the old empty state gave — enable something under
+    // Monitoring — is actively wrong for a module that is enabled and
+    // erroring, and would send somebody to the wrong screen.
+    backend = installFakeBackend({
+      session: ADMIN,
+      hosts: [enrolledHost()],
+      metricSampleCount: { 'host-1': 0 },
+      moduleHealth: {
+        'host-1': {
+          diskio: { last_error: '/proc/diskstats is not readable', consecutive_failures: 7 },
+        },
+      },
+    });
+    await renderHost();
+
+    expect(await screen.findByText(/failing to collect/i)).toBeInTheDocument();
+    // Twice: once in the alert that replaces the empty card, once against
+    // the module's own row in the Collection list. Both are wanted — the
+    // alert is what somebody sees first and the row is where they look to
+    // find out which module.
+    expect(screen.getAllByText(/\/proc\/diskstats is not readable/)).toHaveLength(2);
+    expect(screen.queryByText(/Turn on a module/i)).toBeNull();
+  });
+
+  it('renders the agent-supplied reason as text rather than as markup', async () => {
+    // Untrusted text from a host that may be compromised. The server stores
+    // it verbatim — escaping belongs at the point of rendering — so this is
+    // where the escaping has to be true.
+    backend = installFakeBackend({
+      session: ADMIN,
+      hosts: [enrolledHost()],
+      metricSampleCount: { 'host-1': 0 },
+      moduleHealth: {
+        'host-1': { docker: { last_error: '<img src=x onerror=alert(1)> denied' } },
+      },
+    });
+    await renderHost();
+
+    expect(
+      await screen.findAllByText(/<img src=x onerror=alert\(1\)> denied/),
+    ).not.toHaveLength(0);
+    expect(document.querySelector('img[src="x"]')).toBeNull();
+  });
+
+  it('counts the failures so a one-off is distinguishable from a wall', async () => {
+    // "Failing" for one interval is a blip; failing for two hundred is a
+    // disk that is gone. The same word for both would make the number the
+    // operator needs the one thing the screen does not say.
+    backend = installFakeBackend({
+      session: ADMIN,
+      hosts: [enrolledHost()],
+      latestMetrics: {
+        'host-1': [makeLatest({ series: makeSeries({ series_id: 1 }), value: 55.5 })],
+      },
+      metricSeries: { 'host-1': [makeSeries({ series_id: 1 })] },
+      moduleHealth: { 'host-1': { docker: { consecutive_failures: 213 } } },
+    });
+    await renderHost();
+
+    const card = resourcesCard();
+    // The card is not empty — CPU is fine — so the failure shows in the
+    // Collection list rather than as the whole-card alert.
+    expect(await within(card).findByText('55.5')).toBeInTheDocument();
+    expect(within(card).getByText(/213 collections/)).toBeInTheDocument();
+    expect(within(card).getByText(/1 failing/)).toBeInTheDocument();
+  });
+
+  it('does not call a module that collected nothing a failure', async () => {
+    // A rate collector's first interval reports no samples and no error, and
+    // so does a module with genuinely nothing on this host — no hwmon
+    // devices, no watched units. Calling those failures would make the first
+    // minute after every agent restart look broken.
+    backend = installFakeBackend({
+      session: ADMIN,
+      hosts: [enrolledHost()],
+      latestMetrics: {
+        'host-1': [makeLatest({ series: makeSeries({ series_id: 1 }), value: 55.5 })],
+      },
+      metricSeries: { 'host-1': [makeSeries({ series_id: 1 })] },
+      moduleHealth: { 'host-1': { sensors: { consecutive_failures: 0 } } },
+    });
+    await renderHost();
+
+    const card = resourcesCard();
+    expect(await within(card).findByText(/Collected, nothing to report/)).toBeInTheDocument();
+    expect(within(card).queryByText(/failing/i)).toBeNull();
+  });
+
+  it('still says "No data" for a module that has never reported', async () => {
+    // Never heard from is not healthy and is not failing, and a zeroed
+    // failure count alone would read as working.
+    backend = installFakeBackend({
+      session: ADMIN,
+      hosts: [enrolledHost()],
+      latestMetrics: {
+        'host-1': [makeLatest({ series: makeSeries({ series_id: 1 }), value: 55.5 })],
+      },
+      metricSeries: { 'host-1': [makeSeries({ series_id: 1 })] },
+    });
+    await renderHost();
+
+    const card = resourcesCard();
+    expect(await within(card).findAllByText('No data')).not.toHaveLength(0);
   });
 });

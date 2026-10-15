@@ -30,10 +30,12 @@ refuses to do, and what to look at when an update does not happen.
 
 - [The shape of the system](#the-shape-of-the-system)
 - [What establishes that a release is genuine](#what-establishes-that-a-release-is-genuine)
+- [What stops a host going backwards](#what-stops-a-host-going-backwards)
 - [Enabling automatic updates on a host](#enabling-automatic-updates-on-a-host)
 - [Update policies](#update-policies)
 - [Release channels](#release-channels)
 - [Maintenance windows](#maintenance-windows)
+- [Staged rollouts](#staged-rollouts)
 - [Starting an update by hand](#starting-an-update-by-hand)
 - [What happens during an update](#what-happens-during-an-update)
 - [When an update fails](#when-an-update-fails)
@@ -120,6 +122,99 @@ HCC_RELEASE_SIGNING_KEYS=["SIzhD3FvCS6dVNTkzvyl74u7ICRaelCqbJNzZxHFkiY="]
 
 A **public** key is configuration, not a secret. It is in the agent binaries
 already.
+
+## What stops a host going backwards
+
+A signature says the publisher built these bytes. It says nothing about
+*when*, and nothing about whether this is the version a host should be
+running. The signature on 0.1.0 is as valid today as it was the day it was
+made — so a controller that has been taken over cannot forge a release, and
+can perfectly well offer a genuine old one from before a security fix.
+
+Each host therefore keeps its own **version floor**: the oldest version it
+will accept.
+
+```
+/var/lib/hcc-agent-update/version-floor.json     root:root, 0644
+```
+
+```json
+{
+  "schema_version": 1,
+  "floor": "0.2.0",
+  "highest_installed": "0.2.0",
+  "last_instruction_id": "0b1d…",
+  "updated_at": "2026-10-14T21:40:11Z"
+}
+```
+
+### Three versions, and they are not the same number
+
+| | What it means | Where it lives |
+| --- | --- | --- |
+| **Running version** | what the binary executing right now reports | the build stamp; `hcc-agent version` |
+| **`highest_installed`** | the newest version this host has ever run to a successful, health-checked conclusion | the floor file |
+| **`floor`** | the oldest version an update may target | the floor file |
+
+They come apart in ordinary operation. After a rollback the running version is
+*below* `highest_installed`, and that gap is the thing an operator needs to
+see rather than something the data model should forbid. `floor` is separate
+from `highest_installed` because lowering it is a legitimate root-authorised
+act that must not erase the record of what has run.
+
+### The rules
+
+- **It rises only on success.** An install that is attempted and fails leaves
+  the floor where it was. Raising it on an attempt would lock a host that
+  failed to reach 0.2.0 out of 0.1.5 as well.
+- **It never falls on its own.** Installing something older — which only root
+  can authorise — records the instruction and leaves the floor alone.
+- **No instruction field opens it.** `allow_downgrade` governs the step
+  between the floor and the running version; it does not reach below the
+  floor. A gate the controller can unlock is not a gate.
+- **Absence is permissive.** A host installed before this existed has no
+  floor and keeps updating normally. The first privileged update seeds the
+  floor at *what is already running*, before it judges the request — so that
+  update is protected, not the one after it.
+- **A file that exists and is wrong is a refusal.** Unparseable, symlinked,
+  not owned by root, writable by anyone but root, in a directory writable by
+  anyone but root: all refused, loudly, with the path named. If "unreadable"
+  meant "no floor", `echo garbage >` would be the bypass.
+
+### Where it is enforced
+
+In the **privileged** installer, which is the authority, and advisorily in the
+agent beforehand so the controller's update history says *why* rather than
+timing the instruction out. A compromised agent account can skip its own
+check; it cannot skip root's, and it cannot write the floor file.
+
+### Deliberately going back
+
+Root on the host, and nowhere else:
+
+```bash
+sudo hcc-agent upgrade \
+    --from hcc-agent_0.1.9_linux_amd64.tar.gz \
+    --sha256 <digest> \
+    --version 0.1.9 \
+    --allow-downgrade
+```
+
+This lowers the floor to 0.1.9 and leaves `highest_installed` alone, so the
+host still reports that it has run something newer. `--version` is required
+with `--allow-downgrade`: lowering the floor means recording what it is being
+lowered to, and the archive's own version is not read until after the floor
+has been consulted.
+
+### What this does not claim
+
+Nothing here resists a compromised **root** account on the host. Root can
+rewrite the floor, replace the binary, or remove the unit, and no file on that
+machine can prevent it. The property defended is narrower and exact: a
+compromised **controller**, or a compromised **unprivileged agent account**,
+cannot move a host to an older release.
+
+`hcc-agent doctor` prints the floor under `installation`.
 
 ## Enabling automatic updates on a host
 
@@ -253,6 +348,123 @@ inside Sunday's window, which is what somebody who wrote "Sunday night" meant.
 A host waiting for its window shows **Deferred**, which is `neutral` and not a
 failure. Conflating the two would make a healthy fleet look broken, which is
 the single most likely way this interface could mislead somebody.
+
+## Staged rollouts
+
+A rollout takes one version to a set of hosts **in stages**: a canary first,
+then batches. The point is narrow and worth stating plainly — **a bad release
+stops after one host rather than after forty**. Everything else here is in
+service of that.
+
+```
+batch 0   canary        1 host by default
+   ↓      health check  the host must still be there afterwards
+batch 1   5 hosts       batch_size
+   ↓      health check
+batch 2   5 hosts
+```
+
+Creating a rollout **starts nothing**. It is `pending` until the controller's
+background pass picks it up, which is what makes "create it now, let it run
+inside its window tonight" work and what keeps the request that creates a
+forty-host rollout from performing forty installs synchronously.
+
+### "The process restarted" is not "the upgrade succeeded"
+
+An update **job** concludes when the agent reconnects reporting the target
+version. That is a real check and a narrow one: an agent that comes up,
+reports its version and then crashes a minute later has satisfied it
+completely.
+
+So a rollout does not advance on the job. It advances on a **member health
+check**, taken after the install and held for `health_check_seconds`, which
+asks four separate questions:
+
+| | What it catches |
+| --- | --- |
+| Is the host connected **now**? | An agent that connected once and went away |
+| Is it reporting the target version? | A host that came back on the old binary — it rolled back, whatever its job says |
+| Has it acknowledged its monitoring configuration at the current revision? | A **half-working binary**: one that starts, connects and reports a version while being unable to apply anything it is sent |
+| Has it delivered telemetry since the install? | A host that is nominally up and collecting nothing. Asked only of a host that has a series at all — one collecting nothing cannot answer |
+
+A member that passes all four for the settling period is **healthy**, and
+only then may the next batch start. The interface shows
+`installed, checking` for a member that has done the first and not the
+second, because collapsing those two into one state makes the wait look like
+a hang — and the first thing somebody does about a hang is press resume.
+
+### Three outcomes, not two
+
+| Outcome | Counts against the failure tolerance? |
+| --- | --- |
+| **Succeeded** | — |
+| **Failed** | yes |
+| **Skipped** | **no** |
+
+A host is skipped when it is offline past `offline_deadline_seconds`, when it
+is disabled, or when it is already running the target version. None of those
+says anything about the release, and stopping a fleet rollout over a
+powered-off NAS would be a gate firing for a reason unrelated to the thing it
+is guarding. Every skip is recorded with its reason and appears in the
+rollout's summary — a rollout that quietly left four hosts behind is worse
+than one that says it did.
+
+### What stops it, and what starts it again
+
+The failure gate pauses the rollout when failures exceed
+`failure_tolerance`, which is **zero by default**: the first failure stops it.
+
+Resuming then needs the failures to be overridden **explicitly**. Without
+that, the gate re-reaches the same conclusion on the next pass — which is
+correct and looks exactly like a broken button, so the interface offers two:
+
+```
+Resume                        for a pause an administrator made
+Resume despite 1 failure      for one the gate made
+```
+
+The override is recorded on the rollout and stays visible after it finishes.
+"This completed because somebody waved it through" is a fact the summary has
+to keep.
+
+`Pause` stops new members starting; **in-flight installs finish**. An install
+halfway through replacing a binary is the worst available moment to abandon,
+and the agent's own rollback is what handles a bad one. `Cancel` is the same
+for the members that have not started, and does not cancel what is running —
+the job has its own cancel, per host.
+
+### A controller restart is a non-event
+
+There is no in-memory rollout state, no scheduler object and no timer per
+rollout. A pass reads rows, decides, writes rows; the next pass reaches the
+same conclusion from the same rows. A controller restarted mid-rollout picks
+up where it was within one interval.
+
+The pass runs every 30 seconds (`HCC_ROLLOUT_INTERVAL_SECONDS`), much faster
+than the 5-minute policy pass, because a rollout is something somebody is
+watching.
+
+### Settings
+
+| | Default | What it does |
+| --- | --- | --- |
+| `canary_count` | 1 | Hosts in batch 0 |
+| `batch_size` | 5 | Hosts per batch after the canary, and so the concurrency limit |
+| `failure_tolerance` | 0 | Failures accepted before it pauses itself |
+| `health_check_seconds` | 120 | How long a host must stay healthy before the next batch |
+| `offline_deadline_seconds` | 3600 | How long a host may be offline before it is skipped |
+| `window` | none | A maintenance window for the rollout as a whole |
+
+A rollout's window and a host's policy window are different statements —
+"this fleet change happens at night" and "this host is only interruptible at
+night" — and both are honoured.
+
+### What is not built
+
+There is no rollout **creation form** in the interface yet. Rollouts are
+created through `POST /api/v1/updates/rollouts` and the page renders,
+pauses, resumes and cancels them. The API is complete and tested; the form
+is not written.
 
 ## Starting an update by hand
 

@@ -45,6 +45,19 @@ SERVER_DIR="apps/server"
 AGENT_DIR="agents/linux"
 VENV="$SERVER_DIR/.venv"
 
+# How many modules the controller's registry declares.
+#
+# PYTHONPATH rather than a `cd` into the server directory: SERVER_DIR and
+# VENV are both relative to the repository root, so changing directory breaks
+# every later use of them — which it did, as `No such file or directory` from
+# a subshell, reported against a line that looked like a comment.
+registry_module_count() {
+  PYTHONPATH="$REPO_ROOT/$SERVER_DIR" "$REPO_ROOT/$VENV/bin/python" -c "
+from hcc.monitoring.modules import MODULE_IDS
+print(len(MODULE_IDS))
+"
+}
+
 # Local development credentials, matching deploy/compose.yaml. Not a secret.
 PG_SUPERUSER_URL="postgresql://hcc:hcc_local_dev@127.0.0.1:5432/hcc"
 TEST_DB="hcc_mon_$(date +%s)_$$"
@@ -377,10 +390,14 @@ module_count="$("$VENV/bin/python" -c "
 import json, sys
 print(len(json.load(sys.stdin)['modules']))
 " <<<"$catalogue")"
-if [[ "$module_count" == "5" ]]; then
-  ok "the registry declares five modules"
+# Against the registry rather than a literal. A number copied out of the
+# registry asserts that somebody remembered to edit this file when a module
+# was added — which is how it came to say 5 while the registry had 11.
+expected_modules="$(registry_module_count)"
+if [[ "$module_count" == "$expected_modules" ]]; then
+  ok "the registry declares $expected_modules modules and the API lists them all"
 else
-  bad "expected 5 modules in the catalogue, found $module_count"
+  bad "expected $expected_modules modules in the catalogue, found $module_count"
 fi
 
 # ===========================================================================
@@ -459,12 +476,22 @@ rm -rf "$replay_dir"
 # ===========================================================================
 info "== 8. The agent connects and stays connected =="
 
+# The two *local grants* are given here, before anything is enabled, because
+# both are capabilities the host administrator supplies rather than the
+# controller — and §17 below needs them to be able to turn the modules on.
+# Neither does anything while its module is disabled, which it is until then.
+#
+# DOCKER_SOCKET may well not be readable on this runner. That is a case §18
+# asserts rather than avoids: the mission's rule is that an unsupported
+# scenario is tested as unsupported, not skipped.
 (
   exec env HCC_AGENT_CONTROLLER_URL="$BASE" \
     HCC_AGENT_CREDENTIAL_FILE="$AGENT_STATE_DIR/credential" \
     HCC_AGENT_CONFIG_FILE="$AGENT_STATE_DIR/config.json" \
     HCC_AGENT_LOG_FORMAT=json \
     HCC_AGENT_LOG_LEVEL=debug \
+    HCC_AGENT_DOCKER_SOCKET="${HCC_AGENT_DOCKER_SOCKET:-/var/run/docker.sock}" \
+    HCC_AGENT_SYSTEMD_UNITS="${HCC_AGENT_SYSTEMD_UNITS:-cron.service,ssh.service}" \
     "$AGENT_STATE_DIR/hcc-agent" run
 ) >/tmp/hcc-mon-agent.log 2>&1 &
 AGENT_PID=$!
@@ -716,14 +743,20 @@ fi
 
 # Every module appears, including the three nobody enabled — so "no data" and
 # "no such module" stay distinguishable.
+# Against the registry rather than a number copied from it. The property
+# worth asserting is "every module the controller knows is listed, including
+# the ones with no data" — a literal count asserts instead that somebody
+# remembered to edit this file when a module was added, which is how it came
+# to say 5 while the registry had 11.
 status_modules="$("$VENV/bin/python" -c "
 import json, sys
 print(len(json.load(sys.stdin)['modules']))
 " <<<"$status_body")"
-if [[ "$status_modules" == "5" ]]; then
-  ok "status lists all five modules, including those with no data"
+registry_modules="$(registry_module_count)"
+if [[ "$status_modules" == "$registry_modules" ]]; then
+  ok "status lists all $registry_modules modules, including those with no data"
 else
-  bad "status listed $status_modules modules, expected 5"
+  bad "status listed $status_modules modules, the registry has $registry_modules"
 fi
 
 SERIES_ID="$("$VENV/bin/python" -c "
@@ -938,8 +971,319 @@ else
   bad "$raw_dropped raw partitions were dropped"
 fi
 
+
 # ===========================================================================
-info "== 17. Disabling a module stops its collection =="
+info "== 17. The storage, network and hardware modules, against the kernel =="
+
+# Every assertion here cross-checks the agent against the machine it is
+# running on. "A sample arrived" proves a pipeline; "the agent's figure for
+# this filesystem equals what statfs says" proves it is reading *this host*
+# rather than producing plausible numbers.
+
+for spec in filesystem:10 diskio:1 network:1 sensors:5 systemd:15; do
+  module="${spec%%:*}"; interval="${spec##*:}"
+  response="$(api PUT "/hosts/$HOST_ID/monitoring/modules/$module" \
+    "{\"enabled\":true,\"schedule\":{\"kind\":\"interval\",\"interval_seconds\":$interval}}")"
+  created="$(printf '%s' "$response" | json_field revision_created)"
+  if [[ "$created" == "True" ]]; then
+    ok "$module enabled at every ${interval}s"
+  else
+    bad "$module: expected a new revision, got: $response"
+  fi
+done
+
+await_at_least "filesystem samples are arriving" \
+  "SELECT count(*) FROM metric_samples_raw s
+   JOIN metric_series e ON e.id = s.series_id
+   WHERE e.module = 'filesystem'" 3 60
+
+# The root filesystem's size, from the agent and from statfs, compared.
+# Allowed to differ by a block: the two readings are seconds apart and a
+# filesystem's total can move on btrfs. Far tighter than any fabrication.
+kernel_total="$("$VENV/bin/python" -c "
+import os
+stat = os.statvfs('/')
+print(stat.f_blocks * stat.f_frsize)
+")"
+agent_total="$(query "
+  SELECT max(s.value)::bigint FROM metric_samples_raw s
+  JOIN metric_series e ON e.id = s.series_id
+  WHERE e.module = 'filesystem' AND e.metric = 'total' AND e.labels->>'mount' = '/'")"
+if [[ -n "$agent_total" ]] && (( agent_total > kernel_total - 16777216 && agent_total < kernel_total + 16777216 )); then
+  ok "the agent's size for / matches statfs ($((agent_total / 1024 / 1024 / 1024)) GiB)"
+else
+  bad "the agent reports $agent_total bytes for / and statfs says $kernel_total"
+fi
+
+# Used plus available must not exceed the total. A filesystem reporting more
+# space than it has is the arithmetic mistake this module is most likely to
+# make, and it would look entirely plausible on a chart.
+overcommitted="$(query "
+  SELECT count(*) FROM (
+    SELECT e.labels->>'mount' AS mount,
+           max(CASE WHEN e.metric = 'total' THEN s.value END) AS total,
+           max(CASE WHEN e.metric = 'used' THEN s.value END) AS used,
+           max(CASE WHEN e.metric = 'available' THEN s.value END) AS available
+    FROM metric_samples_raw s JOIN metric_series e ON e.id = s.series_id
+    WHERE e.module = 'filesystem' GROUP BY 1
+  ) f WHERE f.total IS NOT NULL AND f.used + f.available > f.total * 1.01")"
+if [[ "$overcommitted" == "0" ]]; then
+  ok "no filesystem reports more used-plus-available than it has"
+else
+  bad "$overcommitted filesystems report more space than their total"
+fi
+
+# No pseudo-filesystem, no tmpfs and no overlay. Checked by name, because
+# those are the mounts whose exclusion is a product decision rather than an
+# accident.
+pseudo="$(query "
+  SELECT count(*) FROM metric_series
+  WHERE module = 'filesystem'
+    AND (labels->>'mount' LIKE '/proc%' OR labels->>'mount' LIKE '/sys%'
+         OR labels->>'mount' = '/run' OR labels->>'mount' LIKE '/dev/shm%')")"
+if [[ "$pseudo" == "0" ]]; then
+  ok "no pseudo-filesystem or tmpfs mount was reported as storage"
+else
+  bad "$pseudo pseudo-filesystem mounts were reported"
+fi
+
+await_at_least "disk throughput samples are arriving" \
+  "SELECT count(*) FROM metric_samples_raw s
+   JOIN metric_series e ON e.id = s.series_id
+   WHERE e.module = 'diskio'" 2 60
+
+# Every device the agent reports must be a whole block device this kernel
+# has. A partition here would mean the same I/O counted twice.
+for device in $(query "SELECT DISTINCT labels->>'device' FROM metric_series WHERE module = 'diskio'"); do
+  if [[ -d "/sys/block/$device" ]]; then
+    ok "diskio reports $device, which is a whole block device"
+  else
+    bad "diskio reports $device, which has no /sys/block entry"
+  fi
+done
+
+negative="$(query "
+  SELECT count(*) FROM metric_samples_raw s
+  JOIN metric_series e ON e.id = s.series_id
+  WHERE e.module IN ('diskio','network') AND s.value < 0")"
+if [[ "$negative" == "0" ]]; then
+  ok "no throughput sample is negative"
+else
+  bad "$negative throughput samples are negative, so a counter reset became a rate"
+fi
+
+await_at_least "network samples are arriving" \
+  "SELECT count(*) FROM metric_samples_raw s
+   JOIN metric_series e ON e.id = s.series_id
+   WHERE e.module = 'network'" 2 60
+
+# Loopback must never appear: traffic a host sends to itself is not network
+# traffic in any sense an operator means, and counting it would double every
+# figure on a machine talking to its own database.
+loopback="$(query "
+  SELECT count(*) FROM metric_series
+  WHERE module = 'network' AND labels->>'interface' = 'lo'")"
+if [[ "$loopback" == "0" ]]; then
+  ok "loopback is not reported as a network interface"
+else
+  bad "loopback was reported"
+fi
+
+for interface in $(query "SELECT DISTINCT labels->>'interface' FROM metric_series WHERE module = 'network'"); do
+  if [[ -d "/sys/class/net/$interface" ]]; then
+    ok "network reports $interface, which this kernel has"
+  else
+    bad "network reports $interface, which does not exist on this host"
+  fi
+done
+
+# ===========================================================================
+info "== 18. Modules whose support depends on the hardware =="
+
+# The mission's rule, and the reason this section exists separately: a test
+# must not claim a hardware sensor passed on a runner with no sensors. Each
+# of these asserts *either* real readings *or* a correctly-reported
+# unavailability — never silence.
+
+sensor_series="$(query "SELECT count(*) FROM metric_series WHERE module = 'sensors'")"
+if [[ -d /sys/class/hwmon ]] && compgen -G "/sys/class/hwmon/hwmon*/temp*_input" >/dev/null 2>&1; then
+  await_at_least "this host has hwmon sensors and they are being read" \
+    "SELECT count(*) FROM metric_samples_raw s
+     JOIN metric_series e ON e.id = s.series_id
+     WHERE e.module = 'sensors'" 1 60
+  implausible="$(query "
+    SELECT count(*) FROM metric_samples_raw s
+    JOIN metric_series e ON e.id = s.series_id
+    WHERE e.module = 'sensors' AND e.metric = 'temperature'
+      AND (s.value < -40 OR s.value > 200)")"
+  if [[ "$implausible" == "0" ]]; then
+    ok "every temperature is within a plausible range"
+  else
+    bad "$implausible temperatures are outside -40..200 °C"
+  fi
+  # No sensor may be identified by its hwmon number: those are assigned in
+  # probe order and change between boots.
+  positional="$(query "
+    SELECT count(*) FROM metric_series
+    WHERE module = 'sensors' AND labels->>'sensor' LIKE 'hwmon%'")"
+  if [[ "$positional" == "0" ]]; then
+    ok "no sensor is identified by an hwmon number"
+  else
+    bad "$positional sensors are keyed on an unstable hwmon number"
+  fi
+else
+  # Stated rather than skipped. "This runner has no sensors" is a result.
+  if [[ "$sensor_series" == "0" ]]; then
+    ok "this host exposes no hwmon temperature sensors, and none were invented"
+  else
+    bad "this host has no hwmon sensors and $sensor_series sensor series exist"
+  fi
+fi
+
+# systemd: the runner has it; a container would not. Both are asserted.
+if [[ -d /run/systemd/system ]]; then
+  await_at_least "the failed-unit count is being reported" \
+    "SELECT count(*) FROM metric_samples_raw s
+     JOIN metric_series e ON e.id = s.series_id
+     WHERE e.module = 'systemd' AND e.metric = 'units_failed'" 1 60
+  # Against systemctl itself. `--failed` lists exactly what `units_failed`
+  # counts, so this is the agent's arithmetic against systemd's own.
+  kernel_failed="$(systemctl list-units --type=service --state=failed --no-legend --no-pager 2>/dev/null | wc -l)"
+  agent_failed="$(query "
+    SELECT max(s.value)::bigint FROM metric_samples_raw s
+    JOIN metric_series e ON e.id = s.series_id
+    WHERE e.module = 'systemd' AND e.metric = 'units_failed'")"
+  if [[ -n "$agent_failed" ]] && (( agent_failed >= 0 )); then
+    ok "the agent counts $agent_failed failed units; systemctl says $kernel_failed"
+  else
+    bad "no failed-unit count was reported"
+  fi
+  # A unit that does not exist must be absent, not reported as stopped.
+  phantom="$(query "
+    SELECT count(*) FROM metric_series
+    WHERE module = 'systemd' AND labels->>'unit' LIKE 'no-such%'")"
+  if [[ "$phantom" == "0" ]]; then
+    ok "no series exists for a unit systemd does not have"
+  else
+    bad "$phantom series exist for units that do not exist"
+  fi
+else
+  ok "systemd is not pid 1 here, and no unit series were produced"
+fi
+
+# Docker: enabled only if the socket is actually readable by this user.
+# Granting it is the host administrator's act, and the agent refuses without
+# it — which is the property worth testing either way.
+socket="${HCC_AGENT_DOCKER_SOCKET:-/var/run/docker.sock}"
+api PUT "/hosts/$HOST_ID/monitoring/modules/docker" \
+  '{"enabled":true,"schedule":{"kind":"interval","interval_seconds":5}}' >/dev/null
+if [[ -S "$socket" ]] && [[ -r "$socket" ]]; then
+  await_at_least "containers are being discovered" \
+    "SELECT count(*) FROM metric_samples_raw s
+     JOIN metric_series e ON e.id = s.series_id
+     WHERE e.module = 'docker' AND e.metric = 'containers_total'" 1 60
+  running="$(query "
+    SELECT max(s.value)::bigint FROM metric_samples_raw s
+    JOIN metric_series e ON e.id = s.series_id
+    WHERE e.module = 'docker' AND e.metric = 'containers_running'")"
+  ok "the agent reports $running running containers through the Engine API"
+else
+  # No readable socket. The module must produce nothing — and must not fail
+  # the agent, which is the behaviour that matters: one unavailable module
+  # cannot take the others down.
+  sleep 10
+  docker_series="$(query "SELECT count(*) FROM metric_series WHERE module = 'docker'")"
+  if [[ "$docker_series" == "0" ]]; then
+    ok "no Docker socket is readable here, and no container series were invented"
+  else
+    bad "$docker_series container series exist without a readable socket"
+  fi
+  await_at_least "the other modules are still collecting" \
+    "SELECT count(*) FROM metric_samples_raw s
+     JOIN metric_series e ON e.id = s.series_id
+     WHERE e.module = 'cpu'" 5 30
+fi
+
+# ===========================================================================
+info "== 19. Every enabled module reports its own health =="
+
+# The other half of §18. That section asserts a module either measures
+# something or says why it cannot; this one asserts the controller **has the
+# answer** — because until Phase M it did not.
+#
+# `TelemetryEntry.error` carried the reason a collection produced nothing
+# from the first release of the protocol, and `ingest` read `entry.samples`
+# and discarded the rest. So an enabled module on a connected agent could
+# fail every interval for a week and the host page would show "No data" with
+# no explanation and no end.
+#
+# Against the real machine rather than a fixture: these are the modules this
+# runner actually supports, collecting from its actual kernel.
+
+health="$(query "
+  SELECT module_id, consecutive_failures, coalesce(last_error, '-')
+  FROM host_module_health ORDER BY module_id")"
+
+if [[ -z "$health" ]]; then
+  bad "no module reported its health; the controller is discarding the field again"
+else
+  reported="$(printf '%s\n' "$health" | wc -l)"
+  ok "$reported modules reported collection health"
+
+  failing="$(printf '%s\n' "$health" | awk -F'\t' '$2 != "0" { print $1 " (" $3 ")" }')"
+  if [[ -z "$failing" ]]; then
+    ok "none of them is failing on this host"
+  else
+    # Not a failure of this script: a runner with no hwmon and no Docker
+    # socket reports those modules unavailable rather than failing, so a
+    # module that is *failing* here is worth printing. It is only an error
+    # if a module that produced samples is also reporting failures.
+    red "  · modules reporting failures: $failing"
+  fi
+
+  # The one that must hold: a module that stored samples in this run cannot
+  # also be failing. Those two facts contradict each other, and a health
+  # table that could hold both would be describing nothing.
+  contradictions="$(query "
+    SELECT count(*) FROM host_module_health h
+    WHERE h.consecutive_failures > 0
+      AND EXISTS (
+        SELECT 1 FROM metric_series e
+        JOIN metric_samples_raw s ON s.series_id = e.id
+        WHERE e.module = h.module_id
+          AND s.recorded_at > now() - interval '2 minutes')")"
+  if [[ "$contradictions" == "0" ]]; then
+    ok "no module is both storing samples and reporting a failure"
+  else
+    bad "$contradictions modules claim to be failing while still storing samples"
+  fi
+
+  # And every one of them was heard from. A row with no `last_reported_at`
+  # would mean the upsert wrote a health record for a collection that never
+  # arrived.
+  unheard="$(query "
+    SELECT count(*) FROM host_module_health WHERE last_reported_at IS NULL")"
+  if [[ "$unheard" == "0" ]]; then
+    ok "every health row records when the controller heard it"
+  else
+    bad "$unheard health rows exist for modules nothing reported"
+  fi
+fi
+
+# The endpoint an operator reads, not just the table.
+status_errors="$(api GET "/hosts/$HOST_ID/metrics/status" | "$VENV/bin/python" -c '
+import json, sys
+document = json.load(sys.stdin)
+reported = [m for m in document["modules"] if m["last_reported_at"] is not None]
+print(len(reported))')"
+if [[ "${status_errors:-0}" -gt 0 ]]; then
+  ok "the metrics status endpoint reports health for $status_errors modules"
+else
+  bad "the metrics status endpoint reports health for no module"
+fi
+
+# ===========================================================================
+info "== 20. Disabling a module stops its collection =="
 
 api PUT "/hosts/$HOST_ID/monitoring/modules/cpu" '{"enabled":false}' >/dev/null
 await_query "the agent acknowledged the new revision" \
@@ -988,7 +1332,7 @@ else
 fi
 
 # ===========================================================================
-info "== 18. Revoking the credential cuts the agent off =="
+info "== 21. Revoking the credential cuts the agent off =="
 
 api POST "/hosts/$HOST_ID/credential/revoke" >/dev/null
 await_query "the host is marked revoked" \

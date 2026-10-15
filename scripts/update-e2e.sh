@@ -1025,13 +1025,28 @@ fi
 
 # And the planner refuses to offer it, rather than offering an update the
 # agent would decline.
+#
+# Waited for first, for the reason §16 already names: the controller was just
+# restarted, and a host that has not reported its version yet plans as
+# `unknown_version`. That outcome is also "not an actionable update", so
+# accepting it here would let this assertion pass with the signature check
+# broken — it would be passing because the controller does not know the
+# version, not because it refuses untrusted metadata. So the version is
+# waited for and `unknown_version` stays a failure.
+#
+# This was a CI flake before it was a wait: the step passed locally and on
+# most runs, and failed on one where the agent reconnected a second later.
+await_query "the host has reported its version again after the restart" \
+  "SELECT coalesce(agent_version, '') FROM hosts WHERE id = '$HOST_ID'" "$VERSION_NEW" 120 || true
+
 status_json="$(api_get "/hosts/$HOST_ID/updates")"
 outcome="$(printf '%s' "$status_json" | json_field plan.outcome)"
 case "$outcome" in
   up_to_date|update_available_incompatible|metadata_unavailable)
     ok "the plan is '$outcome' rather than an actionable update" ;;
   *)
-    bad "the plan is '$outcome' for metadata nothing can vouch for" ;;
+    reported="$(query "SELECT coalesce(agent_version, '(null)') FROM hosts WHERE id = '$HOST_ID'" | head -1)"
+    bad "the plan is '$outcome' for metadata nothing can vouch for (the host reports $reported)" ;;
 esac
 
 # Put the real signature back, so the state at the end of the run is coherent
@@ -1074,6 +1089,94 @@ if [ "$reported_version" = "$VERSION_NEW" ]; then
   ok "the fleet summary shows $VERSION_NEW, which is the host's own report"
 else
   bad "the version distribution leads with '$reported_version', expected $VERSION_NEW"
+fi
+
+# ===========================================================================
+info "== 17. A staged rollout, driven by the controller's own background pass =="
+
+# What this proves, and what it does not.
+#
+# **Proves:** the whole rollout loop runs in a real controller — create
+# through the API, the background task picking it up on its own interval,
+# batch assignment, the per-member decision, and the terminal state — with no
+# test reaching into the service.
+#
+# **Does not prove:** a canary installing and then gating a second batch.
+# That needs two hosts and a version this one is not already on, and the
+# fixture has one container and no spare build. It is covered by the 30
+# integration tests in `test_rollout_service_integration.py`, which drive
+# real jobs through real state transitions against a real database.
+#
+# The member here is **skipped**, because the host already runs
+# $VERSION_NEW — which is itself one of the behaviours worth proving at this
+# level: "already on the target version" must not be a failure, or a rollout
+# re-run over a partly-updated fleet would pause on the hosts that were
+# already done.
+
+rollout_body="$("$VENV/bin/python" - "$HOST_ID" "$VERSION_NEW" <<'PY'
+import json
+import sys
+
+print(
+    json.dumps(
+        {
+            "name": "end-to-end rollout",
+            "to_version": sys.argv[2],
+            "host_ids": [sys.argv[1]],
+            # No settle: the member is skipped rather than installed, so
+            # there is nothing to wait for and a 120-second default would
+            # only make this scenario slower.
+            "health_check_seconds": 0,
+        }
+    )
+)
+PY
+)"
+created="$(api POST /updates/rollouts "$rollout_body")"
+ROLLOUT_ID="$(printf '%s' "$created" | json_field rollout_id 2>/dev/null || true)"
+if [ -n "$ROLLOUT_ID" ]; then
+  ok "a rollout was created over 1 host"
+else
+  bad "creating the rollout failed: $created"
+fi
+
+if [ -n "$ROLLOUT_ID" ]; then
+  # Pending, not started. The request creates; the background pass runs.
+  state="$(printf '%s' "$created" | json_field state)"
+  if [ "$state" = "pending" ]; then
+    ok "the rollout is pending — creating one starts nothing"
+  else
+    bad "a freshly created rollout is '$state', expected pending"
+  fi
+
+  # Now wait for the controller's own task, which runs every 30 seconds by
+  # default. Nothing here nudges it: if this passes, the background pass is
+  # genuinely running in the controller under test.
+  #
+  # `await_query` rather than `await_terminal`: the latter recognises *job*
+  # terminal states, and a rollout's are a different set.
+  await_query "the background pass carried the rollout to completion" \
+    "SELECT state FROM update_rollouts WHERE id = '$ROLLOUT_ID'" "completed" 120
+
+  skipped="$(query "SELECT coalesce(skipped_reason, '') FROM update_rollout_members
+                    WHERE rollout_id = '$ROLLOUT_ID'" | head -1)"
+  case "$skipped" in
+    *"already running"*)
+      ok "the host was skipped, not failed: $(printf '%s' "$skipped" | cut -c1-60)…" ;;
+    "")
+      bad "the member was neither skipped nor explained" ;;
+    *)
+      bad "the skip reason does not name the cause: '$skipped'" ;;
+  esac
+
+  # And no job was created for it. A skip must not leave an update attempt
+  # behind, or the history would show one that never happened.
+  rollout_jobs="$(query "SELECT count(*) FROM update_jobs WHERE rollout_id = '$ROLLOUT_ID'")"
+  if [ "$rollout_jobs" = "0" ]; then
+    ok "no update job was created for a skipped member"
+  else
+    bad "$rollout_jobs job(s) exist for a rollout that installed nothing"
+  fi
 fi
 
 # ===========================================================================

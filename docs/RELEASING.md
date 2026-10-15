@@ -146,6 +146,68 @@ reach a workflow that holds `id-token: write`. Per-change confidence that the
 build still works comes from the `artifacts` job in `ci.yml`, which runs on
 every pull request with `contents: read` and nothing else.
 
+### Preparing one locally
+
+`scripts/prepare-release.sh` is the four steps in order, in one command:
+build the archives reproducibly, verify each against its own manifest, derive
+the controller's release manifest from them, sign it, and verify the
+signature. Every missing prerequisite is a refusal before anything is built —
+no key, no base URL, a version with a leading `v`, a signing key anyone can
+read.
+
+```bash
+./scripts/prepare-release.sh \
+    --version 0.2.0 \
+    --base-url https://github.com/<owner>/<repo>/releases/download/v0.2.0 \
+    --protocol-versions 1,2 \
+    --private-key /secure/release.key
+```
+
+It writes `dist/agent/`, `dist/agent-releases.json` and
+`dist/agent-releases.json.sig`, and **publishes nothing**: no tag, no upload,
+no registry. It prints the manual steps that follow.
+
+### Exercising the pipeline without the key
+
+```bash
+make release-candidate
+```
+
+Runs the whole thing with a keypair generated for that run and shredded at
+the end. CI does this on every pull request, because a release pipeline whose
+first execution is a release is not a pipeline.
+
+The signature it produces is cryptographically valid and **establishes
+nothing about publisher identity** — the key existed for thirty seconds. The
+script says so, and writes `agent-releases.json.ephemeral` beside the
+manifest so that a later publishing step can refuse on its presence rather
+than relying on somebody remembering.
+
+### Rotating the signing key
+
+The trap worth naming: an agent built before a rotation trusts only the old
+key. Sign the next manifest with only the new key and that agent refuses it —
+*including the update that would have given it a binary trusting the new
+key*. The fleet the rotation is for is the fleet it strands.
+
+So a `.sig` may carry several signatures over the same bytes, and a verifier
+accepts if **any one** of them is by a key it trusts.
+
+1. Make the new keypair, offline:
+   `scripts/sign-release.py keygen --private-key new.key --public-key new.pub`
+2. Add the new public key to `HCC_RELEASE_SIGNING_KEYS` on the controller,
+   and to the build's stamped keys. Both keys are trusted from now on.
+3. Prepare releases signed with **both**, which is what the overlap is:
+   `./scripts/prepare-release.sh … --private-key old.key --add-signature new.key`
+4. Wait until the fleet has taken an update built in step 2. `hcc-agent
+   doctor` on a host reports which keys it trusts.
+5. Drop `--add-signature`, sign with the new key alone, and remove the old
+   public key from the controller and from the build.
+
+Steps 3 and 5 are the overlap, and step 4 is the only one that takes time.
+Shortening it by skipping step 3 is the mistake this procedure exists to
+prevent.
+
 ### Publishing — manual, and never performed yet
 
 Once a tag's `release-prepare` run is green:

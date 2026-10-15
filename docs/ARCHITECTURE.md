@@ -3113,6 +3113,213 @@ state, never from elapsed time. A stuck download shows a bar that does not
 move, which is the true and useful answer; a bar that advanced on a timer would
 be inventing progress and somebody would believe it.
 
+### ADR-063: A root-owned version floor, in a sibling directory
+
+**Decision.** Each host stores a monotonic anti-rollback floor — the oldest
+version an update may target — in `/var/lib/hcc-agent-update/`, a directory
+owned by root and **not** inside the agent's own state directory. The floor
+rises only when an install reaches a health-checked conclusion. No field in an
+update instruction lowers it; `allow_downgrade` is bounded by it. The only way
+down is `hcc-agent upgrade --allow-downgrade --version <v>`, which needs root
+on the host.
+
+**Why a floor at all.** [ADR-060](#adr-060-the-publisher-signs-releases-the-controller-only-authorizes-them)
+stops a compromised controller installing a binary the publisher did not
+build. It does not stop one installing an *old* binary the publisher did
+build, and a signed release from before a fix is exactly what an attacker
+holding the control plane would choose. A signature is not a freshness
+statement: the one on 0.1.0 is as valid today as the day it was made.
+
+**Why a sibling and not a subdirectory.** Permission to rename or delete a
+directory entry comes from the **parent** directory. `/var/lib/hcc-agent` is
+owned by the unprivileged service account by design — the agent stages
+downloads there — so a root-owned `trust/` inside it could be renamed away by
+that account and replaced with one it wrote. The only fix within that layout
+is a sticky bit, which is a subtle property one `chmod` undoes. A sibling
+needs write access to `/var/lib`, which the agent does not have.
+
+**Why it rises on success and not on attempt.** Raising it when an install is
+*attempted* would mean a host that failed to reach 0.2.0 could no longer be
+sent 0.1.5 either, and the only way out would be root on the machine. So the
+floor follows what has actually run.
+
+**What it does not claim.** Nothing here resists a compromised root account,
+which can rewrite the floor, replace the binary or remove the unit. The
+property defended is narrower and worth stating exactly: a compromised
+*controller*, or a compromised *unprivileged agent account*, cannot move a
+host to an older release.
+
+### ADR-064: The privileged installer works from its own copy of the archive
+
+**Decision.** Before verifying or extracting anything, the privileged update
+unit copies the staged archive out of `/var/lib/hcc-agent` into its own
+root-owned directory, and installs from that copy. The upgrader additionally
+reads the archive through a single file descriptor rather than opening the
+path twice.
+
+**Why.** An upgrade reads the archive twice — once to hash it against the
+digest in the publisher's signed metadata, once to extract the binary. The
+directory it was staged in belongs to the unprivileged agent account, so
+those two reads can see different bytes: the digest is verified against an
+archive that is then not the one installed. That turns "the agent account is
+compromised" into "root executes the attacker's binary", which is precisely
+what the handoff exists to prevent.
+
+**Why both mechanisms.** A single descriptor closes the *rename* form of the
+substitution, because a descriptor is pinned to an inode. It does nothing
+about `open(O_TRUNC)` and a rewrite, which modifies that same inode — a fact
+established by writing the test first and watching a descriptor-only
+implementation fail it. The copy into a directory no unprivileged account can
+write closes both, and a modification made *during* the copy produces a digest
+mismatch, which is a refusal.
+
+**Cost.** One extra copy of a ~3 MB archive per update, deleted when the
+install finishes.
+
+### ADR-065: The agent divides by the interval, not the controller
+
+**Decision.** Disk throughput, disk IOPS and network throughput are stored as
+**gauges already expressed per second**, computed by the agent from the
+difference between two of its own readings. The kernel's monotonic counters
+are never sent. Four new units carry them: `bytes_per_second`,
+`operations_per_second`, `packets_per_second`, `bits_per_second`.
+
+**Why not store the counters and derive rates at query time.** The agent is
+the only component that can tell a counter which *reset* from one that
+advanced. Given two readings from either side of a reboot, a device
+re-enumeration or a 32-bit wrap, the controller can only subtract them —
+producing a negative rate, or a spike of several gigabytes per second at the
+exact moment somebody is trying to work out what happened. The agent holds
+the previous reading and knows it came from the same boot, so it can do what
+the CPU collector already does: produce **nothing** for that interval.
+
+**Why not have the agent divide by its configured interval.** Because the
+scheduler is not a clock. A host under load fires a 10-second job at 10.4
+seconds, and a rate computed against 10 would read 4% high — consistently,
+and invisibly. The agent measures the elapsed time between its own two
+readings and divides by that.
+
+**Consequence.** A rate series is averageable, so the existing rollups are
+correct for it without a special case, and a gap in the raw series means
+"not measured" exactly as it does everywhere else. The cost is that the
+underlying totals are not recoverable: "how many bytes has this disk written
+since Tuesday" is not a question this schema can answer. That is the right
+trade for a monitoring product — nobody asks it — and it is stated here so
+the absence is a decision rather than a surprise.
+
+### ADR-066: Collector failure is stored against the module, not inferred from absence
+
+**Decision.** A new table, `host_module_health`, holds one row per host per
+module: when the controller last heard about it, when it last collected
+without an error, when it last failed, the agent's own words for that
+failure, and how many collections have failed since the last success.
+Upserted on the ingestion path in the same transaction as the samples.
+
+**Why a table and not an inference.** "This module has no recent samples"
+has four causes with four different remedies — nobody enabled it, the agent
+is offline, it was enabled a second ago, or the collector is raising an
+error every interval — and only the first three were answerable. The fourth
+is the interesting one and was entirely invisible: a removed disk, a stopped
+Docker daemon or a `systemctl` that started refusing produced an enabled
+module, a connected agent, no data and no explanation, indefinitely.
+
+**The protocol already carried it.** `TelemetryEntry.error` has existed
+since phase 3 and its own description says "a module that has been failing
+for an hour is information an operator needs". `MetricsService.ingest` read
+`entry.samples` and discarded the rest. This ADR is mostly a record that the
+field is now read.
+
+**Why not a column on `host_module_overrides`.** That row is what the
+operator *wants*; this one is what is *happening*. A module inheriting the
+global default has no override row at all and still has health, and
+resetting an override deletes a row that must not take the failure history
+with it.
+
+**Why every timestamp is the controller's clock.** Unlike
+`metric_series.last_sample_at`, which records when the agent says it took a
+measurement. A host whose clock is four hours out is one of the conditions
+this table reports — the controller refuses every sample it sends — and a
+diagnostic timestamped by the thing being diagnosed is not a diagnostic.
+That case is recorded too, with the controller's own words, because from
+inside that host nothing is wrong and the agent cannot report it.
+
+**Consequence.** An error string from a possibly-compromised host is stored
+and rendered in a browser. It is bounded twice (the protocol refuses a
+longer frame; the service truncates before the UPSERT), stored verbatim
+rather than pre-escaped, and escaped by React at the point of rendering. A
+collection that ran and produced *no samples* is a **success** — a rate
+collector's first interval legitimately produces nothing — and the error
+survives a later success so that a module which fails and recovers every few
+minutes is visible rather than self-erasing.
+
+### ADR-067: The rollup bound is a bound on series, and the lag is reported
+
+**Decision.** `MAX_BUCKETS_PER_RUN` stays at 5,000. The maintenance pass now
+reports `rollup_lag_seconds` per tier and logs `metric_rollup_behind` when a
+tier is more than three bucket widths behind.
+
+**The measurement.** The five-minute tier writes one row per series per
+five-minute bucket, and the job runs every five minutes, so a steady-state
+pass has exactly one bucket per series to write. The bound is therefore a
+bound on **series in the installation** — and since five of the eleven
+modules are label-keyed, that is far fewer hosts than it sounds:
+`scripts/measure-metrics.py --profile full` measures 164 series on a
+well-populated host, so the ceiling is **thirty hosts** with everything
+enabled, against 357 on the two-module profile the earlier figures used.
+
+Past the ceiling the job does not degrade, it never catches up: each pass
+writes 5,000 of the buckets that accrued and falls behind by the remainder,
+every five minutes, for ever. The tiers keep answering queries, about last
+week, and nothing in the data shows it.
+
+**Why not raise the bound.** 5,000 buckets took about half a second in the
+benchmark, so the 82,000 that 500 full-profile hosts would need is an
+eight-second transaction every five minutes. That is a different trade from
+the one the constant currently makes — progress every run rather than one
+enormous transaction — and the contention it would cause with live ingestion
+is exactly what has not been measured. The likely eventual answer is a
+**time-bounded** pass rather than a larger count.
+
+**Why the lag is derived rather than remembered.** `RetentionService`
+declares itself stateless and `__slots__` enforces it, which is what makes
+it restart-safe. A consecutive-capped-runs counter was tried first and
+failed immediately and correctly. The lag is read from the database: the
+newest bucket each tier holds against the newest the *data* says it should.
+
+**Measured against the data, not the clock.** A series with gaps has no
+bucket for a window nothing sampled, so comparing the watermark with "now
+minus the grace period" reports a caught-up tier as permanently five minutes
+behind. The first version did exactly that.
+
+### ADR-068: The browser's module fixture is generated, not transcribed
+
+**Decision.** `apps/web/src/test/module-catalogue.generated.ts` is written by
+`scripts/contracts.sh` from the controller's registry, and
+`make check-contract` fails when the committed file is stale.
+`FAKE_MODULES` re-exports it.
+
+**Why.** It was a hand-written copy of `contracts/monitoring-modules.json`,
+kept in step by a comment asking the next reader to keep it in step. Six
+modules landed in the registry during Operation Horizon and the fixture
+claimed five throughout — so every browser test ran against a five-module
+world, a page that renders eleven rows was never rendered with eleven, and a
+test seeding one of the new modules asserted against something the fixture
+had never heard of. **Nothing failed**, because the only thing that could
+have noticed the drift was the copy itself.
+
+**Why not import `contracts/monitoring-modules.json` directly.** The client
+image is built from `apps/web` alone, so a file importing
+`../../../../contracts/` type-checks locally and breaks `docker compose
+build` with "Cannot find module". The generated file lives inside the build
+context; a comparison test that read the contract with `node:fs` would also
+have needed `@types/node`, a dependency added for a fixture.
+
+**Consequence.** `description` was added to the contract document so the
+fixture could be generated whole. The Go agent ignores it — `encoding/json`
+reads named fields and skips the rest — and the contract test's struct is
+unchanged.
+
+
 ---
 
 ## 14. Open design questions

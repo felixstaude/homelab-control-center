@@ -39,6 +39,16 @@ if TYPE_CHECKING:
 
 pytestmark = pytest.mark.integration
 
+#: A module identifier that will never be real.
+#:
+#: These tests used ``"docker"`` as "a module the registry does not have",
+#: until Phase G implemented it and three of them started asserting that a
+#: module in the registry is not in the registry — in the integration suite,
+#: which does not run without a database, so it was CI that noticed. A
+#: placeholder has to be a name nobody would ever ship.
+UNKNOWN_MODULE = "not_a_real_module"
+
+
 HOSTS = "/api/v1/hosts"
 MONITORING = "/api/v1/monitoring"
 
@@ -615,7 +625,7 @@ async def test_an_unknown_module_is_a_404_naming_the_catalogue(
         token = await sign_in(client, "admin")
         host_id = await create_host(client, token)
         response = await client.put(
-            f"{HOSTS}/{host_id}/monitoring/modules/docker",
+            f"{HOSTS}/{host_id}/monitoring/modules/{UNKNOWN_MODULE}",
             json={"enabled": True},
             headers=csrf(token),
         )

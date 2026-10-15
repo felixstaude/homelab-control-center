@@ -165,6 +165,18 @@ type Options struct {
 	// Upgrade installs a verified archive. Injected so a test can assert the
 	// updater's own behaviour without replacing a real binary.
 	Upgrade func(ctx context.Context, options install.UpgradeOptions) error
+	// Floor reads this host's anti-rollback state.
+	//
+	// Injected, and it has to be: [install.LoadState] requires the file to be
+	// owned by uid 0, which is the entire point of it and which `go test`
+	// running as an ordinary user cannot arrange. The requirement is not
+	// relaxable from outside internal/install — deliberately, so that no
+	// production path can turn it off — so a test that needs a floor
+	// supplies one here instead.
+	//
+	// The real reader is wired in by [New]; internal/install's own tests
+	// cover it, and scripts/update-e2e.sh exercises it as root.
+	Floor func() (*install.State, error)
 	// Now is the clock, injected so expiry is a test rather than a wait.
 	Now func() time.Time
 	// StagingDir is where the archive is downloaded. Empty means the system
@@ -186,6 +198,12 @@ func New(options Options) *Updater {
 	}
 	if options.Upgrade == nil {
 		options.Upgrade = runUpgrade
+	}
+	if options.Floor == nil {
+		paths := options.Paths
+		options.Floor = func() (*install.State, error) {
+			return install.LoadState(paths.VersionFloor())
+		}
 	}
 	if options.Now == nil {
 		options.Now = time.Now
@@ -554,6 +572,33 @@ func (u *Updater) check(instruction protocol.UpdateInstruction) (release.Platfor
 					"authorization from an administrator",
 				targetVersion, installed,
 			)
+		}
+	}
+
+	// The anti-rollback floor, which `allow_downgrade` does **not** open.
+	//
+	// The check above is the controller's authorisation and this one is the
+	// host's own, and the second outranks the first: a controller that has
+	// been taken over can set `allow_downgrade` as easily as it can set
+	// anything else, so a gate the instruction unlocks is not a gate. The
+	// floor is lowered only by root on this machine.
+	//
+	// Advisory here and authoritative in the privileged installer, which
+	// re-reads the same file. This copy exists for the message: refusing at
+	// this point tells the controller *why* in the update history, instead of
+	// letting the host hand the request to root and report a failure with no
+	// context. A read failure is therefore not fatal when there is a
+	// privileged half to catch it — and is fatal when this process is root
+	// and there is not.
+	switch state, err := u.options.Floor(); {
+	case err != nil && u.options.System.Geteuid() == 0:
+		return release.Platform{}, refuse("%v", err)
+	case err != nil:
+		u.options.Logger.Warn("cannot read the version floor; "+
+			"the privileged installer will decide", "error", err)
+	default:
+		if decision := state.PermitsVersion(instruction.ToVersion); !decision.Permitted {
+			return release.Platform{}, refuse("%s", decision.Reason)
 		}
 	}
 

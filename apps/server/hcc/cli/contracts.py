@@ -179,6 +179,11 @@ def _modules() -> dict[str, Any]:
             {
                 "id": module.id,
                 "name": module.name,
+                # Operator-facing prose, carried so the browser client's test
+                # fixture can be *generated* from this file rather than
+                # transcribed. The Go agent ignores it; `encoding/json` reads
+                # named fields and skips the rest.
+                "description": module.description,
                 "platform": module.platform.value,
                 "schedule_kinds": [kind.value for kind in module.schedule_kinds],
                 "min_interval_seconds": module.min_interval_seconds,
@@ -437,6 +442,54 @@ def _release_signing() -> dict[str, Any]:
         }
     )
 
+    # --- Rotation overlap: several signatures over the same bytes ----------
+    #
+    # The case that makes a key rotation possible at all. An agent trusting
+    # only the old key has to be able to verify the manifest that carries its
+    # replacement, or the rotation strands exactly the fleet that needs it.
+    payload = _SIGNING_PAYLOADS[2]
+    trusted = signing.sign_manifest(payload, private)
+    foreign = signing.sign_manifest(payload, stranger_seed)
+
+    # The trusted signature second, so a verifier that stops at the first
+    # entry gets this wrong.
+    vectors.append(
+        {
+            "payload_base64": base64.b64encode(payload).decode("ascii"),
+            "signature_document": json.dumps({"signatures": [foreign, trusted]}, sort_keys=True),
+            "expected_status": signing.SignatureStatus.VALID.value,
+        }
+    )
+    vectors.append(
+        {
+            "payload_base64": base64.b64encode(payload).decode("ascii"),
+            "signature_document": json.dumps({"signatures": [trusted]}, sort_keys=True),
+            "expected_status": signing.SignatureStatus.VALID.value,
+        }
+    )
+    # None trusted: reported as untrusted rather than invalid, because nothing
+    # here is evidence of tampering.
+    vectors.append(
+        {
+            "payload_base64": base64.b64encode(payload).decode("ascii"),
+            "signature_document": json.dumps({"signatures": [foreign]}, sort_keys=True),
+            "expected_status": signing.SignatureStatus.UNTRUSTED_KEY.value,
+        }
+    )
+    # A trusted key over different bytes, alongside an untrusted key over
+    # these. The trusted failure is tampering and must outrank the untrusted
+    # one, or the only alarm in this system is hidden behind the common case.
+    vectors.append(
+        {
+            "payload_base64": base64.b64encode(payload).decode("ascii"),
+            "signature_document": json.dumps(
+                {"signatures": [foreign, signing.sign_manifest(b"a different document", private)]},
+                sort_keys=True,
+            ),
+            "expected_status": signing.SignatureStatus.INVALID.value,
+        }
+    )
+
     malformed: list[str] = [
         "{not json",
         "[]",
@@ -448,6 +501,12 @@ def _release_signing() -> dict[str, Any]:
             sort_keys=True,
         ),
         json.dumps({"algorithm": "ed25519", "key_id": "x", "signature": "AA=="}, sort_keys=True),
+        # Both shapes at once. Two statements about what signed this is not a
+        # thing to reconcile on a privilege boundary.
+        json.dumps({**trusted, "signatures": [trusted]}, sort_keys=True),
+        json.dumps({"signatures": []}, sort_keys=True),
+        json.dumps({"signatures": trusted}, sort_keys=True),
+        json.dumps({"signatures": [trusted] * (signing.MAX_SIGNATURES + 1)}, sort_keys=True),
     ]
     for malformed_document in malformed:
         vectors.append(

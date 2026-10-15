@@ -79,6 +79,7 @@ from hcc.models.metrics import (
     MetricSeries,
     canonical_labels_key,
 )
+from hcc.models.monitoring import MAX_COLLECTOR_ERROR_LENGTH, HostModuleHealth
 from hcc.monitoring import modules as registry
 
 if TYPE_CHECKING:
@@ -165,6 +166,41 @@ class IngestOutcome:
         if len(unique) < len(set(self.reasons)):
             summary += "; …"
         return summary[:120]
+
+
+@dataclass(frozen=True, slots=True)
+class _ModuleOutcome:
+    """What happened to one module in one batch.
+
+    One field, and it is deliberately not a boolean: ``error is None`` is a
+    success, and the string is what makes an unsuccessful one useful. A
+    ``succeeded: bool`` alongside the text would admit the pair
+    ``(True, "disk gone")``, which nothing should have to interpret.
+    """
+
+    error: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ModuleHealth:
+    """Whether one module's collector is working, as a reader sees it.
+
+    ``failing`` is derived rather than stored, because the stored form —
+    "how many failures since the last success" — is the fact, and "is it
+    failing" is one reading of it that would go stale in a column.
+    """
+
+    module: str
+    last_reported_at: datetime | None
+    last_success_at: datetime | None
+    last_error_at: datetime | None
+    last_error: str | None
+    consecutive_failures: int
+
+    @property
+    def failing(self) -> bool:
+        """Whether the most recent collection failed."""
+        return self.consecutive_failures > 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -275,6 +311,10 @@ class MetricsService:
         # ingestion budget at fleet scale.
         rows: list[dict[str, Any]] = []
         touched: dict[int, datetime] = {}
+        # One health row per module in this batch, keyed by module so a batch
+        # that somehow carries two entries for one module records the later
+        # of them rather than racing itself inside a single UPSERT.
+        health: dict[str, _ModuleOutcome] = {}
 
         for entry in entries:
             if entry.module not in enabled_modules:
@@ -294,7 +334,21 @@ class MetricsService:
             if (problem := _timestamp_problem(entry.collected_at, moment)) is not None:
                 rejected += len(entry.samples)
                 reasons.append(problem)
+                # Recorded as a failure, with the controller's words rather
+                # than the agent's. A host whose clock is four hours out
+                # produces an enabled module, a connected agent and no data,
+                # which is precisely the symptom this table exists to explain
+                # — and the agent cannot report it, because from inside that
+                # host nothing is wrong.
+                health[entry.module] = _ModuleOutcome(error=problem)
                 continue
+
+            # The agent's own account of the collection, recorded whether or
+            # not it carried samples. An entry with an error and no samples is
+            # the normal shape of a failing collector; an entry with no error
+            # and no samples is a rate collector's first interval, which is
+            # success. See `HostModuleHealth`.
+            health[entry.module] = _ModuleOutcome(error=entry.error)
 
             for sample in entry.samples:
                 metric = descriptor.metric(sample.metric)
@@ -342,6 +396,11 @@ class MetricsService:
                 .on_conflict_do_nothing(index_elements=["series_id", "recorded_at"])
             )
             await self._touch_series(db, touched)
+
+        # After the samples and inside the same transaction. A batch that
+        # fails to store must not leave a health row claiming a collection
+        # the database never accepted.
+        await self._record_health(db, host_id=host_id, outcomes=health, moment=moment)
 
         if rejected:
             logger.warning(
@@ -444,7 +503,136 @@ class MetricsService:
             )
         )
 
+    async def _record_health(
+        self,
+        db: AsyncSession,
+        *,
+        host_id: uuid.UUID,
+        outcomes: Mapping[str, _ModuleOutcome],
+        moment: datetime,
+    ) -> None:
+        """Record whether each module in this batch collected successfully.
+
+        One statement for the whole batch, because this runs on the ingestion
+        hot path: eleven modules reporting on one tick is eleven rows, and
+        eleven round trips per batch per host would be the most expensive
+        thing a fleet did.
+
+        ## The UPSERT has to read the existing row
+
+        ``consecutive_failures`` is a counter, and "one more than whatever is
+        there" cannot be computed before the statement runs — a read followed
+        by a write would also be a lost update whenever two batches from the
+        same host overlapped. So the increment is expressed in the
+        ``DO UPDATE`` clause against ``host_module_health.consecutive_failures``,
+        which is the row as it exists, and PostgreSQL serialises the
+        conflicting writers for us.
+
+        ## A success does not erase the last error
+
+        ``last_error`` and ``last_error_at`` are carried forward with
+        ``COALESCE`` on the excluded values, so only ``consecutive_failures``
+        resets. A module that fails and recovers every few minutes is a real
+        condition and one that cleared its own evidence would be invisible.
+        """
+        if not outcomes:
+            return
+
+        modules = list(outcomes)
+        # Truncated here rather than trusted to be short.
+        #
+        # The protocol bounds the agent's string at the same length, so for
+        # an agent-reported error this is a second check of the same thing.
+        # It is not redundant for the controller's own refusals: those are
+        # f-strings over values from the frame, and `_timestamp_problem`
+        # interpolates a second count that nothing bounds. A string one
+        # character too long raises `StringDataRightTruncationError` inside
+        # the WebSocket handler, which the agent sees only as
+        # `protocol_error` and retries for ever — defect 5 of this run, on
+        # `metric_series.unit`, and not worth having twice.
+        reasons = [outcomes[module].error for module in modules]
+        errors = [
+            None if reason is None else reason[:MAX_COLLECTOR_ERROR_LENGTH] for reason in reasons
+        ]
+        failed = [reason is not None for reason in reasons]
+
+        await db.execute(
+            text(
+                """
+                INSERT INTO host_module_health AS h (
+                    id, host_id, module_id,
+                    last_reported_at, last_success_at, last_error_at, last_error,
+                    consecutive_failures
+                )
+                SELECT
+                    gen_random_uuid(), :host_id, v.module_id,
+                    :moment,
+                    CASE WHEN v.failed THEN NULL ELSE :moment END,
+                    CASE WHEN v.failed THEN :moment ELSE NULL END,
+                    v.error,
+                    CASE WHEN v.failed THEN 1 ELSE 0 END
+                FROM (
+                    SELECT unnest(cast(:modules AS text[])) AS module_id,
+                           unnest(cast(:errors AS text[])) AS error,
+                           unnest(cast(:failed AS boolean[])) AS failed
+                ) AS v
+                ON CONFLICT ON CONSTRAINT uq_host_module_health_host_module
+                DO UPDATE SET
+                    last_reported_at = EXCLUDED.last_reported_at,
+                    -- GREATEST, not assignment: two connections for one host
+                    -- can interleave, and an older batch landing second must
+                    -- not move a success backwards into the past.
+                    last_success_at = GREATEST(h.last_success_at, EXCLUDED.last_success_at),
+                    last_error_at = COALESCE(EXCLUDED.last_error_at, h.last_error_at),
+                    last_error = COALESCE(EXCLUDED.last_error, h.last_error),
+                    consecutive_failures = CASE
+                        WHEN EXCLUDED.consecutive_failures = 0 THEN 0
+                        ELSE h.consecutive_failures + 1
+                    END
+                """
+            ).bindparams(
+                host_id=host_id,
+                moment=moment,
+                modules=modules,
+                errors=errors,
+                failed=failed,
+            )
+        )
+
     # --- Reading ----------------------------------------------------------
+
+    async def health_for_host(
+        self, db: AsyncSession, host_id: uuid.UUID
+    ) -> dict[str, ModuleHealth]:
+        """Every module this host has ever reported on, keyed by module.
+
+        A module absent from the result has never reported — which is not the
+        same as healthy and not the same as failing, and the caller has to be
+        able to tell. Returning a synthetic "unknown" row for every module in
+        the registry would make that distinction the caller's problem to undo.
+        """
+        rows = (
+            (
+                await db.execute(
+                    select(HostModuleHealth)
+                    .where(HostModuleHealth.host_id == host_id)
+                    .order_by(HostModuleHealth.module_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return {
+            row.module_id: ModuleHealth(
+                module=row.module_id,
+                last_reported_at=row.last_reported_at,
+                last_success_at=row.last_success_at,
+                last_error_at=row.last_error_at,
+                last_error=row.last_error,
+                consecutive_failures=row.consecutive_failures,
+            )
+            for row in rows
+        }
 
     async def series_for_host(
         self, db: AsyncSession, host_id: uuid.UUID

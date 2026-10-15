@@ -90,8 +90,10 @@ describe('default-deny is visible', () => {
       expect(within(card).getAllByText('Off').length).toBeGreaterThan(0);
     });
     // Scoped to the badge: each row's select also carries an "Off" option, so
-    // an unscoped count would be ten and would pass for the wrong reason.
-    expect(within(card).getAllByText('Off', { selector: 'span' })).toHaveLength(5);
+    // an unscoped count would be twenty-two and would pass for the wrong
+    // reason. Eleven, one per module in the registry — pinned rather than
+    // `> 0`, so a module the page silently dropped is a failure.
+    expect(within(card).getAllByText('Off', { selector: 'span' })).toHaveLength(11);
     expect(within(card).queryByText('Collecting')).toBeNull();
   });
 
@@ -120,8 +122,16 @@ describe('default-deny is visible', () => {
     const card = monitoringCard();
     // Load's floor is 5 s and uptime's is 60 s — different per module, which
     // is why the interface reports them rather than assuming one number.
-    expect(await within(card).findByText(/no faster than every 5 s/i)).toBeInTheDocument();
-    expect(within(card).getByText(/no faster than every 1 min/i)).toBeInTheDocument();
+    // Several modules share a floor, so these are counted rather than
+    // matched singly; what the test is about is that *different* numbers
+    // appear, not how many modules happen to want each one.
+    expect(
+      await within(card).findAllByText(/no faster than every 5 s/i),
+    ).not.toHaveLength(0);
+    expect(within(card).getAllByText(/no faster than every 1 min/i)).not.toHaveLength(0);
+    // Filesystem's floor is 10 s: a third distinct number, which is what
+    // makes "the interface reports the floor" more than a coincidence.
+    expect(within(card).getAllByText(/no faster than every 10 s/i)).not.toHaveLength(0);
   });
 });
 

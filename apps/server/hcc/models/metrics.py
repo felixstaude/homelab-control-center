@@ -95,6 +95,21 @@ _MODULE_ID_SQL: Final = ", ".join(f"'{module_id}'" for module_id in MODULE_IDS)
 #: are registry identifiers with the same shape.
 MAX_METRIC_ID_LENGTH: Final = MAX_MODULE_ID_LENGTH
 
+#: Longest a unit name may be.
+#:
+#: Thirty-two, and it was sixteen until `operations_per_second` arrived and
+#: did not fit. That failure is worth recording: every unit test passed,
+#: because none of them touch the database, and the integration suite passed
+#: because no test had yet stored a series in the new unit. It surfaced as
+#: `StringDataRightTruncationError` inside a WebSocket handler, which the
+#: agent saw only as "the controller closed the connection: protocol_error"
+#: and retried for ever.
+#:
+#: `test_every_registry_unit_fits_its_column` is the guard. The column is not
+#: an enum for the same reason the module allow-list is a CHECK rather than
+#: an enum type — see migration 0011.
+MAX_UNIT_LENGTH: Final = 32
+
 #: Longest the canonical label string may be.
 #:
 #: Four labels of a 32-character key and a 64-character value, plus
@@ -179,10 +194,10 @@ class MetricSeries(Base):
     )
 
     unit: Mapped[str] = mapped_column(
-        String(16),
+        String(MAX_UNIT_LENGTH),
         nullable=False,
         doc=(
-            "percent | bytes | seconds | count | load. Stored on the series "
+            "One of hcc.monitoring.modules.MetricUnit. Stored on the series "
             "rather than looked up from the registry at read time, so a "
             "historical series keeps the unit it was recorded in even if a "
             "later release changes the module's."

@@ -151,6 +151,15 @@ export const queryKeys = {
     updateHistory: (params: UpdateHistoryKeyParams) =>
       ['session', 'updates', 'history', params] as const,
     updateEvents: (jobId: string) => ['session', 'updates', 'events', jobId] as const,
+    /**
+     * Staged rollouts.
+     *
+     * Under the `updates` root, so a rollout control — which also changes
+     * host statuses and the history — invalidates all three by invalidating
+     * the root, as every other update mutation does.
+     */
+    rollouts: () => ['session', 'updates', 'rollouts'] as const,
+    rollout: (rolloutId: string) => ['session', 'updates', 'rollout', rolloutId] as const,
 
     /* --- Metrics (phase 3) --- */
 

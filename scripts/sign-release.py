@@ -135,32 +135,90 @@ def _sign(arguments: argparse.Namespace) -> int:
     manifest_path: Path = arguments.manifest
     payload = manifest_path.read_bytes()
     signature_path = signature_path_for(manifest_path)
-    if signature_path.exists() and not arguments.force:
-        print(f"{signature_path} already exists; pass --force to replace it", file=sys.stderr)
+    existing = _existing_signatures(signature_path) if arguments.add else []
+    if signature_path.exists() and not (arguments.force or arguments.add):
+        print(
+            f"{signature_path} already exists; pass --force to replace it, "
+            f"or --add to sign alongside it for a key rotation",
+            file=sys.stderr,
+        )
         return 1
 
     private_raw = _read_private_key(arguments.private_key)
     document = sign_manifest(payload, private_raw)
 
+    if any(entry["key_id"] == document["key_id"] for entry in existing):
+        print(
+            f"{signature_path} already carries a signature by key "
+            f"{document['key_id']}; nothing to add",
+            file=sys.stderr,
+        )
+        return 1
+
+    # One signature writes the single-document shape and several write the
+    # rotation shape. Not always an array: a release signed by one key is the
+    # normal case, and wrapping it would churn every signature that exists for
+    # nothing.
+    entries = [*existing, document]
+    written: dict[str, object] = entries[0] if len(entries) == 1 else {"signatures": entries}
+
     # The signature covers `payload`, so the signature file's own formatting is
     # free — but it is written deterministically anyway, so that re-signing
     # identical bytes produces an identical file and a diff means something.
-    signature_path.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    signature_path.write_text(json.dumps(written, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
     print(f"signed {manifest_path} ({len(payload)} bytes)")
     print(f"  key id      {document['key_id']}")
+    if existing:
+        print(f"  alongside   {', '.join(entry['key_id'] for entry in existing)}")
     print(f"  signature   {signature_path}")
 
-    # Verified immediately, against the key that was just used. A tool that
-    # wrote a signature it had not checked would be the one place in this
-    # system where "it is signed" is an untested claim.
-    store = TrustStore((encode_public_key(_public_of(private_raw)),))
-    verification = store.verify(payload, signature_path.read_bytes())
-    if verification.status is not SignatureStatus.VALID:
-        print(f"  the signature just written does not verify: {verification.detail}", file=sys.stderr)
-        return 1
-    print("  verified    against the key that signed it")
+    # Verified immediately, against the key that was just used, **and**
+    # against each key already in the file. A tool that wrote a signature it
+    # had not checked would be the one place in this system where "it is
+    # signed" is an untested claim — and during a rotation the claim that
+    # matters most is that the *old* signature still verifies, since that is
+    # what the existing fleet will use.
+    written_bytes = signature_path.read_bytes()
+    for entry in entries:
+        store = TrustStore((encode_public_key(_public_of(private_raw)),)) if entry is document else None
+        if store is None:
+            # An existing entry: verified by checking the whole document
+            # against a store holding only that entry's key is not possible
+            # without the public key, which is not in the file. What *can* be
+            # checked is that the entry survived the rewrite byte for byte.
+            if entry not in json.loads(written_bytes).get("signatures", []):
+                print(f"  the existing signature by {entry['key_id']} was lost", file=sys.stderr)
+                return 1
+            print(f"  preserved   {entry['key_id']}")
+            continue
+        verification = store.verify(payload, written_bytes)
+        if verification.status is not SignatureStatus.VALID:
+            print(
+                f"  the signature just written does not verify: {verification.detail}",
+                file=sys.stderr,
+            )
+            return 1
+        print("  verified    against the key that signed it")
     return 0
+
+
+def _existing_signatures(signature_path: Path) -> list[dict[str, str]]:
+    """Read whatever signatures a ``.sig`` already holds, in either shape."""
+    if not signature_path.exists():
+        return []
+    try:
+        parsed = json.loads(signature_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        raise SystemExit(f"{signature_path} is not readable as JSON: {error}") from error
+    if not isinstance(parsed, dict):
+        raise SystemExit(f"{signature_path} is not a JSON object")
+    if "signatures" in parsed:
+        entries = parsed["signatures"]
+        if not isinstance(entries, list):
+            raise SystemExit(f"{signature_path} has a non-array 'signatures'")
+        return list(entries)
+    return [parsed]
 
 
 def _public_of(private_raw: bytes) -> bytes:
@@ -217,6 +275,15 @@ def main(argv: list[str] | None = None) -> int:
     sign.add_argument("--manifest", required=True, type=Path)
     sign.add_argument("--private-key", required=True, type=Path)
     sign.add_argument("--force", action="store_true", help="replace an existing signature")
+    sign.add_argument(
+        "--add",
+        action="store_true",
+        help=(
+            "sign alongside the signatures already present, for a key rotation. "
+            "A verifier accepts if any one of them is by a key it trusts, which "
+            "is what lets agents built before the rotation keep updating."
+        ),
+    )
     sign.set_defaults(handler=_sign)
 
     verify = subparsers.add_parser("verify", help="verify a manifest against a public key")

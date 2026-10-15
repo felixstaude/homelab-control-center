@@ -741,20 +741,60 @@ export type MetricRange = {
   truncated: boolean;
 };
 
-/** What one module is doing on one host. */
+/**
+ * What one module is doing on one host.
+ *
+ * The last five fields answer a question the first four could not: **is the
+ * collector failing?** A module with no series and no samples could be one
+ * nobody enabled, one enabled a second ago, or one that has raised the same
+ * error every interval for a week. Those need different actions.
+ */
 export type ModuleMetricStatus = {
   module: string;
   module_name: string;
   series_count: number;
+  /** When the module last produced a sample, on the **agent's** clock. */
   last_sample_at: string | null;
+  /**
+   * When the controller last heard anything about this module — a successful
+   * collection or a failed one. Null means this host has never reported it,
+   * which is not the same as healthy.
+   *
+   * This and the three fields below are on the **controller's** clock. A host
+   * whose clock is wrong is one of the conditions they report, and a
+   * diagnostic timestamped by the thing being diagnosed is not a diagnostic.
+   */
+  last_reported_at: string | null;
+  /**
+   * When a collection last arrived without an error. A collection that ran
+   * and produced no samples counts: a rate collector's first interval
+   * legitimately produces nothing.
+   */
+  last_success_at: string | null;
+  last_error_at: string | null;
+  /**
+   * Why the last collection produced nothing, usually in the agent's own
+   * words. Kept after a later success — only the count resets — so a module
+   * that fails and recovers is visible rather than self-erasing.
+   *
+   * **Untrusted text from the host.** Render it, never interpret it.
+   */
+  last_error: string | null;
+  /**
+   * Failures since the last success. Zero both for a module that is working
+   * and for one that has never reported; `last_reported_at` tells them apart.
+   */
+  consecutive_failures: number;
 };
 
 /**
  * `GET /api/v1/hosts/{id}/metrics/status`.
  *
- * The question a chart cannot answer: an empty chart could mean "nothing
- * collected", "collection is off" or "the agent is offline", and only the
- * first is visible from the data.
+ * The question a chart cannot answer. An empty chart has four causes and only
+ * one of them is visible from the data: nothing collected (this endpoint),
+ * collection is off (the monitoring endpoint), the agent is offline (the host
+ * endpoint), or the collector is failing every interval — this endpoint too,
+ * through `ModuleMetricStatus`.
  */
 export type MetricsStatus = {
   host_id: string;
@@ -1005,4 +1045,88 @@ export type UpdatePolicyRequest = {
 export type StartUpdateRequest = {
   target_version?: string | null;
   allow_downgrade?: boolean;
+};
+
+// ---------------------------------------------------------------------------
+// Staged rollouts
+// ---------------------------------------------------------------------------
+
+/** One host's place in a rollout, and where it has got to. */
+export type RolloutMember = {
+  host_id: string;
+  /** 0 is the canary; 1 and up are the batches, in order. */
+  batch: number;
+  state: 'pending' | 'running' | 'succeeded' | 'failed' | 'skipped';
+  /**
+   * Whether the post-install health check has passed.
+   *
+   * False while a host is still settling, and false for one that installed
+   * and then went away — which is the distinction the next batch waits on.
+   * A member can be `succeeded` and not healthy, and that pair is the whole
+   * reason this field exists separately from `state`.
+   */
+  healthy: boolean;
+  detail: string | null;
+};
+
+/** A rollout and its current progress. */
+export type Rollout = {
+  rollout_id: string;
+  name: string;
+  to_version: string;
+  state: 'pending' | 'canary' | 'running' | 'paused' | 'completed' | 'cancelled';
+  canary_count: number;
+  batch_size: number;
+  failure_tolerance: number;
+  health_check_seconds: number;
+  offline_deadline_seconds: number;
+  /** An administrator said "go on anyway" after the failure gate stopped it. */
+  failures_overridden: boolean;
+  window: MaintenanceWindow | null;
+  paused_reason: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  total: number;
+  succeeded: number;
+  failed: number;
+  /** Not a failure: an offline host, or one already on the target version. */
+  skipped: number;
+  running: number;
+  pending: number;
+  current_batch: number | null;
+  members: RolloutMember[];
+};
+
+/** What a new rollout needs. The defaults here are the cautious ones. */
+export type CreateRolloutRequest = {
+  name: string;
+  to_version: string;
+  host_ids: string[];
+  canary_host_ids?: string[];
+  canary_count?: number;
+  batch_size?: number;
+  failure_tolerance?: number;
+  health_check_seconds?: number;
+  offline_deadline_seconds?: number;
+  /** The same shape `UpdatePolicyRequest.maintenance_window` uses. */
+  window?: {
+    timezone: string;
+    weekdays: number[];
+    start: string;
+    end: string;
+  } | null;
+};
+
+/** Pausing, resuming or cancelling. */
+export type RolloutControlRequest = {
+  reason?: string;
+  /**
+   * On resume: go on despite the failures that paused it.
+   *
+   * Without this a rollout stopped by the failure gate pauses again on the
+   * next pass, which is correct and looks like a bug if the interface does
+   * not offer the override.
+   */
+  override_failures?: boolean;
 };

@@ -102,6 +102,11 @@ func runInstall(args []string, stdout, stderr io.Writer) int {
 		SourceBinary:   strings.TrimSpace(*source),
 		ConnectTimeout: *timeout,
 		Out:            stdout,
+		// Seeds the anti-rollback floor. This process is the binary being
+		// installed, so its own stamp is the version going on disk — true
+		// for `./hcc-agent install` from an unpacked archive, which is the
+		// only supported way to run it.
+		Version: buildinfo.Get().Version,
 	})
 
 	if err := installer.Run(ctx); err != nil {
@@ -165,6 +170,10 @@ func runUpgrade(args []string, stdout, stderr io.Writer) int {
 		"verify the archive and print what would happen, changing nothing")
 	timeout := flags.Duration("connect-timeout", install.DefaultConnectTimeout,
 		"how long to wait for the restarted service to reconnect before rolling back")
+	allowDowngrade := flags.Bool("allow-downgrade", false,
+		"install a version older than this host has already run, lowering its anti-rollback floor")
+	toVersion := flags.String("version", "",
+		"the version in the archive; required with --allow-downgrade, which has to know what to lower the floor to")
 
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -188,6 +197,50 @@ func runUpgrade(args []string, stdout, stderr io.Writer) int {
 		return exitBadConfig
 	}
 
+	// The anti-rollback floor applies here too, and the escape from it is
+	// here and nowhere else.
+	//
+	// This command needs root to do anything, and root is outside the threat
+	// boundary the floor defends — so refusing an administrator at a terminal
+	// outright would be theatre, while letting the floor be stepped over
+	// silently would make it meaningless on the one path somebody might use
+	// by accident. So: refused by default, with the flag named in the
+	// refusal, and the flag is an explicit statement that lowers the recorded
+	// floor rather than bypassing it for one install. A host that has been
+	// deliberately downgraded says so afterwards.
+	paths := install.Paths{}
+	if !*dryRun {
+		state, err := install.LoadState(paths.VersionFloor())
+		if err != nil {
+			fmt.Fprintf(stderr, "\nhcc-agent: %v\n", err)
+			return exitRuntimeError
+		}
+		switch {
+		case *allowDowngrade:
+			if strings.TrimSpace(*toVersion) == "" {
+				fmt.Fprint(stderr,
+					"hcc-agent upgrade: --allow-downgrade needs --version, because lowering\n"+
+						"this host's anti-rollback floor means recording what it is being\n"+
+						"lowered to. The archive's own version is not read until after the\n"+
+						"floor has been consulted.\n")
+				return exitBadConfig
+			}
+			if err := install.LowerFloor(paths.VersionFloor(), strings.TrimSpace(*toVersion)); err != nil {
+				fmt.Fprintf(stderr, "\nhcc-agent: cannot lower the version floor: %v\n", err)
+				return exitRuntimeError
+			}
+			fmt.Fprintf(stdout,
+				"The anti-rollback floor is lowered to %s for this host.\n"+
+					"Its record of the highest version it has run is unchanged.\n\n",
+				strings.TrimSpace(*toVersion))
+		case strings.TrimSpace(*toVersion) != "":
+			if decision := state.PermitsVersion(strings.TrimSpace(*toVersion)); !decision.Permitted {
+				fmt.Fprintf(stderr, "\nhcc-agent: %s\n", decision.Reason)
+				return exitRuntimeError
+			}
+		}
+	}
+
 	ctx, stop := interruptible()
 	defer stop()
 
@@ -201,6 +254,16 @@ func runUpgrade(args []string, stdout, stderr io.Writer) int {
 	if err := upgrader.Run(ctx); err != nil {
 		fmt.Fprintf(stderr, "\nhcc-agent: %v\n", err)
 		return exitRuntimeError
+	}
+	// Recorded after the upgrade has reconnected, so an operator-driven
+	// install raises the floor exactly as a controller-driven one does and a
+	// host does not become downgradeable by taking the manual path.
+	if !*dryRun && strings.TrimSpace(*toVersion) != "" {
+		if err := install.RecordSuccessfulInstall(
+			paths.VersionFloor(), strings.TrimSpace(*toVersion), "",
+		); err != nil {
+			fmt.Fprintf(stderr, "\n  ! could not record the version floor: %v\n", err)
+		}
 	}
 	return exitOK
 }
@@ -306,6 +369,12 @@ func runApplyUpdate(args []string, stdout, stderr io.Writer) int {
 	err = install.ApplyUpdateRequest(ctx, install.ApplyOptions{
 		TrustStore: store,
 		Out:        stdout,
+		// This process *is* the installed binary: the privileged unit runs
+		// `hcc-agent apply-update` from the very path the upgrade replaces.
+		// So its own build stamp is what the host is running, and no
+		// subprocess is needed to find out. Used to seed the anti-rollback
+		// floor on a host that predates it.
+		InstalledVersion: buildinfo.Get().Version,
 	})
 	switch {
 	case err == nil:

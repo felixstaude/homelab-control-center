@@ -219,13 +219,64 @@ class RangeResponse(BaseModel):
 
 
 class ModuleStatusResponse(BaseModel):
-    """What one module is doing on one host."""
+    """What one module is doing on one host.
+
+    The last five fields answer a question the first four could not: **is the
+    collector failing?** A module with ``series_count`` of zero and a
+    ``last_sample_at`` of null could be one nobody enabled, one enabled a
+    second ago, or one that has raised the same error every interval for a
+    week. Those need different actions and used to look identical.
+    """
 
     module: str
     module_name: str
     series_count: int = Field(description="How many series this module has produced.")
     last_sample_at: str | None = Field(
-        description="When this module last produced a sample, or null if it never has."
+        description=(
+            "When this module last produced a sample, on the *agent's* clock, "
+            "or null if it never has."
+        )
+    )
+
+    # Below here: the controller's clock, deliberately. A host whose clock is
+    # wrong is one of the conditions these fields report, and a diagnostic
+    # timestamped by the thing being diagnosed is not a diagnostic.
+    last_reported_at: str | None = Field(
+        default=None,
+        description=(
+            "When the controller last heard anything about this module — a "
+            "successful collection or a failed one. Null means this host has "
+            "never reported it, which is not the same as healthy."
+        ),
+    )
+    last_success_at: str | None = Field(
+        default=None,
+        description=(
+            "When a collection last arrived without an error. A collection "
+            "that ran and produced no samples counts: a rate collector's "
+            "first interval legitimately produces nothing."
+        ),
+    )
+    last_error_at: str | None = Field(
+        default=None, description="When the last failure arrived, or null if none ever has."
+    )
+    last_error: str | None = Field(
+        default=None,
+        description=(
+            "Why the last collection produced nothing, usually in the agent's "
+            "own words. Kept after a later success — only the failure count "
+            "resets — so a module that fails and recovers every few minutes "
+            "is visible rather than self-erasing. Untrusted text from the "
+            "host: display it, do not interpret it."
+        ),
+    )
+    consecutive_failures: int = Field(
+        default=0,
+        description=(
+            "Failures since the last success. Zero both for a module that is "
+            "working and for one that has never reported; `last_reported_at` "
+            "tells those apart."
+        ),
     )
 
 
@@ -233,9 +284,18 @@ class MetricsStatusResponse(BaseModel):
     """Whether anything is actually arriving.
 
     The answer to the question an operator asks before looking at a chart, and
-    the one a chart cannot answer: an empty chart could mean "nothing
-    collected", "collection is off" or "the agent is offline", and only the
-    first is visible from the data.
+    the one a chart cannot answer. An empty chart has four possible causes and
+    only one of them is visible from the data:
+
+    1. **Nothing has been collected** — this endpoint.
+    2. **Collection is switched off** — the monitoring endpoint.
+    3. **The agent is offline** — the host endpoint.
+    4. **Collection is on, the agent is connected, and the collector is
+       failing every interval** — this endpoint too, through
+       :class:`ModuleStatusResponse`'s error fields.
+
+    The fourth was unreported until Phase M. The agent had always sent the
+    reason; the controller parsed it and threw it away.
     """
 
     host_id: str
@@ -503,10 +563,10 @@ async def metrics_status(
 ) -> MetricsStatusResponse:
     """The question a chart cannot answer.
 
-    An empty chart could mean "nothing collected", "collection is off" or "the
-    agent is offline", and only the first is visible from the data. This
-    endpoint answers the first; the monitoring endpoint answers the second and
-    the host endpoint the third.
+    An empty chart could mean "nothing collected", "collection is off", "the
+    agent is offline" or "the collector is failing", and only the first is
+    visible from the data. This endpoint answers the first and the fourth; the
+    monitoring endpoint answers the second and the host endpoint the third.
 
     Every module in the registry appears, including those that have produced
     nothing, so the interface can tell "this module has no data" from "this
@@ -515,6 +575,7 @@ async def metrics_status(
     await _require_host(db, host_id)
     series = await metrics.series_for_host(db, host_id)
     sample_count = await metrics.sample_count(db, host_id)
+    health = await metrics.health_for_host(db, host_id)
 
     newest: datetime | None = None
     per_module: dict[str, list[SeriesDescriptor]] = {}
@@ -530,12 +591,21 @@ async def metrics_status(
             (entry.last_sample_at for entry in owned if entry.last_sample_at is not None),
             default=None,
         )
+        reported = health.get(module.id)
         modules.append(
             ModuleStatusResponse(
                 module=module.id,
                 module_name=module.name,
                 series_count=len(owned),
                 last_sample_at=_iso(latest),
+                # Absent rather than zeroed when a module has never reported.
+                # A `consecutive_failures` of 0 and a `last_reported_at` of
+                # null is "never heard from"; 0 with a timestamp is "working".
+                last_reported_at=_iso(reported.last_reported_at) if reported else None,
+                last_success_at=_iso(reported.last_success_at) if reported else None,
+                last_error_at=_iso(reported.last_error_at) if reported else None,
+                last_error=reported.last_error if reported else None,
+                consecutive_failures=reported.consecutive_failures if reported else 0,
             )
         )
 

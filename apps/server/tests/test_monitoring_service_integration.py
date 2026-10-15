@@ -53,6 +53,16 @@ if TYPE_CHECKING:
 
 pytestmark = pytest.mark.integration
 
+#: A module identifier that will never be real.
+#:
+#: These tests used ``"docker"`` as "a module the registry does not have",
+#: until Phase G implemented it and three of them started asserting that a
+#: module in the registry is not in the registry — in the integration suite,
+#: which does not run without a database, so it was CI that noticed. A
+#: placeholder has to be a name nobody would ever ship.
+UNKNOWN_MODULE = "not_a_real_module"
+
+
 CONTEXT = AuditContext(actor_user_id=uuid.uuid4(), request_id="test-request")
 
 
@@ -169,7 +179,7 @@ async def test_an_unknown_module_is_refused_before_anything_is_written(
     with pytest.raises(UnknownModuleError):
         await service.set_global_default(
             db_session,
-            module_id="docker",
+            module_id=UNKNOWN_MODULE,
             update=ModuleSettingUpdate(enabled=True),
             context=CONTEXT,
         )
@@ -260,7 +270,10 @@ async def test_an_unknown_module_id_is_refused_by_the_database_too(
     """
     with pytest.raises(Exception, match="module_id_is_known"):
         await db_session.execute(
-            text("INSERT INTO global_module_defaults (module_id, enabled) VALUES ('docker', true)")
+            text(
+                "INSERT INTO global_module_defaults (module_id, enabled) "
+                f"VALUES ('{UNKNOWN_MODULE}', true)"
+            )
         )
     await db_session.rollback()
 

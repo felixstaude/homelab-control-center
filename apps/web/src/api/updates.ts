@@ -23,12 +23,15 @@
 
 import { apiRequest } from '@/api/client';
 import type {
+  CreateRolloutRequest,
   FleetUpdateOverview,
   HostUpdateStatus,
   StartUpdateRequest,
   UpdateEvent,
   UpdateHistory,
   UpdateJob,
+  Rollout,
+  RolloutControlRequest,
   UpdatePolicyRequest,
 } from '@/api/types';
 
@@ -116,5 +119,57 @@ export function cancelUpdate(jobId: string, reason?: string): Promise<UpdateJob>
   return apiRequest<UpdateJob>(`/api/v1/updates/jobs/${jobId}/cancel`, {
     method: 'POST',
     body: { reason: reason ?? null },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Staged rollouts
+//
+// Reads for every authenticated role, mutations for administrators, exactly
+// as the rest of this module splits — enforced on the server, mirrored here
+// only so a control a role cannot use is absent rather than failing.
+// ---------------------------------------------------------------------------
+
+/** Every rollout, newest first. Every authenticated role. */
+export function fetchRollouts(signal?: AbortSignal): Promise<Rollout[]> {
+  return apiRequest<Rollout[]>('/api/v1/updates/rollouts', { signal });
+}
+
+/** One rollout and every member's state. Every authenticated role. */
+export function fetchRollout(rolloutId: string, signal?: AbortSignal): Promise<Rollout> {
+  return apiRequest<Rollout>(`/api/v1/updates/rollouts/${rolloutId}`, { signal });
+}
+
+/**
+ * Create a staged rollout. Administrator only, and audited.
+ *
+ * **Nothing starts here.** The rollout is `pending` and a background pass
+ * starts its canary — inside the maintenance window, if one was given.
+ */
+export function createRollout(body: CreateRolloutRequest): Promise<Rollout> {
+  return apiRequest<Rollout>('/api/v1/updates/rollouts', { method: 'POST', body });
+}
+
+/** Stop starting new hosts. In-flight installs finish. Administrator only. */
+export function pauseRollout(rolloutId: string, body: RolloutControlRequest): Promise<Rollout> {
+  return apiRequest<Rollout>(`/api/v1/updates/rollouts/${rolloutId}/pause`, {
+    method: 'POST',
+    body,
+  });
+}
+
+/** Start it again. Administrator only. */
+export function resumeRollout(rolloutId: string, body: RolloutControlRequest): Promise<Rollout> {
+  return apiRequest<Rollout>(`/api/v1/updates/rollouts/${rolloutId}/resume`, {
+    method: 'POST',
+    body,
+  });
+}
+
+/** Abandon it. Members that have not started never will. Administrator only. */
+export function cancelRollout(rolloutId: string, body: RolloutControlRequest): Promise<Rollout> {
+  return apiRequest<Rollout>(`/api/v1/updates/rollouts/${rolloutId}/cancel`, {
+    method: 'POST',
+    body,
   });
 }

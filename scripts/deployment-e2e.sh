@@ -698,6 +698,72 @@ else
 fi
 
 # ===========================================================================
+info "== 11. Upgrade readiness, and a migration that cannot run =="
+
+# The mission's §7 asks for at least one intentionally failing migration or
+# startup scenario. This is the failing-startup half, and it is the one that
+# matters more: a migration that fails is a controller that will not serve,
+# and what an operator needs from that moment is a clear statement of where
+# the schema is.
+
+readiness="$(curl -sS -b "$COOKIE_JAR" "$API/controller/upgrade-readiness")"
+current_schema="$(printf '%s' "$readiness" | json_field schema_is_current)"
+if [ "$current_schema" = "True" ]; then
+  ok "the controller reports its schema as current"
+else
+  bad "a freshly migrated deployment does not report a current schema: $readiness"
+fi
+
+# Nothing in flight on a stack that has never updated anything, and the
+# advice says so rather than being empty — a readiness check with nothing to
+# say should still say something.
+advice="$(printf '%s' "$readiness" | json_field advice.0)"
+case "$advice" in
+  *"schema is current"*) ok "the advice is a sentence rather than an empty list" ;;
+  *) bad "the advice reads '$advice'" ;;
+esac
+
+# Now break the schema from under it: set the applied revision to one this
+# build has never heard of, which is exactly what running an *older* image
+# against a database a newer one migrated looks like.
+#
+# This is the dangerous direction and the one that looks fine from a count
+# of pending migrations: there are none, because the build does not know the
+# revision to be behind it.
+compose exec -T postgres psql -U hcc -d hcc \
+  -c "UPDATE alembic_version SET version_num = '9999_from_the_future'" >/dev/null 2>&1 \
+  || bad "could not set a future schema revision"
+
+ahead_body="$(curl -sS -b "$COOKIE_JAR" "$API/controller/upgrade-readiness")"
+ahead="$(printf '%s' "$ahead_body" | json_field schema_is_ahead)"
+if [ "$ahead" = "True" ]; then
+  ok "a database ahead of the image is reported as ahead, not as current"
+else
+  bad "a future schema revision was not detected: $ahead_body"
+fi
+ahead_advice="$(printf '%s' "$ahead_body" | json_field advice.0)"
+case "$ahead_advice" in
+  *"deploy the newer image again"*)
+    ok "the advice names the only safe move" ;;
+  *)
+    bad "the advice does not say what to do: '$ahead_advice'" ;;
+esac
+
+# And the application keeps serving. A controller that fell over because its
+# schema is newer than it expects would take the interface down at exactly
+# the moment somebody needs it to explain what happened.
+if curl -fsS -o /dev/null --max-time 5 "$BASE/readyz"; then
+  ok "the controller keeps serving while reporting the mismatch"
+else
+  bad "the controller stopped answering /readyz over a schema it could report on"
+fi
+
+# Put it back, so the sections after this one see a sound deployment.
+compose exec -T postgres psql -U hcc -d hcc \
+  -c "UPDATE alembic_version SET version_num = '$(printf '%s' "$readiness" | json_field schema_revision)'" \
+  >/dev/null 2>&1 || true
+
+# ===========================================================================
 report_timings
 
 # ===========================================================================

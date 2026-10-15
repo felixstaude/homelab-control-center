@@ -64,6 +64,10 @@ const (
 	EnvConfigFile       = "HCC_AGENT_CONFIG_FILE"
 	EnvQueueCapacity    = "HCC_AGENT_QUEUE_CAPACITY"
 	EnvProcRoot         = "HCC_AGENT_PROC_ROOT"
+	EnvSysRoot          = "HCC_AGENT_SYS_ROOT"
+	EnvNetworkIfaces    = "HCC_AGENT_NETWORK_INTERFACES"
+	EnvDockerSocket     = "HCC_AGENT_DOCKER_SOCKET"
+	EnvSystemdUnits     = "HCC_AGENT_SYSTEMD_UNITS"
 	EnvCollectPerCore   = "HCC_AGENT_COLLECT_PER_CORE"
 	EnvEnrollmentToken  = "HCC_AGENT_ENROLLMENT_TOKEN" //nolint:gosec // a variable name, not a credential
 	EnvEnrollmentFile   = "HCC_AGENT_ENROLLMENT_TOKEN_FILE"
@@ -166,6 +170,57 @@ type Config struct {
 	// already read /proc.
 	ProcRoot string
 
+	// SysRoot is where /sys is mounted. Same reasoning as ProcRoot: an agent
+	// in a container may see the host's device model somewhere else, and the
+	// diskio collector's tests read a fixture tree. Used to tell a whole
+	// block device from one of its partitions.
+	SysRoot string
+
+	// NetworkInterfaces names exactly which interfaces the network module
+	// reports, replacing its default selection entirely.
+	//
+	// Empty means the default, which excludes loopback, bridge members and
+	// container plumbing because their traffic is already counted on
+	// something else. Set it to report a `veth` or a bridge anyway.
+	//
+	// A local setting rather than part of the controller's configuration
+	// document, for the same reason CollectPerCore is: it is a decision
+	// about one host's network topology rather than about the fleet, and
+	// module options do not exist in the document model yet.
+	NetworkInterfaces []string
+
+	// DockerSocket is the Docker Engine API socket the `docker` module
+	// reads. **Empty by default, and that is the security boundary.**
+	//
+	// Access to the Docker socket is equivalent to root on the host:
+	// anything that can talk to it can start a privileged container with the
+	// host filesystem mounted. So the capability is granted here, locally,
+	// by an administrator on the machine — and the controller can then only
+	// decide whether to *use* a capability the host has already given.
+	//
+	// Two switches, both of which must be on: this one, and the `docker`
+	// module being enabled for the host. The same shape as
+	// HCC_AGENT_AUTO_UPDATE, and for the same reason.
+	//
+	// There is no default path. An unset value makes the module report
+	// itself unavailable with a reason that names the variable and says what
+	// granting it means.
+	DockerSocket string
+
+	// SystemdUnits names the units the `systemd` module watches, from
+	// HCC_AGENT_SYSTEMD_UNITS.
+	//
+	// Empty means only the host-wide failed-unit count is reported. A host
+	// has hundreds of units and collecting all of them would be a
+	// cardinality decision made on the operator's behalf, with nearly every
+	// series a unit nobody has ever thought about.
+	//
+	// A local setting rather than part of the controller's configuration
+	// document, like the network interface list: which services matter is a
+	// fact about one machine, and module options do not exist in the
+	// document model yet.
+	SystemdUnits []string
+
 	// CollectPerCore adds a series per logical CPU to the cpu module.
 	//
 	// Off by default and deliberately a *local* setting rather than part of
@@ -235,6 +290,7 @@ func defaults() Config {
 		ConfigFile:       DefaultConfigFile,
 		QueueCapacity:    telemetry.DefaultCapacity,
 		ProcRoot:         collect.DefaultProcRoot,
+		SysRoot:          collect.DefaultSysRoot,
 		ShutdownTimeout:  DefaultShutdownGrace,
 		ReconnectMinWait: DefaultReconnectMin,
 		ReconnectMaxWait: DefaultReconnectMax,
@@ -278,6 +334,26 @@ func Load(lookupEnv func(string) (string, bool)) (Config, error) {
 	}
 	if value, ok := lookupEnv(EnvConfigFile); ok && strings.TrimSpace(value) != "" {
 		cfg.ConfigFile = strings.TrimSpace(value)
+	}
+	if value, ok := lookupEnv(EnvSysRoot); ok && strings.TrimSpace(value) != "" {
+		cfg.SysRoot = strings.TrimSpace(value)
+	}
+	if value, ok := lookupEnv(EnvDockerSocket); ok {
+		cfg.DockerSocket = strings.TrimSpace(value)
+	}
+	if value, ok := lookupEnv(EnvSystemdUnits); ok {
+		for _, unit := range strings.Split(value, ",") {
+			if trimmed := strings.TrimSpace(unit); trimmed != "" {
+				cfg.SystemdUnits = append(cfg.SystemdUnits, trimmed)
+			}
+		}
+	}
+	if value, ok := lookupEnv(EnvNetworkIfaces); ok {
+		for _, name := range strings.Split(value, ",") {
+			if trimmed := strings.TrimSpace(name); trimmed != "" {
+				cfg.NetworkInterfaces = append(cfg.NetworkInterfaces, trimmed)
+			}
+		}
 	}
 	if value, ok := lookupEnv(EnvProcRoot); ok && strings.TrimSpace(value) != "" {
 		cfg.ProcRoot = strings.TrimSpace(value)
@@ -484,6 +560,9 @@ func (c *Config) Validate() error {
 		))
 	}
 
+	if strings.TrimSpace(c.SysRoot) == "" {
+		problems = append(problems, fmt.Sprintf("%s must not be empty", EnvSysRoot))
+	}
 	if strings.TrimSpace(c.ProcRoot) == "" {
 		problems = append(problems, fmt.Sprintf("%s must not be empty", EnvProcRoot))
 	}

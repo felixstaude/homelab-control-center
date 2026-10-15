@@ -74,6 +74,7 @@ _TRUNCATED_TABLES = (
     "global_module_defaults",
     "host_config_revisions",
     "host_enrollments",
+    "host_module_health",
     "host_module_overrides",
     "hosts",
     # The partitioned sample tables are truncated through their parents, which
@@ -234,13 +235,49 @@ async def db_session(migrated_database: str) -> AsyncIterator[AsyncSession]:
             for table in _TRUNCATED_TABLES:
                 await connection.execute(text(f"TRUNCATE TABLE {table} CASCADE"))
 
+    async def revision() -> str:
+        async with engine.begin() as connection:
+            result = await connection.execute(text("SELECT version_num FROM alembic_version"))
+            return str(result.scalar_one())
+
+    async def restore(expected: str) -> None:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("UPDATE alembic_version SET version_num = :revision"),
+                {"revision": expected},
+            )
+
     try:
         # Truncate first as well: a previous crashed run must not leak rows
         # into this one.
         await truncate()
+        # `alembic_version` is deliberately not truncated — emptying it would
+        # throw away the marker saying which schema this database has — so a
+        # test that writes to it writes for the rest of the session, and for
+        # anything sharing the database afterwards.
+        #
+        # CI shares one `hcc_test` between pytest and the step that runs
+        # `alembic upgrade head`, and a test left `9999_from_the_future` in
+        # it: the step failed with "Can't locate revision", three steps and
+        # one job away from the test responsible. Locally it never showed,
+        # because `scripts/test-integration.sh` drops its database.
+        #
+        # So the revision is checked here, where the failure names the test
+        # that caused it, and restored so the rest of the run is not a
+        # cascade of unrelated errors.
+        before = await revision()
         async with factory() as session:
             yield session
         await truncate()
+        after = await revision()
+        if after != before:
+            await restore(before)
+            pytest.fail(
+                f"this test left alembic_version at {after!r} instead of {before!r}. "
+                f"A test that changes the schema marker has to put it back — see "
+                f"the `restored_revision` fixture in "
+                f"tests/test_upgrade_readiness_integration.py."
+            )
     finally:
         await engine.dispose()
 

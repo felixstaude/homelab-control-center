@@ -283,6 +283,38 @@ jobs:
         # machine.
         run: ./scripts/check-reproducible.sh
 
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: apps/server/pyproject.toml
+
+      - name: Install the backend
+        # For `cryptography`, which the signing tooling needs. The agent's own
+        # verifier is in Go's standard library; only the publisher side needs
+        # a dependency.
+        run: |
+          python -m venv apps/server/.venv
+          apps/server/.venv/bin/pip install --quiet --upgrade pip
+          apps/server/.venv/bin/pip install --quiet -e 'apps/server[dev]'
+
+      - name: Prepare a release candidate end to end
+        # Build → verify → derive the manifest → sign → verify the signature,
+        # with a throwaway key generated for this run and shredded at the end.
+        #
+        # This exists because a release pipeline whose first execution is a
+        # release is not a pipeline. It publishes nothing: the key proves
+        # possession of something created seconds earlier, the base URL is
+        # `example.invalid`, and the script writes a marker file saying the
+        # result must not be published.
+        run: make release-candidate
+
+      - name: The ephemeral marker is written
+        # The marker is what a future publishing step would refuse on, so a
+        # run that stopped writing it would quietly remove the safeguard.
+        run: test -f dist/release-candidate/agent-releases.json.ephemeral
+
       # Deliberately no upload-artifact step. These are built to be checked,
       # not distributed; the release-prepare workflow is where a candidate
       # becomes downloadable.

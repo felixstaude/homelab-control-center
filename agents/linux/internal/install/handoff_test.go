@@ -102,6 +102,7 @@ type handoffFixture struct {
 
 func newHandoffFixture(t *testing.T) *handoffFixture {
 	t.Helper()
+	withoutRootOwnership(t)
 	root := t.TempDir()
 	paths := Paths{Root: root}
 	if err := os.MkdirAll(paths.StateDir(), StateDirMode); err != nil {
@@ -160,7 +161,11 @@ func (f *handoffFixture) apply() error {
 		TrustStore: f.store,
 		System:     newFakeSystem(),
 		Out:        f.output,
-		Now:        func() time.Time { return time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC) },
+		// The version this binary would report. Below every version the
+		// fixture installs, so the seeded floor permits them and the tests
+		// that care about refusal raise it deliberately.
+		InstalledVersion: "0.1.0",
+		Now:              func() time.Time { return time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC) },
 		Upgrade: func(_ context.Context, options UpgradeOptions) error {
 			f.upgraded = append(f.upgraded, options)
 			return f.upgrade
@@ -196,8 +201,15 @@ func TestTheDigestComesFromTheSignedMetadata(t *testing.T) {
 	if f.upgraded[0].ExpectedSHA256 != f.digest {
 		t.Errorf("expected digest = %q, want %q", f.upgraded[0].ExpectedSHA256, f.digest)
 	}
-	if f.upgraded[0].ArchivePath != f.archive {
-		t.Errorf("archive = %q, want %q", f.upgraded[0].ArchivePath, f.archive)
+	// The installer runs against the privileged **copy**, not against the
+	// file the agent staged. See [ApplyOptions.stageArchivePrivately]: the
+	// agent's own directory is one the agent can still write.
+	want := filepath.Join(f.paths.UpdateStateDir(), PrivateArchiveName)
+	if f.upgraded[0].ArchivePath != want {
+		t.Errorf("archive = %q, want the privileged copy %q", f.upgraded[0].ArchivePath, want)
+	}
+	if f.upgraded[0].ArchiveFile == nil {
+		t.Error("the installer was given no handle, so it would reopen the path")
 	}
 }
 
@@ -414,7 +426,7 @@ func TestAnArchiveOutsideTheStateDirectoryIsRefused(t *testing.T) {
 	if err == nil {
 		t.Fatal("an archive outside the state directory was accepted")
 	}
-	if !strings.Contains(err.Error(), "outside the agent's state directory") {
+	if !strings.Contains(err.Error(), "not directly inside the agent's state directory") {
 		t.Errorf("the refusal does not name the cause: %v", err)
 	}
 	if len(f.upgraded) != 0 {
@@ -433,7 +445,7 @@ func TestATraversingArchivePathIsRefused(t *testing.T) {
 	if err == nil {
 		t.Fatal("a traversing path was accepted")
 	}
-	if !strings.Contains(err.Error(), "outside the agent's state directory") {
+	if !strings.Contains(err.Error(), "not directly inside the agent's state directory") {
 		t.Errorf("the refusal does not name the cause: %v", err)
 	}
 }
@@ -473,7 +485,7 @@ func TestASymlinkedArchiveIsRefusedRatherThanFollowed(t *testing.T) {
 	if err == nil {
 		t.Fatal("a symlinked archive was accepted")
 	}
-	if !strings.Contains(err.Error(), "not a regular file") {
+	if !strings.Contains(err.Error(), "is a symbolic link") {
 		t.Errorf("the refusal does not name the cause: %v", err)
 	}
 }
@@ -710,3 +722,245 @@ func TestTheRequestIsWrittenAtomically(t *testing.T) {
 // Ensure the fixture's writer is used rather than stdout, so a failing test's
 // output is attributable.
 var _ io.Writer = (*strings.Builder)(nil)
+
+// --- The staging copy -------------------------------------------------------
+
+// TestAnInPlaceRewriteCannotReachThePrivilegedCopy is the other half of the
+// substitution race, and the half a file descriptor does not cover.
+//
+// `open(path, O_TRUNC)` and a rewrite modify the inode a descriptor points at,
+// so holding one is no defence. Since `/var/lib/hcc-agent` belongs to the
+// unprivileged agent account — deliberately, because the agent stages
+// downloads there — that account can rewrite its own staged archive at any
+// moment, including after root has hashed it.
+//
+// The defence is the copy into the root-owned update state directory. This
+// test rewrites the agent's file the moment the installer starts, and asserts
+// the installer is reading something the rewrite cannot reach.
+func TestAnInPlaceRewriteCannotReachThePrivilegedCopy(t *testing.T) {
+	f := newHandoffFixture(t)
+	f.write(f.request(nil))
+
+	var seenByInstaller []byte
+	err := ApplyUpdateRequest(context.Background(), ApplyOptions{
+		Paths:            f.paths,
+		TrustStore:       f.store,
+		System:           newFakeSystem(),
+		Out:              f.output,
+		InstalledVersion: "0.1.0",
+		Upgrade: func(_ context.Context, options UpgradeOptions) error {
+			// The agent account, acting while root installs. In place, so a
+			// descriptor on the original inode would follow it.
+			if writeErr := os.WriteFile(f.archive, []byte("hostile"), 0o640); writeErr != nil &&
+				!os.IsNotExist(writeErr) {
+				t.Errorf("cannot simulate the rewrite: %v", writeErr)
+			}
+			contents, readErr := os.ReadFile(options.ArchivePath)
+			if readErr != nil {
+				t.Errorf("cannot read what the installer was given: %v", readErr)
+			}
+			seenByInstaller = contents
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("apply: %v\n%s", err, f.output.String())
+	}
+
+	if string(seenByInstaller) == "hostile" {
+		t.Fatal("the installer read the rewritten archive: it is working on the agent's copy")
+	}
+	original, readErr := os.ReadFile(f.archive)
+	if readErr == nil && string(original) == "hostile" {
+		// The agent's own file really was rewritten — so the test exercised
+		// the attack rather than silently doing nothing.
+		return
+	}
+	if readErr != nil && os.IsNotExist(readErr) {
+		// The staged file is removed before the installer runs, which is a
+		// stronger outcome than the one being asserted.
+		return
+	}
+	t.Errorf("the rewrite did not happen, so this test proves nothing")
+}
+
+func TestThePrivilegedCopyIsRemovedAfterwards(t *testing.T) {
+	// A few megabytes left in a root-owned directory after every update is a
+	// disk leak on a machine nobody is watching.
+	f := newHandoffFixture(t)
+	f.write(f.request(nil))
+
+	if err := f.apply(); err != nil {
+		t.Fatalf("apply: %v\n%s", err, f.output.String())
+	}
+
+	private := filepath.Join(f.paths.UpdateStateDir(), PrivateArchiveName)
+	if _, err := os.Stat(private); err == nil {
+		t.Error("the privileged copy survived the install")
+	}
+	// And so is the agent's, which has served its purpose either way.
+	if _, err := os.Stat(f.archive); err == nil {
+		t.Error("the agent's staged archive survived the install")
+	}
+}
+
+func TestAnArchiveOfTheWrongSizeIsRefusedBeforeItIsCopied(t *testing.T) {
+	// The signed metadata says how long the archive is. A file that is a
+	// different length is not the right archive, and there is no case where
+	// it is — so it is refused before a byte of it is read, rather than after
+	// a digest check that would also have caught it.
+	f := newHandoffFixture(t)
+	if err := os.WriteFile(f.archive, []byte("short"), 0o640); err != nil {
+		t.Fatalf("cannot shorten the archive: %v", err)
+	}
+	f.write(f.request(nil))
+
+	err := f.apply()
+
+	if err == nil {
+		t.Fatal("an archive of the wrong length was accepted")
+	}
+	if !strings.Contains(err.Error(), "the signed metadata says") {
+		t.Errorf("the refusal does not name the cause: %v", err)
+	}
+	if len(f.upgraded) != 0 {
+		t.Error("the installer ran on an archive of the wrong length")
+	}
+}
+
+// --- The anti-rollback floor, through the privileged path -------------------
+
+func TestTheFloorIsSeededFromTheRunningBinaryBeforeTheRequestIsJudged(t *testing.T) {
+	// The compatibility case that matters. A host installed before the floor
+	// existed has none; seeding it at what is running *before* the request is
+	// evaluated means the very first controller-driven update after this code
+	// lands is already protected, rather than the one after it.
+	f := newHandoffFixture(t)
+	f.write(f.request(func(r *UpdateRequest) { r.Version = "0.2.0" }))
+
+	err := ApplyUpdateRequest(context.Background(), ApplyOptions{
+		Paths:      f.paths,
+		TrustStore: f.store,
+		System:     newFakeSystem(),
+		Out:        f.output,
+		// Newer than the release being offered: this host has already run
+		// 0.9.0, so 0.2.0 is a rollback however well it is signed.
+		InstalledVersion: "0.9.0",
+		Upgrade: func(_ context.Context, options UpgradeOptions) error {
+			f.upgraded = append(f.upgraded, options)
+			return nil
+		},
+	})
+
+	if err == nil {
+		t.Fatal("a rollback was accepted on a host with no stored floor")
+	}
+	if !strings.Contains(err.Error(), "older than 0.9.0") {
+		t.Errorf("the refusal does not name the cause: %v", err)
+	}
+	if len(f.upgraded) != 0 {
+		t.Error("the installer ran on a rollback")
+	}
+}
+
+func TestASignedRollbackIsRefusedByThePrivilegedSide(t *testing.T) {
+	// The property Evergreen's signature check does not provide: the
+	// signature on an old release is as valid today as it was the day it was
+	// made, so authenticity alone does not stop a compromised controller
+	// serving a version from before a fix.
+	f := newHandoffFixture(t)
+	if err := RecordSuccessfulInstall(f.paths.VersionFloor(), "0.5.0", "earlier"); err != nil {
+		t.Fatalf("cannot establish the floor: %v", err)
+	}
+	f.write(f.request(nil)) // 0.2.0, correctly signed
+
+	err := f.apply()
+
+	if err == nil {
+		t.Fatal("a correctly signed older release was installed")
+	}
+	if !strings.Contains(err.Error(), "0.5.0") {
+		t.Errorf("the refusal does not name the floor: %v", err)
+	}
+	// And it is reported, so the controller's history says why rather than
+	// timing the instruction out.
+	outcome := f.outcome()
+	if outcome == nil || outcome.State != StateFailed {
+		t.Fatalf("the refusal was not reported: %+v", outcome)
+	}
+	if !strings.Contains(outcome.Error, "rollback") {
+		t.Errorf("the reported reason does not explain itself: %q", outcome.Error)
+	}
+}
+
+func TestASuccessfulInstallRaisesTheFloor(t *testing.T) {
+	f := newHandoffFixture(t)
+	f.write(f.request(nil))
+
+	if err := f.apply(); err != nil {
+		t.Fatalf("apply: %v\n%s", err, f.output.String())
+	}
+
+	state, err := LoadState(f.paths.VersionFloor())
+	if err != nil {
+		t.Fatalf("cannot read the floor: %v", err)
+	}
+	if state == nil || state.Floor != "0.2.0" {
+		t.Fatalf("the floor did not rise to the installed version: %+v", state)
+	}
+	if state.HighestInstalled != "0.2.0" {
+		t.Errorf("highest_installed = %q, want 0.2.0", state.HighestInstalled)
+	}
+}
+
+func TestAFailedInstallDoesNotRaiseTheFloor(t *testing.T) {
+	// The lockout this avoids: raising the floor on an *attempt* would mean a
+	// host that failed to reach 0.2.0 could no longer be sent 0.1.5 either,
+	// and the only way back would be root on the machine.
+	f := newHandoffFixture(t)
+	f.upgrade = errors.New("the service would not restart")
+	f.write(f.request(nil))
+
+	if err := f.apply(); err == nil {
+		t.Fatal("a failing install reported success")
+	}
+
+	state, err := LoadState(f.paths.VersionFloor())
+	if err != nil {
+		t.Fatalf("cannot read the floor: %v", err)
+	}
+	// 0.1.0 is the seed from the running binary; the point is that it is not
+	// 0.2.0, the version that failed.
+	if state != nil && state.Floor == "0.2.0" {
+		t.Error("a failed install raised the floor to the version it failed to install")
+	}
+}
+
+func TestAReplayedInstructionIsRefused(t *testing.T) {
+	// A compromised agent account can rewrite the request file whenever it
+	// likes. Without this, replaying the last authorised request is a restart
+	// loop of a root-owned service, driven from an unprivileged account.
+	f := newHandoffFixture(t)
+	f.write(f.request(nil))
+	if err := f.apply(); err != nil {
+		t.Fatalf("the first apply failed: %v\n%s", err, f.output.String())
+	}
+
+	// Stage it again, byte for byte, exactly as the agent could.
+	payload := []byte("not really a tar archive, but it has a digest")
+	if err := os.WriteFile(f.archive, payload, 0o640); err != nil {
+		t.Fatalf("cannot re-stage: %v", err)
+	}
+	f.write(f.request(nil))
+	err := f.apply()
+
+	if err == nil {
+		t.Fatal("the same instruction was applied twice")
+	}
+	if !strings.Contains(err.Error(), "already been applied") {
+		t.Errorf("the refusal does not name the cause: %v", err)
+	}
+	if len(f.upgraded) != 1 {
+		t.Errorf("the installer ran %d times, want once", len(f.upgraded))
+	}
+}
