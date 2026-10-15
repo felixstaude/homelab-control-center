@@ -155,6 +155,37 @@ port_in_use() {
   (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null && { exec 3>&-; return 0; } || return 1
 }
 
+# stop_process terminates a pid file's process and waits for it to go.
+#
+# The wait is the point. `kill` returns as soon as the signal is delivered,
+# not when the process has exited and released its listening socket — so
+# `up --rebuild` killed the controller, removed the pid file, and then
+# refused with "port 8900 is already in use by something that is not this
+# demo", because by then nothing could tell it was its own.
+#
+# SIGTERM, a bounded wait, then SIGKILL: the agent flushes its telemetry
+# queue on SIGTERM, so not waiting would discard the last few seconds it had
+# already collected.
+stop_process() {
+  local name="$1" pid waited=0
+  if ! process_alive "$DEMO_DIR/$name.pid"; then
+    rm -f "$DEMO_DIR/$name.pid"
+    return 1
+  fi
+  pid="$(cat "$DEMO_DIR/$name.pid")"
+  kill "$pid" 2>/dev/null || true
+  while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt 10 ]; do
+    sleep 1
+    waited=$((waited + 1))
+  done
+  kill -9 "$pid" 2>/dev/null || true
+  # One more beat after SIGKILL: the kernel releases the socket when the
+  # process is reaped, not when the signal lands.
+  sleep 1
+  rm -f "$DEMO_DIR/$name.pid"
+  return 0
+}
+
 wait_for_url() {
   local label="$1" url="$2" seconds="${3:-60}"
   local deadline=$((SECONDS + seconds))
@@ -204,10 +235,7 @@ cmd_up() {
   # says it worked and nothing changed.
   if [ "$rebuild" = 1 ]; then
     for name in agent controller; do
-      if process_alive "$DEMO_DIR/$name.pid"; then
-        kill "$(cat "$DEMO_DIR/$name.pid")" 2>/dev/null || true
-        rm -f "$DEMO_DIR/$name.pid"
-      fi
+      stop_process "$name" >/dev/null || true
     done
     # The agent binary is rebuilt from source below; removing it here is
     # what makes that unconditional.
@@ -275,12 +303,49 @@ cmd_up() {
 
   # --- 2. Schema ------------------------------------------------------------
   info "Schema"
-  (cd "$SERVER_DIR" && HCC_DATABASE_URL="$DATABASE_URL" "$VENV/bin/alembic" upgrade head) \
+  (cd "$SERVER_DIR" && env $(env | grep -o '^HCC_AGENT_[A-Z_]*' | sed 's/^/-u /' | tr '\n' ' ') \
+    HCC_DATABASE_URL="$DATABASE_URL" "$VENV/bin/alembic" upgrade head) \
     >"$DEMO_DIR/migrate.log" 2>&1 || {
       tail -20 "$DEMO_DIR/migrate.log"
       die "migrations failed; see $DEMO_DIR/migrate.log"
     }
   ok "migrations applied ($(HCC_DATABASE_URL="$DATABASE_URL" bash -c "cd '$SERVER_DIR' && '$VENV/bin/alembic' current 2>/dev/null | head -1" || echo head))"
+
+  # Does the database accept every module the registry knows?
+  #
+  # `alembic upgrade head` is not enough to answer that during development on
+  # this branch, because a migration that has *already been applied* is never
+  # re-run — so a demo database created before a module was added keeps the
+  # narrower CHECK constraint, and the mismatch surfaces much later as a 500
+  # from the Monitoring tab with `CheckViolationError` in the log. Which is
+  # exactly how it was found.
+  #
+  # Checked here, where the remedy is one command, rather than left to be
+  # discovered by clicking.
+  known="$("$VENV/bin/python" -c "
+import sys
+sys.path.insert(0, '$SERVER_DIR')
+from hcc.monitoring.modules import MODULE_IDS
+print(' '.join(MODULE_IDS))
+" 2>/dev/null || true)"
+  if [ -n "$known" ]; then
+    missing=""
+    for module in $known; do
+      accepted="$(psql_demo "SELECT 1 FROM pg_constraint
+        WHERE conname = 'ck_host_module_overrides_module_id_is_known'
+          AND pg_get_constraintdef(oid) LIKE '%''$module''%'" 2>/dev/null || true)"
+      [ -n "$accepted" ] || missing="$missing $module"
+    done
+    if [ -n "$missing" ]; then
+      die "this demo database was created before$missing existed, and an applied
+  migration is never re-run — so enabling one of those modules would fail with a
+  constraint violation.
+
+  Start over (the demo's data is a few minutes of this machine's own metrics):
+      make demo-clean && make demo"
+    fi
+    ok "the database accepts every module the registry knows"
+  fi
 
   # --- 3. The administrator -------------------------------------------------
   info "Administrator"
@@ -292,7 +357,9 @@ cmd_up() {
     # there is no value to copy out of this file into a real deployment.
     local password
     password="$("$VENV/bin/python" -c 'import secrets; print(secrets.token_urlsafe(24))')"
-    (cd "$SERVER_DIR" && printf '%s\n' "$password" | HCC_DATABASE_URL="$DATABASE_URL" \
+    (cd "$SERVER_DIR" && printf '%s\n' "$password" | \
+      env $(env | grep -o '^HCC_AGENT_[A-Z_]*' | sed 's/^/-u /' | tr '\n' ' ') \
+      HCC_DATABASE_URL="$DATABASE_URL" \
       "$VENV/bin/python" -m hcc.cli.main bootstrap-admin \
       --username "$ADMIN_USER" --password-stdin) >"$DEMO_DIR/bootstrap.log" 2>&1 || {
         tail -20 "$DEMO_DIR/bootstrap.log"
@@ -333,8 +400,24 @@ cmd_up() {
     # session cookie, and this is plain HTTP on loopback. A demo that
     # claimed to be production while relaxing a production check would be
     # teaching the wrong thing.
+    # Every HCC_AGENT_* variable is unset for the controller.
+    #
+    # The controller refuses to start on an unrecognised HCC_ variable,
+    # which is a good rule and is why this is needed: an operator granting
+    # the Docker socket exports HCC_AGENT_DOCKER_SOCKET into this shell, the
+    # controller inherits it, and refuses with "Unrecognised HCC_
+    # environment variables" about a variable that was never meant for it.
+    #
+    # The two programs have separate namespaces and this keeps them separate
+    # rather than teaching the controller to ignore things.
+    agent_variables=()
+    while IFS='=' read -r name _; do
+      [ -n "$name" ] && agent_variables+=(-u "$name")
+    done < <(env | grep '^HCC_AGENT_' || true)
+
     (
       cd "$SERVER_DIR"
+      env "${agent_variables[@]+"${agent_variables[@]}"}" \
       HCC_DATABASE_URL="$DATABASE_URL" \
       HCC_ENVIRONMENT=development \
       HCC_HOST=127.0.0.1 \
@@ -610,23 +693,9 @@ cmd_down() {
   # it first means the controller's last log lines are a clean shutdown
   # rather than a connection that vanished.
   for name in agent controller; do
-    if process_alive "$DEMO_DIR/$name.pid"; then
-      local pid
-      pid="$(cat "$DEMO_DIR/$name.pid")"
-      kill "$pid" 2>/dev/null || true
-      # SIGTERM, then a bounded wait, then SIGKILL. The agent flushes its
-      # telemetry queue on SIGTERM, so not waiting would discard the last
-      # few seconds of data it had already collected.
-      local waited=0
-      while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt 10 ]; do
-        sleep 1
-        waited=$((waited + 1))
-      done
-      kill -9 "$pid" 2>/dev/null || true
-      rm -f "$DEMO_DIR/$name.pid"
+    if stop_process "$name"; then
       ok "$name stopped"
     else
-      rm -f "$DEMO_DIR/$name.pid"
       step "$name was not running"
     fi
   done

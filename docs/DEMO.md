@@ -189,6 +189,39 @@ The two usual causes are a module reporting itself *unavailable* on this host
 — visible on the host's Monitoring tab with the reason — and an agent that
 enrolled but cannot reach the controller, which the agent log says plainly.
 
+### `this demo database was created before <modules> existed`
+
+An applied Alembic migration is never re-run, so a demo database created
+before a module was added keeps the narrower `CHECK` constraint that refuses
+it. Without the check that prints this, the mismatch surfaces much later as a
+500 from the Monitoring tab. Start over:
+
+```bash
+make demo-clean && make demo
+```
+
+Only possible while developing on a branch that adds modules; a released
+installation gets each module in its own migration.
+
+### Containers
+
+Off by default, and deliberately not something `make demo` turns on for you.
+Reading the Docker socket is equivalent to root on the host, so it is granted
+on the machine:
+
+```bash
+HCC_AGENT_DOCKER_SOCKET=/var/run/docker.sock ./scripts/demo.sh up --rebuild
+```
+
+Then enable **Containers** on the host's Monitoring tab. On a Podman host the
+socket is `/run/user/$UID/podman/podman.sock` after
+`systemctl --user start podman.socket` — Podman's Docker-compatible API is
+what this was developed against.
+
+The view is read-only: container state, CPU, memory, network, restarts,
+uptime and health. There are no start/stop controls and the agent issues no
+request other than `GET`.
+
 ### Starting over
 
 ```bash
