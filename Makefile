@@ -312,6 +312,30 @@ check-artifacts: artifacts ## Build, verify, and prove the verifier's refusals f
 	@./scripts/verify-artifacts.sh --execute
 	@./scripts/verify-artifacts.sh --self-test
 
+# ============================================================================
+# The demo
+# ============================================================================
+
+.PHONY: demo
+demo: ## Start an isolated Homelab Control Center you can sign in to
+	@./scripts/demo.sh up
+
+.PHONY: demo-status
+demo-status: ## What the demo is running, and whether telemetry is arriving
+	@./scripts/demo.sh status
+
+.PHONY: demo-logs
+demo-logs: ## Follow the demo's controller and agent logs
+	@./scripts/demo.sh logs
+
+.PHONY: demo-down
+demo-down: ## Stop the demo, keeping its data
+	@./scripts/demo.sh down
+
+.PHONY: demo-clean
+demo-clean: ## Stop the demo and delete its database, credentials and logs
+	@./scripts/demo.sh down --clean
+
 .PHONY: release-candidate
 release-candidate: ## Exercise the whole release pipeline with a throwaway key (publishes nothing)
 # Builds, verifies, describes and signs — with a key generated for this run

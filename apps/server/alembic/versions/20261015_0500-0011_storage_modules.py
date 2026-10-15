@@ -1,8 +1,23 @@
-"""Widen the module allow-lists for the filesystem, diskio and network modules.
+"""Widen the module allow-lists, and the unit column, for the storage modules.
 
 Phases D and E of Operation Horizon. No new tables and no new columns: three
 CHECK constraints are replaced, each of which hard-codes the set of module
-identifiers the registry knew when it was written.
+identifiers the registry knew when it was written, and one column is widened.
+
+## The column, and how it was found
+
+``metric_series.unit`` was ``varchar(16)``, which fits every unit that
+existed when it was written and does not fit ``operations_per_second`` (21
+characters). Nothing caught it: the unit tests do not touch a database, and
+the integration suite passed because no test had yet stored a series in the
+new unit.
+
+It surfaced the first time a real agent reported real disk throughput, as
+``StringDataRightTruncationError`` raised inside the WebSocket handler —
+which the agent saw only as "the controller closed the connection:
+protocol_error", and retried for ever. Widened to 32 here, with
+``test_every_registry_unit_fits_its_column`` as the guard that makes the next
+one a failing test instead.
 
 ## Why the identifiers are hard-coded in the first place
 
@@ -90,9 +105,22 @@ def _replace(identifiers: tuple[str, ...]) -> None:
         )
 
 
+#: Wide enough for every unit in the registry with room for one more idea.
+#: Checked against the registry by tests/test_metric_models.py.
+_UNIT_LENGTH_AFTER = 32
+_UNIT_LENGTH_BEFORE = 16
+
+
 def upgrade() -> None:
     _replace(_AFTER)
+    # Widening a varchar does not rewrite the table and does not take a long
+    # lock: PostgreSQL treats it as a catalogue change since 9.2.
+    op.execute(f"ALTER TABLE metric_series ALTER COLUMN unit TYPE varchar({_UNIT_LENGTH_AFTER})")
 
 
 def downgrade() -> None:
     _replace(_BEFORE)
+    # Narrowing *does* rewrite, and will fail if any stored unit is longer —
+    # which is correct. Truncating an operator's recorded units to go
+    # backwards would silently change what historical series mean.
+    op.execute(f"ALTER TABLE metric_series ALTER COLUMN unit TYPE varchar({_UNIT_LENGTH_BEFORE})")

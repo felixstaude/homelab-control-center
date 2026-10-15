@@ -78,3 +78,8 @@ postgres-data/
 .direnv/
 *~
 *.tmp
+
+# The demo environment's state: a generated administrator password, an agent
+# credential, pid files and logs. Never committed — the password is real for
+# as long as the demo is up, and the credential authenticates a host.
+.demo/

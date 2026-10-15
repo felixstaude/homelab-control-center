@@ -154,6 +154,37 @@ connections per controller process at 224 KiB each. 500 is the supported fleet
 size today — a thousand extrapolates comfortably and has **not** been
 measured.
 
+## Trying it
+
+One command, nothing installed, nothing of yours touched:
+
+```bash
+make setup      # once: Python, Node and Go dependencies
+make demo
+```
+
+It starts an isolated PostgreSQL container, the real controller serving the
+real web client on `http://127.0.0.1:8900`, and a **real agent reporting this
+machine's own `/proc` and `/sys`** — CPU, memory, load, uptime, filesystem
+usage, disk throughput and network traffic. Then it prints a URL, a username
+and a generated password.
+
+It uses its own database port, its own controller port and its own state
+directory, so it cannot disturb a development setup. It does **not** enrol
+this machine into anything, write to `/etc`, create a systemd unit or ask for
+`sudo`. Both ports bind to loopback.
+
+```bash
+make demo-status    # what is running, and whether telemetry is arriving
+make demo-down      # stop it, keep the data
+make demo-clean     # stop it and delete everything
+```
+
+Everything in a chart is measured. The Overview's container and log cards are
+labelled sample data and say so on screen — those modules are not built yet.
+
+Full guide, including troubleshooting: [`docs/DEMO.md`](docs/DEMO.md).
+
 ## Installing it
 
 ```bash
@@ -368,11 +399,12 @@ Conventions, troubleshooting and the full setup guide:
 
 | Document | Contents |
 | --- | --- |
-| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | The hub: system design, trust boundaries, 62 ADRs, open questions |
+| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | The hub: system design, trust boundaries, 65 ADRs, open questions |
 | [PRODUCT_VISION.md](docs/PRODUCT_VISION.md) | What this is, who it is for, what it will never do |
 | [ROADMAP.md](docs/ROADMAP.md) | Phases 0–11 as small, independently testable milestones |
 | [SECURITY.md](docs/SECURITY.md) | Threat model, capability risks, secrets handling, known gaps |
 | [PERFORMANCE.md](docs/PERFORMANCE.md) | Measured figures, the measurement, and what has *not* been measured |
+| [DEMO.md](docs/DEMO.md) | The isolated demo: one command, real telemetry, nothing of yours touched |
 | [DEVELOPMENT.md](docs/DEVELOPMENT.md) | Setup, conventions, troubleshooting |
 | [AGENT_ARCHITECTURE.md](docs/AGENT_ARCHITECTURE.md) | Transport, enrollment, credential rotation, config sync, offline behaviour |
 | [MONITORING_MODULES.md](docs/MONITORING_MODULES.md) | Module catalogue, collection methods, hardware caveats |
