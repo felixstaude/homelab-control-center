@@ -43,6 +43,7 @@ import contextlib
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy import select, text
@@ -1314,3 +1315,187 @@ def test_the_policy_is_read_from_settings() -> None:
     assert policy.days_for(TIER_RAW) == 3
     assert policy.days_for(TIER_5M) == 30
     assert policy.days_for(TIER_1H) == 365
+
+
+# ---------------------------------------------------------------------------
+# A rollup that cannot keep up
+#
+# `MAX_BUCKETS_PER_RUN` bounds the rows one pass writes, and the comment on it
+# explains the intent: a job behind by a day catches up over several passes
+# rather than in one enormous transaction. That is correct, and it has a
+# consequence nothing had stated.
+#
+# The five-minute tier writes one row per series per five-minute bucket, and
+# the job runs every five minutes, so a *steady-state* pass has exactly one
+# bucket per series to write. The bound is therefore a bound on series in the
+# installation — and since Operation Horizon five of the eleven modules are
+# label-keyed, so a well-populated host produces 164 series rather than 9.
+# `scripts/measure-metrics.py --profile full` measures the ceiling at thirty
+# such hosts.
+#
+# Past it the job never catches up: each pass writes the bound and falls
+# further behind. The tiers keep answering queries; they answer them about
+# last week. Nothing in the data shows it, which is why the outcome carries
+# the fact and the service logs it.
+# ---------------------------------------------------------------------------
+
+
+async def test_a_pass_that_did_not_finish_says_which_tier(
+    db_session: AsyncSession, era_cleanup: object
+) -> None:
+    """The fact that makes a permanently-behind rollup visible at all."""
+    from hcc.services.retention import MAX_BUCKETS_PER_RUN
+
+    service = RetentionService(RetentionPolicy(lateness_minutes=0))
+    # A bound of one, so two sealed buckets are one more than a pass can
+    # write. Patching the constant rather than writing five thousand buckets:
+    # the behaviour under test is "the pass stopped at its bound", and
+    # whether the bound is 1 or 5,000 is not part of it.
+    moment = datetime(2021, 6, 15, 12, 0, tzinfo=UTC)
+    await service._ensure_partitions(db_session, moment)  # noqa: SLF001
+    await db_session.commit()
+    series_id = await seed_series(db_session)
+    await add_raw(
+        db_session,
+        series_id,
+        [
+            (datetime(2021, 6, 15, 10, 0, tzinfo=UTC), 1.0),
+            (datetime(2021, 6, 15, 10, 5, tzinfo=UTC), 2.0),
+            (datetime(2021, 6, 15, 10, 10, tzinfo=UTC), 3.0),
+        ],
+    )
+    await db_session.commit()
+
+    with patch("hcc.services.retention.MAX_BUCKETS_PER_RUN", 1):
+        outcome = await service.run(db_session, now=moment)
+    await service.release_lock(db_session)
+    await db_session.commit()
+
+    assert MAX_BUCKETS_PER_RUN == 5_000, "the real bound, unchanged by the patch above"
+    assert "5m" in outcome.capped_tiers
+    assert outcome.buckets_rolled_up is not None
+    assert outcome.buckets_rolled_up["5m"] == 1
+
+
+async def test_a_pass_that_finished_reports_no_capped_tier(
+    db_session: AsyncSession, era_cleanup: object
+) -> None:
+    """The ordinary case, which has to be unremarkable.
+
+    Without this the assertion above would pass against a service that
+    reported every tier as capped on every run.
+    """
+    service = RetentionService(RetentionPolicy(lateness_minutes=0))
+    moment = datetime(2021, 6, 15, 12, 0, tzinfo=UTC)
+    await service._ensure_partitions(db_session, moment)  # noqa: SLF001
+    await db_session.commit()
+    series_id = await seed_series(db_session)
+    await add_raw(db_session, series_id, [(datetime(2021, 6, 15, 10, 0, tzinfo=UTC), 1.0)])
+    await db_session.commit()
+
+    outcome = await service.run(db_session, now=moment)
+    await service.release_lock(db_session)
+    await db_session.commit()
+
+    assert outcome.capped_tiers == ()
+
+
+async def test_a_tier_that_is_far_behind_is_warned_about(
+    db_session: AsyncSession, era_cleanup: object
+) -> None:
+    """Lag, not "we hit the bound", is what the warning is about.
+
+    Hitting the bound once is how catching up works and says nothing on its
+    own; a warning on every one of those is the line an operator learns to
+    ignore before the one that matters arrives. Lag is also derivable from
+    the database, which keeps this service stateless — the property its own
+    docstring claims and `__slots__` enforces.
+    """
+    service = RetentionService(RetentionPolicy(lateness_minutes=0))
+    moment = datetime(2021, 6, 15, 12, 0, tzinfo=UTC)
+    await service._ensure_partitions(db_session, moment)  # noqa: SLF001
+    await db_session.commit()
+    series_id = await seed_series(db_session)
+    # Two hours of five-minute buckets, with a bound of one: the pass writes
+    # one and leaves the tier most of two hours behind.
+    await add_raw(
+        db_session,
+        series_id,
+        [
+            (datetime(2021, 6, 15, 10, 0, tzinfo=UTC) + timedelta(minutes=5 * n), 1.0)
+            for n in range(24)
+        ],
+    )
+    await db_session.commit()
+
+    # The module's own logger rather than `caplog`: `configure_logging`
+    # clears the root handlers, which removes pytest's capture, so whether
+    # caplog sees anything depends on which test configured logging last.
+    with (
+        patch("hcc.services.retention.MAX_BUCKETS_PER_RUN", 1),
+        patch("hcc.services.retention.logger") as log,
+    ):
+        outcome = await service.run(db_session, now=moment)
+        await service.release_lock(db_session)
+        await db_session.commit()
+
+    assert "5m" in outcome.capped_tiers
+    assert outcome.rollup_lag_seconds["5m"] > 3600
+    warned = [call for call in log.warning.call_args_list if call.args[0] == "metric_rollup_behind"]
+    assert len(warned) == 1
+    # The lag is in the line, because "a tier is behind" without a number is
+    # a line an operator cannot act on.
+    assert warned[0].kwargs["lag_seconds"]["5m"] > 3600
+
+
+async def test_a_caught_up_tier_is_not_warned_about(
+    db_session: AsyncSession, era_cleanup: object
+) -> None:
+    """The ordinary case, which has to be silent.
+
+    Without this the assertion above would pass against a service that
+    warned on every run.
+    """
+    service = RetentionService(RetentionPolicy(lateness_minutes=0))
+    moment = datetime(2021, 6, 15, 12, 0, tzinfo=UTC)
+    await service._ensure_partitions(db_session, moment)  # noqa: SLF001
+    await db_session.commit()
+    series_id = await seed_series(db_session)
+    await add_raw(
+        db_session,
+        series_id,
+        [(datetime(2021, 6, 15, 11, 50, tzinfo=UTC), 1.0)],
+    )
+    await db_session.commit()
+
+    with patch("hcc.services.retention.logger") as log:
+        outcome = await service.run(db_session, now=moment)
+        await service.release_lock(db_session)
+        await db_session.commit()
+
+    assert outcome.capped_tiers == ()
+    assert outcome.rollup_lag_seconds["5m"] == 0
+    assert [
+        call for call in log.warning.call_args_list if call.args[0] == "metric_rollup_behind"
+    ] == []
+
+
+async def test_a_fresh_installation_is_not_reported_as_behind(
+    db_session: AsyncSession, era_cleanup: object
+) -> None:
+    """No raw data is not "infinitely behind".
+
+    The watermark is null on a tier that has never rolled anything up, and
+    the obvious lag expression against a null is either a crash or the age
+    of the epoch. A controller started this morning must not report its
+    rollups as fifty-six years behind.
+    """
+    service = RetentionService(RetentionPolicy(lateness_minutes=0))
+    moment = datetime(2021, 6, 15, 12, 0, tzinfo=UTC)
+
+    outcome = await service.run(db_session, now=moment)
+    await service.release_lock(db_session)
+    await db_session.commit()
+
+    assert outcome.rollup_lag_seconds["5m"] == 0
+    assert outcome.rollup_lag_seconds["1h"] == 0

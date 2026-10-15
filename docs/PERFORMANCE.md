@@ -14,6 +14,8 @@ Re-run everything here with:
 ```bash
 make db-up
 apps/server/.venv/bin/python scripts/measure-agents.py --hosts 1000 --connections 500
+apps/server/.venv/bin/python scripts/measure-metrics.py --hosts 10 --hours 2 --profile guide
+apps/server/.venv/bin/python scripts/measure-metrics.py --hosts 10 --hours 2 --profile full
 ```
 
 The script creates its own disposable database, starts a real controller
@@ -139,7 +141,7 @@ copy of the derivation rule.
 
 ---
 
-## 4. Metric storage and querying: **measured in Phase 3**
+## 4. Metric storage and querying: **two modules, and then eleven**
 
 From `make measure-metrics` (`scripts/measure-metrics.py`), against a
 disposable database: 20 hosts, six hours of history each, a ten-second
@@ -206,6 +208,104 @@ Worth recording, because both were invisible to the test suite:
    host with a hundred samples — the same as for a host with half a million,
    because the filter was on a joined table and the planner could not use the
    index. 0.044 ms after resolving the series ids first.
+
+### What the label-keyed modules did to all of this
+
+Operation Horizon added six monitoring modules, and five of them are
+**label-keyed**: one series per filesystem, per block device, per interface,
+per sensor, per container, per watched unit. So a host's series count stopped
+being a property of the module list and became a property of the machine, and
+every figure above was measured against a two-module fleet that no longer
+describes a full installation.
+
+Re-measured with `--profile full`, which collects all eleven modules at the
+label cardinality of a well-populated homelab host — three filesystems, four
+block devices, two interfaces, six temperature sensors, five containers, four
+watched units, eight cores — and honours **each module's own default
+interval** rather than a flat ten seconds, because `filesystem`'s default is
+60 s and collecting it six times too often would overstate its storage
+sixfold.
+
+Both runs: 10 hosts, 2 hours, 10 s tick, same machine, same database.
+
+| | `guide` (cpu, memory) | `full` (eleven modules) |
+| --- | --- | --- |
+| Series per host | **14** | **164** |
+| Samples per host per hour | 5,040 | 34,032 |
+| Ingestion throughput | 6,213 samples/s | **4,730 samples/s** |
+| Per batch, median | 2.09 ms | **18.38 ms** |
+| Bytes per sample | 91 | 95 |
+| 100 hosts, 7 days raw (extrapolated) | 7.1 GiB | **50.7 GiB** |
+| Latest values for one host | 0.7 ms | 2.1 ms |
+| Series list for one host | 0.5 ms | 1.8 ms |
+| Module health for one host | 0.3 ms | 0.3 ms |
+| Range query, any window | 0.5–1.0 ms | 0.5–0.8 ms |
+| Raw:5m storage ratio | 16.1:1 | **85.9:1** |
+
+Three things worth reading off that table:
+
+* **Range queries did not change.** They are bounded by the partition and the
+  series index, not by how many series the host has, and the plan still prunes
+  to one partition. The queries that moved are the per-host ones that iterate
+  series — and they moved by about three times, not by twelve, so the cost is
+  sublinear in series count.
+* **Storage is seven times the old figure**, and the old figure was the only
+  one in this document. 50 GiB of raw data for a hundred hosts over a week is
+  a real constraint on what "enable everything" means, and the rollup tiers
+  are what make it affordable past seven days.
+* **The rollup compresses far better** at the full profile (86:1 against
+  16:1), because a 10 s module produces 30 raw rows per five-minute bucket
+  against a 60 s module's 5 — so the mean bucket is fuller.
+
+### The rollup has a ceiling, and it is **5,000 series**
+
+The limit this phase was looking for, and it is not where the roadmap's
+"500 agents" suggests.
+
+`MAX_BUCKETS_PER_RUN` is 5,000 rows per tier per pass. The five-minute tier
+writes **one row per series per five-minute bucket**, and the maintenance job
+runs every five minutes, so a steady-state pass has exactly one bucket per
+series to write. The bound is therefore a bound on **series in the
+installation**:
+
+| Profile | Series per host | Hosts the 5m tier sustains |
+| --- | --- | --- |
+| `guide` | 14 | **357** |
+| `full` | 164 | **30** |
+
+Past the ceiling the job does not degrade — it **never catches up**. Each pass
+writes 5,000 of the buckets that accrued and falls further behind by the
+remainder, every five minutes, for ever. The tiers keep answering queries;
+they answer them about last week. Nothing in the data shows it.
+
+The benchmark prints the ceiling, and `--profile full` at ten hosts hits the
+bound on its first pass, which is how this was found.
+
+**What was done about it.** The maintenance pass now reports
+`rollup_lag_seconds` per tier — the newest bucket a tier holds against the
+newest the data says it should — and logs `metric_rollup_behind` when a tier
+is more than three bucket widths behind. Derived from the database rather than
+remembered, so the service stays stateless and restart-safe. Measured against
+the *data* rather than against the clock, because a series with gaps has no
+bucket for a window nothing sampled, and comparing with the clock reported a
+caught-up tier as permanently five minutes behind.
+
+**What was not done.** The bound was not raised. 5,000 buckets took about half
+a second in this run, so 82,000 — what 500 hosts on the full profile would
+need — is an eight-second transaction every five minutes, which is a different
+trade from the one the constant currently makes and not one to take without
+measuring the contention it causes. The honest statement is the ceiling, the
+signal when an installation crosses it, and the note that the fix is probably
+a time-bounded pass rather than a bigger count.
+
+### What this still does not measure
+
+* A fleet. One writer in a loop, as before.
+* A host with *more* than the reference cardinality. A NAS with twelve disks
+  and thirty containers is several times 164 series, and the ceiling divides
+  accordingly — 164 is a measured point, not a maximum.
+* Contention between the maintenance pass and live ingestion, which is where
+  an eight-second transaction would actually hurt.
 
 ---
 
@@ -341,6 +441,8 @@ nobody should trust.
 | Ninety days of real data | §4 writes hours. Retention totals are extrapolated per sample. | When an installation has been running that long |
 | Fleet-scale ingestion | §4's samples are written by one process in a loop, so it measures the storage path and not the socket, the scheduler, or a hundred real agents. | Before claiming a host count for collection |
 | Two controller processes | ADR-046 states the degradation rather than measuring it. | When configuration distribution needs a real channel |
+| A host above the reference cardinality | §4's `full` profile is 164 series, measured on a well-populated laptop. A NAS with twelve disks and thirty containers is several times that, and the rollup ceiling divides by it. | Before quoting a host count for an installation with all modules on |
+| Raising `MAX_BUCKETS_PER_RUN` | The ceiling in §4 is a consequence of the constant. Raising it trades transaction length for headroom, and the contention that causes is exactly what is not measured above. | Before an installation needs more than 5,000 series |
 | Browser-side timing | §5 counts bytes. Time to first contentful paint, parse cost and render cost are all unmeasured, so no load-time claim appears anywhere. | Before any claim about how fast the interface feels |
 | Compression CPU | §5 measures the bytes saved, not the microseconds spent. Assets are cached for a year, so the cost is paid about once per browser per release — argued rather than measured. | If a controller ever serves enough cache misses for it to show |
 

@@ -49,7 +49,7 @@ the rollup silently disagree with the raw data it came from.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final, cast
 
@@ -134,6 +134,14 @@ DEFAULT_LATENESS_MINUTES: Final = 10
 #: one enormous transaction.
 MAX_BUCKETS_PER_RUN: Final = 5_000
 
+#: How many bucket widths a tier may be behind before it is worth a warning.
+#:
+#: Three, so the five-minute tier tolerates fifteen minutes. Steady state is
+#: zero or one — the pass runs every five minutes and seals one bucket — and
+#: three leaves room for a slow pass and a restart without producing a line
+#: an operator learns to ignore.
+MAX_ACCEPTABLE_LAG_BUCKETS: Final = 3
+
 #: Most partitions one retention run will drop.
 #:
 #: Each drop is a ``DROP TABLE``, which is fast but takes an exclusive lock.
@@ -202,6 +210,29 @@ class MaintenanceOutcome:
     #: is kept for ever. Reported rather than only logged, so an operator
     #: endpoint could surface it.
     default_rows: dict[str, int] | None = None
+    #: Tiers whose rollup wrote exactly :data:`MAX_BUCKETS_PER_RUN` rows.
+    #:
+    #: The run did not finish that tier. Harmless once — a job catching up
+    #: after an outage takes several passes by design — and a standing
+    #: condition if it happens on consecutive passes: the tier is then
+    #: falling further behind every run and will never catch up on its own.
+    #:
+    #: Reported as well as logged, because "the rollups are permanently
+    #: behind" is invisible from the data. The tiers still answer queries;
+    #: they just answer them about last week.
+    capped_tiers: tuple[str, ...] = ()
+    #: How far behind each rollup tier is, in seconds, after this pass.
+    #:
+    #: The newest bucket the tier holds against the newest it should hold.
+    #: Derived from the database rather than remembered, which is what keeps
+    #: this service stateless and therefore restart-safe.
+    #:
+    #: Zero in steady state. Large and *shrinking* after an outage, which is
+    #: the job working. Large and not shrinking means the installation has
+    #: more series than :data:`MAX_BUCKETS_PER_RUN` sustains, and nothing in
+    #: the data would show it — the tiers keep answering queries, about last
+    #: week.
+    rollup_lag_seconds: dict[str, float] = field(default_factory=dict)
     #: Set when the lock was held by another process, so the run did nothing.
     #: Not an error: the other run is doing the work.
     skipped: bool = False
@@ -254,13 +285,60 @@ class RetentionService:
         gaps = await self._partition_gaps(db, moment)
         default_rows = await self._default_partition_rows(db)
 
+        # A tier that wrote exactly the bound did not finish. One pass of
+        # that is how catching up works; *every* pass of it is a job that
+        # will never catch up, and the distinction is the difference between
+        # a slope and a cliff.
+        #
+        # The cliff is reachable: the five-minute tier writes one row per
+        # series per five-minute bucket, and the job runs every five
+        # minutes, so a steady-state pass has one bucket per series to
+        # write. The bound is therefore a bound on **series in the
+        # installation** — 5,000 of them — and the label-keyed modules make
+        # that far fewer hosts than it sounds: `scripts/measure-metrics.py
+        # --profile full` measures 164 series on a well-populated host,
+        # which is thirty hosts. Measured, and recorded in
+        # `docs/PERFORMANCE.md` §4.
+        capped = tuple(
+            sorted(tier for tier, count in rolled.items() if count >= MAX_BUCKETS_PER_RUN)
+        )
+        lag = await self._rollup_lag(db, moment)
+        lagging = {
+            tier: seconds
+            for tier, seconds in lag.items()
+            if seconds > MAX_ACCEPTABLE_LAG_BUCKETS * TIER_BUCKET_SECONDS[tier]
+        }
         outcome = MaintenanceOutcome(
             partitions_created=created,
             partitions_dropped=dropped,
             buckets_rolled_up=rolled,
             gaps=gaps,
             default_rows=default_rows,
+            capped_tiers=capped,
+            rollup_lag_seconds=lag,
         )
+        if lagging:
+            # Warned on the *lag* rather than on the bound being hit, because
+            # the bound being hit once is how catching up works and says
+            # nothing on its own. Lag is derived from the database — the
+            # newest bucket each tier holds, against the newest it should —
+            # which keeps this service stateless and therefore restart-safe,
+            # the property its own docstring claims.
+            logger.warning(
+                "metric_rollup_behind",
+                lag_seconds={tier: round(seconds) for tier, seconds in lagging.items()},
+                capped_tiers=list(capped),
+                bound=MAX_BUCKETS_PER_RUN,
+                detail=(
+                    "A rollup tier is further behind than one pass should leave "
+                    "it. After an outage this shrinks every run and clears "
+                    "itself. If it does not, this installation has more series "
+                    "than the per-run bound sustains — the five-minute tier "
+                    "writes one row per series per pass, so the bound is a bound "
+                    "on series, and docs/PERFORMANCE.md section 4 has the "
+                    "measured ceiling."
+                ),
+            )
         if default_rows:
             # Warned rather than counted quietly: nothing drops these, so the
             # number only grows, and the remedy is a decision an operator has
@@ -542,6 +620,51 @@ class RetentionService:
                 sealed_before=sealed_before.isoformat(),
             )
         return written
+
+    async def _rollup_lag(self, db: AsyncSession, now: datetime) -> dict[str, float]:
+        """How far behind each rollup tier is, in seconds.
+
+        The gap between the newest bucket a tier holds and the newest it
+        should: everything older than the lateness grace, floored to the
+        bucket width. Zero when caught up, and never negative — a tier with
+        no rows at all has nothing to be behind, and reporting the age of the
+        installation would make a fresh controller look broken.
+        """
+        newest_raw: datetime | None = (
+            await db.execute(text("SELECT max(recorded_at) FROM metric_samples_raw"))
+        ).scalar_one_or_none()
+
+        lag: dict[str, float] = {}
+        for tier, width in TIER_BUCKET_SECONDS.items():
+            if tier == TIER_RAW:
+                continue
+            if newest_raw is None:
+                # Nothing to roll up. A fresh controller is not infinitely
+                # behind, and reporting the age of the epoch would make
+                # every new installation look broken.
+                lag[tier] = 0.0
+                continue
+            sealed_before = _floor_to(now - timedelta(minutes=self._policy.lateness_minutes), width)
+            # The newest bucket that *should* exist: the newest raw sample's
+            # bucket, unless the lateness grace has not released it yet.
+            #
+            # Measured against the data rather than against the clock. A
+            # series with gaps has no bucket for a window nothing sampled,
+            # so comparing the watermark with `sealed_before` would report a
+            # caught-up tier as five minutes behind for ever — which is what
+            # the first version of this did.
+            expected = min(_floor_to(newest_raw, width), sealed_before - timedelta(seconds=width))
+            watermark = await self._tier_watermark(db, tier)
+            if watermark is None:
+                oldest = await self._oldest_raw(db)
+                lag[tier] = (
+                    max(0.0, (expected - _floor_to(oldest, width)).total_seconds())
+                    if oldest
+                    else 0.0
+                )
+                continue
+            lag[tier] = max(0.0, (expected - watermark).total_seconds())
+        return lag
 
     async def _tier_watermark(self, db: AsyncSession, tier: str) -> datetime | None:
         """The newest bucket already rolled up for a tier, or ``None``."""
