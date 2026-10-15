@@ -7,6 +7,7 @@
       "allows_duplicate_runs": true,
       "data_schema_version": 1,
       "default_interval_seconds": 10,
+      "description": "Aggregate and optional per-core CPU utilisation, from /proc/stat. Computed from the difference between two samples.",
       "id": "cpu",
       "metrics": [
         {
@@ -45,6 +46,7 @@
       "allows_duplicate_runs": true,
       "data_schema_version": 1,
       "default_interval_seconds": 10,
+      "description": "Total, available and used memory from /proc/meminfo. Uses MemAvailable, which is the kernel's own estimate of what a new workload could claim.",
       "id": "memory",
       "metrics": [
         {
@@ -88,6 +90,7 @@
       "allows_duplicate_runs": true,
       "data_schema_version": 1,
       "default_interval_seconds": 10,
+      "description": "Swap total and usage from /proc/meminfo. Reports unavailable on a host with no swap configured, rather than reporting zero usage of nothing.",
       "id": "swap",
       "metrics": [
         {
@@ -124,6 +127,7 @@
       "allows_duplicate_runs": true,
       "data_schema_version": 1,
       "default_interval_seconds": 30,
+      "description": "The 1, 5 and 15-minute load averages from /proc/loadavg. A count of runnable and uninterruptible processes \u2014 not a CPU percentage.",
       "id": "load",
       "metrics": [
         {
@@ -148,6 +152,7 @@
       "allows_duplicate_runs": true,
       "data_schema_version": 1,
       "default_interval_seconds": 300,
+      "description": "How long the host has been running, from /proc/uptime. The host's uptime, which is not the agent process's uptime.",
       "id": "uptime",
       "metrics": [
         {
@@ -170,6 +175,7 @@
       "allows_duplicate_runs": true,
       "data_schema_version": 1,
       "default_interval_seconds": 60,
+      "description": "Capacity, usage and inode usage per mounted filesystem, from statfs and /proc/self/mountinfo. Filesystem capacity, which is not disk capacity.",
       "id": "filesystem",
       "metrics": [
         {
@@ -239,6 +245,7 @@
       "allows_duplicate_runs": true,
       "data_schema_version": 1,
       "default_interval_seconds": 10,
+      "description": "Read and write throughput and operation rates per block device, from /proc/diskstats. Computed from the difference between two samples.",
       "id": "diskio",
       "metrics": [
         {
@@ -299,6 +306,7 @@
       "allows_duplicate_runs": true,
       "data_schema_version": 1,
       "default_interval_seconds": 10,
+      "description": "Throughput, packet rates, errors and link state per interface, from /proc/net/dev and /sys/class/net. Computed from the difference between two samples.",
       "id": "network",
       "metrics": [
         {
@@ -404,6 +412,7 @@
       "allows_duplicate_runs": true,
       "data_schema_version": 1,
       "default_interval_seconds": 30,
+      "description": "Temperature and fan readings from /sys/class/hwmon, named by the chip that reports them. Only what the hardware actually exposes \u2014 a host with no sensors reports the module unavailable rather than inventing one.",
       "id": "sensors",
       "metrics": [
         {
@@ -437,6 +446,7 @@
       "allows_duplicate_runs": true,
       "data_schema_version": 1,
       "default_interval_seconds": 15,
+      "description": "Container state, CPU, memory and network from the Docker Engine API. Read-only. Needs the host administrator to grant socket access first: the Docker socket is equivalent to root.",
       "id": "docker",
       "metrics": [
         {
@@ -556,6 +566,7 @@
       "allows_duplicate_runs": true,
       "data_schema_version": 1,
       "default_interval_seconds": 60,
+      "description": "State, restart count and uptime for named systemd units, plus the host's failed-unit count. Read-only. Names the units to watch, because a host has hundreds and almost none of them are interesting.",
       "id": "systemd",
       "metrics": [
         {

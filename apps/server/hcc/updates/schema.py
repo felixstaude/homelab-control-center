@@ -50,13 +50,76 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-#: Where the migrations live, relative to this package's root.
+#: Where the migrations might live, most specific first.
 #:
-#: ``apps/server/alembic`` in a checkout and ``/opt/hcc/alembic`` in the
-#: container, which is why it is resolved from this file rather than from the
-#: working directory — the container's working directory is not the repository
-#: root and a relative path would find nothing there.
-ALEMBIC_DIRECTORY: Final = Path(__file__).resolve().parents[2] / "alembic"
+#: Two layouts, and the difference is not cosmetic:
+#:
+#: * **A checkout.** ``hcc/`` sits in ``apps/server/``, so the migrations are
+#:   two directories up from this package.
+#: * **The container image.** The package is installed into the venv, so two
+#:   directories up is ``site-packages`` — and ``site-packages/alembic`` is
+#:   *Alembic's own library package*. It exists, it is a directory, and it is
+#:   not a migration history. The real migrations are at ``/opt/hcc/alembic``,
+#:   where the Dockerfile puts them beside the venv.
+#:
+#: That second case is why :func:`alembic_directory` validates rather than
+#: just checking ``is_dir()``. It did only check ``is_dir()``, which made the
+#: Alembic library look like a migration history in every production image —
+#: and the failure was entirely silent. ``ScriptDirectory`` does not raise on
+#: a directory with no ``versions/``: it constructs, and reports a history
+#: with **no revisions at all**. So :func:`_ancestry` returned ``{}`` without
+#: logging anything, :func:`head_revision` returned ``None`` because there
+#: was not exactly one head, and the upgrade-readiness endpoint answered
+#: "the schema is current and nothing is in flight" to a database reporting
+#: a revision from the future. Found by ``deployment-e2e.sh``, the only test
+#: that runs against the built image.
+CANDIDATE_DIRECTORIES: Final = (
+    Path(__file__).resolve().parents[2] / "alembic",
+    # The image's layout, named here because the package has no way to
+    # discover it: `alembic.ini` lives at /opt/hcc and says
+    # `script_location = alembic`, which resolves against the working
+    # directory for the entrypoint and against nothing for an import.
+    Path("/opt/hcc/alembic"),
+)
+
+
+def is_migration_directory(path: Path) -> bool:
+    """Whether *path* is an Alembic migration history rather than a namesake.
+
+    Both markers, because either alone is satisfied by something that is not
+    one: ``versions/`` is a plausible name for anything, and Alembic's own
+    package has modules at its root.
+    """
+    return (path / "env.py").is_file() and (path / "versions").is_dir()
+
+
+@lru_cache(maxsize=1)
+def alembic_directory() -> Path | None:
+    """The migration history this build ships, or ``None`` if there is none.
+
+    Cached with the rest: the answer is a property of the filesystem the
+    process started on.
+    """
+    for candidate in CANDIDATE_DIRECTORIES:
+        if is_migration_directory(candidate):
+            return candidate
+    return None
+
+
+def reset_history_cache() -> None:
+    """Forget where the migrations are and what they contain.
+
+    Both caches are keyed on nothing and live for the process, which is
+    right in production — the answer changes only when a migration runs, and
+    that cannot happen while the application is serving. A test that
+    relocates the history has to drop them, and has to drop *both*: clearing
+    only the directory leaves an ancestry computed from the old one.
+
+    Public because the alternative is every such test reaching into two
+    private names and getting the pair wrong once.
+    """
+    alembic_directory.cache_clear()
+    _ancestry.cache_clear()
 
 
 async def current_revision(db: AsyncSession) -> str | None:
@@ -92,12 +155,16 @@ def _ancestry() -> dict[str, tuple[str, ...]]:
         logger.warning("alembic_not_importable")
         return {}
 
-    if not ALEMBIC_DIRECTORY.is_dir():
-        logger.warning("alembic_directory_absent", path=str(ALEMBIC_DIRECTORY))
+    root = alembic_directory()
+    if root is None:
+        logger.warning(
+            "alembic_directory_absent",
+            searched=[str(path) for path in CANDIDATE_DIRECTORIES],
+        )
         return {}
 
     try:
-        directory = ScriptDirectory(str(ALEMBIC_DIRECTORY))
+        directory = ScriptDirectory(str(root))
         ancestry: dict[str, tuple[str, ...]] = {}
         for script in directory.walk_revisions():
             chain: list[str] = [script.revision]
@@ -113,7 +180,7 @@ def _ancestry() -> dict[str, tuple[str, ...]]:
         # is a deployment fault, and it must not turn every page that shows
         # update status into a 500. The caller degrades to the head alone,
         # which fails closed.
-        logger.exception("alembic_history_unreadable", path=str(ALEMBIC_DIRECTORY))
+        logger.exception("alembic_history_unreadable", path=str(root))
         return {}
     else:
         return ancestry
@@ -175,14 +242,15 @@ def head_revision() -> str | None:
         from alembic.script import ScriptDirectory
     except ImportError:  # pragma: no cover - alembic is a hard dependency
         return None
-    if not ALEMBIC_DIRECTORY.is_dir():
+    root = alembic_directory()
+    if root is None:
         return None
     try:
-        heads = ScriptDirectory(str(ALEMBIC_DIRECTORY)).get_heads()
+        heads = ScriptDirectory(str(root)).get_heads()
     except Exception:
         # Same reasoning as `_ancestry`: a malformed history is a deployment
         # fault and must not turn a status page into a 500.
-        logger.exception("alembic_heads_unreadable", path=str(ALEMBIC_DIRECTORY))
+        logger.exception("alembic_heads_unreadable", path=str(root))
         return None
     return heads[0] if len(heads) == 1 else None
 

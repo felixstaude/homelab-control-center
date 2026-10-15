@@ -669,6 +669,51 @@ class TestFrameHandling:
             assert rows[0][0] == "9.9.9"
             assert rows[0][1] == 64
 
+    async def test_reconnecting_does_not_erase_what_the_host_already_reported(
+        self, api_factory: ApiFactory, seed_user: SeedUser, sign_in: SignIn, read_sql: ReadSql
+    ) -> None:
+        """A reconnection says nothing about the host; it must not say "nothing".
+
+        The connect handler has a credential and a protocol version and no
+        self-description — an agent reports its version in a *heartbeat*. The
+        accept path wrote those columns unconditionally anyway, so every
+        reconnection blanked them until the next heartbeat arrived.
+
+        Not cosmetic. ``agent_version`` is what the update planner compares
+        against the manifest, so in that window the host's plan is
+        ``unknown_version`` and the fleet's version distribution reads
+        "unknown" — for the whole fleet at once after a controller restart,
+        which is exactly when somebody is looking at it. ``update-e2e.sh``
+        §16 caught it forty milliseconds after a reconnect.
+
+        Two sockets rather than one: on a single connection the old code is
+        correct, which is why nothing had noticed.
+        """
+        async with api_factory() as client:
+            host_id, credential = await enrolled_agent(client, seed_user, sign_in)
+
+            await drive_socket(
+                client,
+                headers=bearer(credential),
+                frames=[heartbeat_frame(agent_version="0.1.1-test", platform="linux/amd64")],
+            )
+            before = await read_sql(
+                client,
+                f"SELECT agent_version, platform FROM hosts WHERE id = '{host_id}'",
+            )
+            assert before[0][0] == "0.1.1-test"
+
+            # A second connection that says nothing about itself, which is
+            # what every reconnection does.
+            await drive_socket(client, headers=bearer(credential), frames=[])
+
+            after = await read_sql(
+                client,
+                f"SELECT agent_version, platform FROM hosts WHERE id = '{host_id}'",
+            )
+            assert after[0][0] == "0.1.1-test"
+            assert after[0][1] == "linux/amd64"
+
 
 # ---------------------------------------------------------------------------
 # Supersession and reconnection

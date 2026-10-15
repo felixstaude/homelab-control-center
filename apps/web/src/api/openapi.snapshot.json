@@ -3331,6 +3331,7 @@
             "type": "boolean"
           },
           "schema_is_current": {
+            "description": "Nothing pending, nothing ahead, and the history was readable. False when this build cannot read its own migrations: 'cannot tell' is nearer to 'not current' than to 'current', and this is the field a script would check before upgrading.",
             "title": "Schema Is Current",
             "type": "boolean"
           },

@@ -1368,7 +1368,14 @@ class UpgradeReadinessResponse(BaseModel):
             "Migrations this build has and the database has not, in the order they would run."
         )
     )
-    schema_is_current: bool
+    schema_is_current: bool = Field(
+        description=(
+            "Nothing pending, nothing ahead, and the history was readable. "
+            "False when this build cannot read its own migrations: 'cannot "
+            "tell' is nearer to 'not current' than to 'current', and this "
+            "is the field a script would check before upgrading."
+        )
+    )
     schema_is_ahead: bool = Field(
         description=(
             "The database reports a revision this build does not contain: an "
@@ -1445,7 +1452,22 @@ async def upgrade_readiness(database: DatabaseDep) -> UpgradeReadinessResponse:
     # unknown head as the head alone — deliberately, so a blocker can name it
     # — which would make an unknown revision look applied.
     ahead = revision is not None and not knows_revision(revision)
+    # `head_revision()` is None when this build cannot read its own migration
+    # history. That is not "nothing is pending" and must not be reported as
+    # it: with the history unreadable, `knows_revision` fails open and
+    # `pending_revisions` is empty, so every signal below points at "current"
+    # — which is how a production image once reported "the schema is current"
+    # against a database from the future. See hcc/updates/schema.py.
+    unreadable = head is None
     advice: list[str] = []
+    if unreadable:
+        advice.append(
+            "This build cannot read its own migration history, so it cannot "
+            "tell whether the schema is current. That is a packaging fault "
+            "rather than a database one: check the image contains its "
+            "`alembic/` directory. Do not read the absence of pending "
+            "migrations below as a reason to upgrade."
+        )
     if ahead:
         advice.append(
             f"This database reports schema revision {revision}, which this build "
@@ -1474,7 +1496,10 @@ async def upgrade_readiness(database: DatabaseDep) -> UpgradeReadinessResponse:
         schema_revision=revision,
         head_revision=head,
         pending_revisions=pending,
-        schema_is_current=not pending and not ahead,
+        # False when the history is unreadable: "cannot tell" is nearer to
+        # "not current" than to "current", and this field is what an
+        # operator — or a script — reads to decide it is safe to proceed.
+        schema_is_current=not pending and not ahead and not unreadable,
         schema_is_ahead=ahead,
         connected_hosts=int(connected),
         hosts_with_open_updates=int(open_updates),

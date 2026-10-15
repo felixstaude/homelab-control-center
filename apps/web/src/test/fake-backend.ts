@@ -54,6 +54,7 @@ import type {
   UpdatePlan,
   UserRole,
 } from '@/api/types';
+import { CONTRACT_MODULES } from '@/test/module-catalogue.generated';
 
 export const TEST_CSRF_TOKEN = 'test-csrf-token-value';
 
@@ -252,250 +253,23 @@ export function makeHost(overrides: Partial<Host> = {}): Host {
 
 /** One recorded request, for asserting on headers and bodies. */
 /**
- * The module catalogue, matching `contracts/monitoring-modules.json`.
+ * The module catalogue, as the controller's registry defines it.
  *
- * Five modules, because that is what the registry declares — not two. The
- * floors are the real ones: a test that used 1 s everywhere would not notice
- * an interface that offered an interval the server refuses.
+ * Re-exported from a generated file rather than written here. It used to be
+ * a hand-made transcription of `contracts/monitoring-modules.json`, kept
+ * faithful by a comment asking the next reader to keep it faithful — and it
+ * fell six modules behind during Operation Horizon without a single test
+ * failing, because the only thing that could have noticed the drift was the
+ * copy itself.
+ *
+ * `scripts/contracts.sh` writes `module-catalogue.generated.ts` from the same
+ * registry that produces the JSON, and `make check-contract` fails when the
+ * committed file is stale. The generated file lives under `apps/web` rather
+ * than being imported from `contracts/` because the client image is built
+ * from this directory alone: a test importing `../../../../contracts/`
+ * type-checks locally and breaks `docker compose build`.
  */
-/**
- * The module catalogue.
- *
- * Transcribed from `contracts/monitoring-modules.json`, which is generated
- * from the server's registry and drift-checked by `make check-contract`. That
- * file is the source of truth; this is a copy because Vite will not import
- * from outside the project root and widening its allowed paths for a test
- * fixture is not a trade worth making.
- *
- * Kept faithful on purpose, and now *checked* — see `fake-backend.test.ts`,
- * which reads the contract with `node:fs` and compares every field. The
- * prose below used to be the only thing keeping this in step, and it was not
- * enough: six modules landed in the registry during Operation Horizon and
- * this copy claimed five throughout, so every browser test ran against a
- * five-module world and nothing failed.
- *
- * Eleven modules, because that is what the registry declares, with the real
- * interval floors, which differ per module: a fixture using 1 s everywhere
- * would not notice an interface offering an interval the server refuses. The
- * metric ids are the registry's too (`used`, not `used_bytes`); the interface
- * displays `metric_name` and never branches on the id, but a fixture that
- * disagrees with reality misleads whoever reads it next.
- */
-export const FAKE_MODULES: readonly ModuleDescriptor[] = [
-  {
-    id: 'cpu',
-    name: 'CPU utilisation',
-    description: 'Processor utilisation, derived from /proc/stat deltas.',
-    platform: 'linux',
-    default_interval_seconds: 10,
-    min_interval_seconds: 1,
-    schedule_kinds: ['interval'],
-    requires_privileges: false,
-    allows_duplicate_runs: true,
-    data_schema_version: 1,
-    metrics: [
-      { id: 'utilisation', name: 'CPU utilisation', unit: 'percent', kind: 'gauge', label_keys: [] },
-      { id: 'core_utilisation', name: 'Per-core utilisation', unit: 'percent', kind: 'gauge', label_keys: ['core'] },
-      { id: 'logical_cpus', name: 'Logical CPUs', unit: 'count', kind: 'gauge', label_keys: [] },
-    ],
-  },
-  {
-    id: 'memory',
-    name: 'Memory',
-    description: 'Physical memory in use, from /proc/meminfo.',
-    platform: 'linux',
-    default_interval_seconds: 10,
-    min_interval_seconds: 1,
-    schedule_kinds: ['interval'],
-    requires_privileges: false,
-    allows_duplicate_runs: true,
-    data_schema_version: 1,
-    metrics: [
-      { id: 'utilisation', name: 'Memory used', unit: 'percent', kind: 'gauge', label_keys: [] },
-      { id: 'total', name: 'Total memory', unit: 'bytes', kind: 'gauge', label_keys: [] },
-      { id: 'available', name: 'Available memory', unit: 'bytes', kind: 'gauge', label_keys: [] },
-      { id: 'used', name: 'Used memory', unit: 'bytes', kind: 'gauge', label_keys: [] },
-    ],
-  },
-  {
-    id: 'swap',
-    name: 'Swap',
-    description: 'Swap in use. Reports nothing on a host with no swap.',
-    platform: 'linux',
-    default_interval_seconds: 10,
-    min_interval_seconds: 1,
-    schedule_kinds: ['interval'],
-    requires_privileges: false,
-    allows_duplicate_runs: true,
-    data_schema_version: 1,
-    metrics: [
-      { id: 'utilisation', name: 'Swap used', unit: 'percent', kind: 'gauge', label_keys: [] },
-      { id: 'total', name: 'Total swap', unit: 'bytes', kind: 'gauge', label_keys: [] },
-      { id: 'used', name: 'Used swap', unit: 'bytes', kind: 'gauge', label_keys: [] },
-    ],
-  },
-  {
-    id: 'load',
-    name: 'Load average',
-    description: 'One, five and fifteen minute load averages.',
-    platform: 'linux',
-    default_interval_seconds: 30,
-    min_interval_seconds: 5,
-    schedule_kinds: ['interval'],
-    requires_privileges: false,
-    allows_duplicate_runs: true,
-    data_schema_version: 1,
-    metrics: [
-      { id: 'average', name: 'Load average', unit: 'load', kind: 'gauge', label_keys: ['window'] },
-    ],
-  },
-  {
-    id: 'uptime',
-    name: 'System uptime',
-    description: 'How long the host has been running.',
-    platform: 'linux',
-    default_interval_seconds: 300,
-    min_interval_seconds: 60,
-    schedule_kinds: ['interval'],
-    requires_privileges: false,
-    allows_duplicate_runs: true,
-    data_schema_version: 1,
-    metrics: [
-      { id: 'seconds', name: 'System uptime', unit: 'seconds', kind: 'gauge', label_keys: [] },
-    ],
-  },
-  {
-    id: 'filesystem',
-    name: 'Filesystem usage',
-    description:
-      'Capacity, usage and inode usage per mounted filesystem, from statfs and /proc/self/mountinfo. Filesystem capacity, which is not disk capacity.',
-    platform: 'linux',
-    default_interval_seconds: 60,
-    min_interval_seconds: 10,
-    schedule_kinds: ['interval'],
-    requires_privileges: false,
-    allows_duplicate_runs: true,
-    data_schema_version: 1,
-    metrics: [
-      { id: 'total', name: 'Filesystem size', unit: 'bytes', kind: 'gauge', label_keys: ['mount'] },
-      { id: 'used', name: 'Used', unit: 'bytes', kind: 'gauge', label_keys: ['mount'] },
-      { id: 'available', name: 'Available', unit: 'bytes', kind: 'gauge', label_keys: ['mount'] },
-      { id: 'utilisation', name: 'Used', unit: 'percent', kind: 'gauge', label_keys: ['mount'] },
-      { id: 'inodes_utilisation', name: 'Inodes used', unit: 'percent', kind: 'gauge', label_keys: ['mount'] },
-      { id: 'readonly', name: 'Mounted read-only', unit: 'count', kind: 'gauge', label_keys: ['mount'] },
-    ],
-  },
-  {
-    id: 'diskio',
-    name: 'Disk throughput',
-    description:
-      'Read and write throughput and operation rates per block device, from /proc/diskstats. Computed from the difference between two samples.',
-    platform: 'linux',
-    default_interval_seconds: 10,
-    min_interval_seconds: 1,
-    schedule_kinds: ['interval'],
-    requires_privileges: false,
-    allows_duplicate_runs: true,
-    data_schema_version: 1,
-    metrics: [
-      { id: 'read_bytes', name: 'Read throughput', unit: 'bytes_per_second', kind: 'gauge', label_keys: ['device'] },
-      { id: 'write_bytes', name: 'Write throughput', unit: 'bytes_per_second', kind: 'gauge', label_keys: ['device'] },
-      { id: 'read_ops', name: 'Reads', unit: 'operations_per_second', kind: 'gauge', label_keys: ['device'] },
-      { id: 'write_ops', name: 'Writes', unit: 'operations_per_second', kind: 'gauge', label_keys: ['device'] },
-      { id: 'utilisation', name: 'Busy', unit: 'percent', kind: 'gauge', label_keys: ['device'] },
-    ],
-  },
-  {
-    id: 'network',
-    name: 'Network traffic',
-    description:
-      'Throughput, packet rates, errors and link state per interface, from /proc/net/dev and /sys/class/net. Computed from the difference between two samples.',
-    platform: 'linux',
-    default_interval_seconds: 10,
-    min_interval_seconds: 1,
-    schedule_kinds: ['interval'],
-    requires_privileges: false,
-    allows_duplicate_runs: true,
-    data_schema_version: 1,
-    metrics: [
-      { id: 'receive_bytes', name: 'Download', unit: 'bytes_per_second', kind: 'gauge', label_keys: ['interface'] },
-      { id: 'transmit_bytes', name: 'Upload', unit: 'bytes_per_second', kind: 'gauge', label_keys: ['interface'] },
-      { id: 'receive_packets', name: 'Packets in', unit: 'packets_per_second', kind: 'gauge', label_keys: ['interface'] },
-      { id: 'transmit_packets', name: 'Packets out', unit: 'packets_per_second', kind: 'gauge', label_keys: ['interface'] },
-      { id: 'receive_errors', name: 'Receive errors', unit: 'packets_per_second', kind: 'gauge', label_keys: ['interface'] },
-      { id: 'transmit_errors', name: 'Transmit errors', unit: 'packets_per_second', kind: 'gauge', label_keys: ['interface'] },
-      { id: 'receive_drops', name: 'Receive drops', unit: 'packets_per_second', kind: 'gauge', label_keys: ['interface'] },
-      { id: 'transmit_drops', name: 'Transmit drops', unit: 'packets_per_second', kind: 'gauge', label_keys: ['interface'] },
-      { id: 'up', name: 'Link up', unit: 'count', kind: 'gauge', label_keys: ['interface'] },
-      { id: 'speed', name: 'Link speed', unit: 'bits_per_second', kind: 'gauge', label_keys: ['interface'] },
-    ],
-  },
-  {
-    id: 'sensors',
-    name: 'Temperatures and fans',
-    description:
-      'Temperature and fan readings from /sys/class/hwmon, named by the chip that reports them. Only what the hardware actually exposes — a host with no sensors reports the module unavailable rather than inventing one.',
-    platform: 'linux',
-    default_interval_seconds: 30,
-    min_interval_seconds: 5,
-    schedule_kinds: ['interval'],
-    requires_privileges: false,
-    allows_duplicate_runs: true,
-    data_schema_version: 1,
-    metrics: [
-      { id: 'temperature', name: 'Temperature', unit: 'celsius', kind: 'gauge', label_keys: ['sensor'] },
-      { id: 'fan_speed', name: 'Fan speed', unit: 'rpm', kind: 'gauge', label_keys: ['sensor'] },
-    ],
-  },
-  {
-    id: 'docker',
-    name: 'Containers',
-    description:
-      'Container state, CPU, memory and network from the Docker Engine API. Read-only. Needs the host administrator to grant socket access first: the Docker socket is equivalent to root.',
-    platform: 'linux',
-    default_interval_seconds: 15,
-    min_interval_seconds: 5,
-    schedule_kinds: ['interval'],
-    requires_privileges: true,
-    allows_duplicate_runs: true,
-    data_schema_version: 1,
-    metrics: [
-      { id: 'containers_total', name: 'Containers', unit: 'count', kind: 'gauge', label_keys: [] },
-      { id: 'containers_running', name: 'Running', unit: 'count', kind: 'gauge', label_keys: [] },
-      { id: 'running', name: 'Running', unit: 'count', kind: 'gauge', label_keys: ['container'] },
-      { id: 'cpu_utilisation', name: 'CPU', unit: 'percent', kind: 'gauge', label_keys: ['container'] },
-      { id: 'memory_bytes', name: 'Memory', unit: 'bytes', kind: 'gauge', label_keys: ['container'] },
-      { id: 'memory_limit', name: 'Memory limit', unit: 'bytes', kind: 'gauge', label_keys: ['container'] },
-      { id: 'memory_utilisation', name: 'Memory used', unit: 'percent', kind: 'gauge', label_keys: ['container'] },
-      { id: 'receive_bytes', name: 'Download', unit: 'bytes_per_second', kind: 'gauge', label_keys: ['container'] },
-      { id: 'transmit_bytes', name: 'Upload', unit: 'bytes_per_second', kind: 'gauge', label_keys: ['container'] },
-      { id: 'restart_count', name: 'Restarts', unit: 'count', kind: 'gauge', label_keys: ['container'] },
-      { id: 'uptime_seconds', name: 'Uptime', unit: 'seconds', kind: 'gauge', label_keys: ['container'] },
-      { id: 'healthy', name: 'Healthy', unit: 'count', kind: 'gauge', label_keys: ['container'] },
-    ],
-  },
-  {
-    id: 'systemd',
-    name: 'Services',
-    description:
-      'State, restart count and uptime for named systemd units, plus the host\'s failed-unit count. Read-only. Names the units to watch, because a host has hundreds and almost none of them are interesting.',
-    platform: 'linux',
-    default_interval_seconds: 60,
-    min_interval_seconds: 15,
-    schedule_kinds: ['interval'],
-    requires_privileges: false,
-    allows_duplicate_runs: true,
-    data_schema_version: 1,
-    metrics: [
-      { id: 'units_failed', name: 'Failed units', unit: 'count', kind: 'gauge', label_keys: [] },
-      { id: 'active', name: 'Active', unit: 'count', kind: 'gauge', label_keys: ['unit'] },
-      { id: 'failed', name: 'Failed', unit: 'count', kind: 'gauge', label_keys: ['unit'] },
-      { id: 'restarts', name: 'Restarts', unit: 'count', kind: 'gauge', label_keys: ['unit'] },
-      { id: 'enabled', name: 'Enabled at boot', unit: 'count', kind: 'gauge', label_keys: ['unit'] },
-      { id: 'uptime_seconds', name: 'Running for', unit: 'seconds', kind: 'gauge', label_keys: ['unit'] },
-    ],
-  },
-];
+export const FAKE_MODULES: readonly ModuleDescriptor[] = CONTRACT_MODULES;
 
 /** A series descriptor, with the registry names the API decorates it with. */
 export function makeSeries(overrides: Partial<MetricSeries> = {}): MetricSeries {

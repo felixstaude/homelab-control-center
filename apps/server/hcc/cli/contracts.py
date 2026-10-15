@@ -179,6 +179,11 @@ def _modules() -> dict[str, Any]:
             {
                 "id": module.id,
                 "name": module.name,
+                # Operator-facing prose, carried so the browser client's test
+                # fixture can be *generated* from this file rather than
+                # transcribed. The Go agent ignores it; `encoding/json` reads
+                # named fields and skips the rest.
+                "description": module.description,
                 "platform": module.platform.value,
                 "schedule_kinds": [kind.value for kind in module.schedule_kinds],
                 "min_interval_seconds": module.min_interval_seconds,
