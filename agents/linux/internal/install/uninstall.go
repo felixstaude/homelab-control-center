@@ -187,6 +187,31 @@ func (u *Uninstaller) Run(ctx context.Context) error {
 		})
 	}
 
+	// The root-owned update state, which holds the anti-rollback floor.
+	//
+	// Removed only by --purge, and that asymmetry with the state directory
+	// above is the point: an ordinary uninstall-and-reinstall of the same
+	// host should not quietly reset its floor to whatever is being installed
+	// next, because "uninstall, install an old version" would then be a
+	// rollback path that needs no flag. --purge already means "forget this
+	// host entirely" — it removes the credential too — so forgetting the
+	// floor belongs with it.
+	if u.Options.Purge {
+		directory := u.Paths.UpdateStateDir()
+		if _, err := os.Stat(directory); err == nil {
+			actions = append(actions, action{
+				label:  "update state",
+				detail: "remove " + directory + " including this host's anti-rollback floor",
+				run: func(context.Context) error {
+					if err := os.RemoveAll(directory); err != nil {
+						return fmt.Errorf("cannot remove %s: %w", directory, err)
+					}
+					return nil
+				},
+			})
+		}
+	}
+
 	// --- Credentials and configuration -----------------------------------
 	if u.Options.Purge {
 		directory := u.Paths.ConfigDir()

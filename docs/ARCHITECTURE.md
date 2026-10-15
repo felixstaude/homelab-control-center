@@ -3113,6 +3113,69 @@ state, never from elapsed time. A stuck download shows a bar that does not
 move, which is the true and useful answer; a bar that advanced on a timer would
 be inventing progress and somebody would believe it.
 
+### ADR-063: A root-owned version floor, in a sibling directory
+
+**Decision.** Each host stores a monotonic anti-rollback floor — the oldest
+version an update may target — in `/var/lib/hcc-agent-update/`, a directory
+owned by root and **not** inside the agent's own state directory. The floor
+rises only when an install reaches a health-checked conclusion. No field in an
+update instruction lowers it; `allow_downgrade` is bounded by it. The only way
+down is `hcc-agent upgrade --allow-downgrade --version <v>`, which needs root
+on the host.
+
+**Why a floor at all.** [ADR-060](#adr-060-the-publisher-signs-releases-the-controller-only-authorizes-them)
+stops a compromised controller installing a binary the publisher did not
+build. It does not stop one installing an *old* binary the publisher did
+build, and a signed release from before a fix is exactly what an attacker
+holding the control plane would choose. A signature is not a freshness
+statement: the one on 0.1.0 is as valid today as the day it was made.
+
+**Why a sibling and not a subdirectory.** Permission to rename or delete a
+directory entry comes from the **parent** directory. `/var/lib/hcc-agent` is
+owned by the unprivileged service account by design — the agent stages
+downloads there — so a root-owned `trust/` inside it could be renamed away by
+that account and replaced with one it wrote. The only fix within that layout
+is a sticky bit, which is a subtle property one `chmod` undoes. A sibling
+needs write access to `/var/lib`, which the agent does not have.
+
+**Why it rises on success and not on attempt.** Raising it when an install is
+*attempted* would mean a host that failed to reach 0.2.0 could no longer be
+sent 0.1.5 either, and the only way out would be root on the machine. So the
+floor follows what has actually run.
+
+**What it does not claim.** Nothing here resists a compromised root account,
+which can rewrite the floor, replace the binary or remove the unit. The
+property defended is narrower and worth stating exactly: a compromised
+*controller*, or a compromised *unprivileged agent account*, cannot move a
+host to an older release.
+
+### ADR-064: The privileged installer works from its own copy of the archive
+
+**Decision.** Before verifying or extracting anything, the privileged update
+unit copies the staged archive out of `/var/lib/hcc-agent` into its own
+root-owned directory, and installs from that copy. The upgrader additionally
+reads the archive through a single file descriptor rather than opening the
+path twice.
+
+**Why.** An upgrade reads the archive twice — once to hash it against the
+digest in the publisher's signed metadata, once to extract the binary. The
+directory it was staged in belongs to the unprivileged agent account, so
+those two reads can see different bytes: the digest is verified against an
+archive that is then not the one installed. That turns "the agent account is
+compromised" into "root executes the attacker's binary", which is precisely
+what the handoff exists to prevent.
+
+**Why both mechanisms.** A single descriptor closes the *rename* form of the
+substitution, because a descriptor is pinned to an inode. It does nothing
+about `open(O_TRUNC)` and a rewrite, which modifies that same inode — a fact
+established by writing the test first and watching a descriptor-only
+implementation fail it. The copy into a directory no unprivileged account can
+write closes both, and a modification made *during* the copy produces a digest
+mismatch, which is a refusal.
+
+**Cost.** One extra copy of a ~3 MB archive per update, deleted when the
+install finishes.
+
 ---
 
 ## 14. Open design questions

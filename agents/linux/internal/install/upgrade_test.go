@@ -382,6 +382,32 @@ func TestUpgradeRefusesWithoutAnInstallation(t *testing.T) {
 
 // --- Archive extraction safety ---------------------------------------------
 
+// extractFromPath opens an archive and extracts from the handle.
+//
+// The production callers hold the handle open across both reads — that is the
+// point of [UpgradeOptions.ArchiveFile] — so a test that takes a path has to
+// do the opening itself.
+func extractFromPath(t *testing.T, path string) ([]byte, error) {
+	t.Helper()
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("cannot open the fixture: %v", err)
+	}
+	defer file.Close()
+	return extractAgentBinary(file, path)
+}
+
+// digestPath opens an archive and hashes the handle.
+func digestPath(t *testing.T, path string) (string, int64, error) {
+	t.Helper()
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("cannot open the fixture: %v", err)
+	}
+	defer file.Close()
+	return digestArchive(file)
+}
+
 func TestExtractAgentBinaryRefusesAnEscapingMember(t *testing.T) {
 	directory := t.TempDir()
 	// The member is *named* so that its base name is hcc-agent, which is how
@@ -390,7 +416,7 @@ func TestExtractAgentBinaryRefusesAnEscapingMember(t *testing.T) {
 		map[string][]byte{"../../etc/cron.d/hcc-agent": []byte("* * * * * root id\n")}, nil,
 	))
 
-	_, err := extractAgentBinary(path)
+	_, err := extractFromPath(t, path)
 	if err == nil {
 		t.Fatal("extraction accepted a path-traversal member")
 	}
@@ -421,7 +447,7 @@ func TestExtractAgentBinaryRefusesALink(t *testing.T) {
 	_ = compressed.Close()
 	path, _ := writeArchive(t, directory, raw.Bytes())
 
-	_, err := extractAgentBinary(path)
+	_, err := extractFromPath(t, path)
 	if err == nil {
 		t.Fatal("extraction accepted a symlink as the agent binary")
 	}
@@ -437,7 +463,7 @@ func TestExtractAgentBinaryRefusesSomethingThatIsNotAnArchive(t *testing.T) {
 		t.Fatalf("cannot write the fixture: %v", err)
 	}
 
-	if _, err := extractAgentBinary(path); err == nil {
+	if _, err := extractFromPath(t, path); err == nil {
 		t.Fatal("extraction accepted something that is not a gzip stream")
 	}
 }
@@ -462,7 +488,7 @@ func TestExtractAgentBinaryBoundsADecompressionBomb(t *testing.T) {
 	_ = compressed.Close()
 	path, _ := writeArchive(t, directory, raw.Bytes())
 
-	_, err := extractAgentBinary(path)
+	_, err := extractFromPath(t, path)
 	if err == nil {
 		t.Fatal("extraction read an unbounded member")
 	}
@@ -516,7 +542,7 @@ func TestDigestFileRejectsAnOversizedArchive(t *testing.T) {
 	}
 	_ = file.Close()
 
-	if _, _, err := digestFile(path); err == nil {
+	if _, _, err := digestPath(t, path); err == nil {
 		t.Fatal("an oversized archive was accepted")
 	}
 }
@@ -627,4 +653,105 @@ func countRestarts(calls []string) int {
 		}
 	}
 	return count
+}
+
+// --- The substitution race --------------------------------------------------
+
+// TestTheArchiveIsReadOnceFromOneHandle covers one half of a privilege
+// escalation, and the half it does *not* cover is why the privileged caller
+// does something else as well.
+//
+// The upgrade reads the archive twice: once to hash it against the digest from
+// the publisher's signed metadata, once to extract the binary. If both reads
+// open the path, an account that can write the directory can let the first see
+// a genuine archive and the second see a different one — digest verified
+// against bytes that are not the bytes installed. The directory in question is
+// `/var/lib/hcc-agent`, which belongs to the **unprivileged agent account** by
+// design, and the reader is root.
+//
+// Holding one descriptor closes the rename form, which is what this asserts.
+// It does not close `open(O_TRUNC)` + rewrite, which modifies the same inode;
+// [TestAnInPlaceRewriteCannotReachThePrivilegedCopy] covers that, and the
+// mechanism is a copy into a root-owned directory rather than a descriptor.
+func TestTheArchiveIsReadOnceFromOneHandle(t *testing.T) {
+	f := upgradeFixture(t)
+	genuine, genuineDigest := writeArchive(t, f.root, buildArchive(t,
+		map[string][]byte{"hcc-agent": fakeAgentBinary(t, "0.2.0")}, nil,
+	))
+	hostile, _ := writeArchive(t, t.TempDir(), buildArchive(t,
+		map[string][]byte{"hcc-agent": fakeAgentBinary(t, "6.6.6")}, nil,
+	))
+	f.system.configAfterStart = func() { f.writeConfiguration(2) }
+
+	handle, err := os.Open(genuine)
+	if err != nil {
+		t.Fatalf("cannot open the genuine archive: %v", err)
+	}
+	defer handle.Close()
+
+	// The swap, by rename — a different inode under the same name. Everything
+	// that opens the path from here on gets the hostile archive; only the
+	// already-open descriptor still refers to the genuine one.
+	if err := os.Rename(hostile, genuine); err != nil {
+		t.Fatalf("cannot substitute the archive: %v", err)
+	}
+
+	err = f.upgrader(UpgradeOptions{
+		ArchivePath:    genuine,
+		ArchiveFile:    handle,
+		ExpectedSHA256: genuineDigest,
+		ConnectTimeout: 5 * time.Second,
+	}).Run(context.Background())
+	if err != nil {
+		t.Fatalf("the upgrade failed: %v\n%s", err, f.output.String())
+	}
+
+	installed, readErr := os.ReadFile(f.paths.Binary())
+	if readErr != nil {
+		t.Fatalf("cannot read the installed binary: %v", readErr)
+	}
+	if bytes.Equal(installed, fakeAgentBinary(t, "6.6.6")) {
+		t.Fatal("the substituted binary was installed: the extraction reopened the path")
+	}
+	if !bytes.Equal(installed, fakeAgentBinary(t, "0.2.0")) {
+		t.Error("the installed binary is neither archive's")
+	}
+}
+
+// TestTheDigestIsTakenFromTheHandleNotThePath is the same property from the
+// other side: were the hash taken from the path, the substituted archive's
+// digest would be the one that matched and the upgrade would proceed.
+func TestTheDigestIsTakenFromTheHandleNotThePath(t *testing.T) {
+	f := upgradeFixture(t)
+	genuine, _ := writeArchive(t, f.root, buildArchive(t,
+		map[string][]byte{"hcc-agent": fakeAgentBinary(t, "0.2.0")}, nil,
+	))
+	hostileBytes := buildArchive(t,
+		map[string][]byte{"hcc-agent": fakeAgentBinary(t, "6.6.6")}, nil,
+	)
+	hostile, _ := writeArchive(t, t.TempDir(), hostileBytes)
+	hostileSum := sha256.Sum256(hostileBytes)
+
+	handle, err := os.Open(genuine)
+	if err != nil {
+		t.Fatalf("cannot open the genuine archive: %v", err)
+	}
+	defer handle.Close()
+	if err := os.Rename(hostile, genuine); err != nil {
+		t.Fatalf("cannot substitute the archive: %v", err)
+	}
+
+	err = f.upgrader(UpgradeOptions{
+		ArchivePath:    genuine,
+		ArchiveFile:    handle,
+		ExpectedSHA256: hex.EncodeToString(hostileSum[:]),
+		ConnectTimeout: 5 * time.Second,
+	}).Run(context.Background())
+
+	if err == nil {
+		t.Fatal("the upgrade accepted the substituted archive's digest")
+	}
+	if !strings.Contains(err.Error(), "does not match the digest") {
+		t.Errorf("the refusal does not name the cause: %v", err)
+	}
 }

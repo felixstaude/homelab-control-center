@@ -160,6 +160,7 @@ type harness struct {
 	fetchBody   []byte
 	stagingDir  string
 	seenArchive []byte
+	paths       install.Paths
 }
 
 // fakeSystem is the privileged-operation surface, with a settable uid.
@@ -189,8 +190,15 @@ func (f fakeSystem) Chown(string, int, int) error                             { 
 func newHarness(t *testing.T, mutate func(*updater.Options)) *harness {
 	t.Helper()
 	h := &harness{reporter: &recorder{}, fetchBody: archive, stagingDir: t.TempDir()}
+	// Rooted at a temp directory so the anti-rollback floor these tests
+	// consult is this test's, not the one belonging to whatever machine is
+	// running `go test`. A default-constructed Paths resolves to /var/lib,
+	// and a test that reads a real host's state is a test whose result
+	// depends on the host.
+	h.paths = install.Paths{Root: t.TempDir()}
 	options := updater.Options{
 		TrustStore: trustStore(t),
+		Paths:      h.paths,
 		// Root, so these tests exercise the direct install path with the
 		// injected upgrader. The handoff path an unprivileged agent takes has
 		// its own tests below.
@@ -229,6 +237,20 @@ func newHarness(t *testing.T, mutate func(*updater.Options)) *harness {
 	}
 	h.updater = updater.New(options)
 	return h
+}
+
+// floorAt establishes a root-owned anti-rollback floor in this harness's
+// temporary root, as a successful install would have.
+func floorAt(floor string) func(*updater.Options) {
+	return func(o *updater.Options) {
+		o.Floor = func() (*install.State, error) {
+			return &install.State{
+				SchemaVersion:    install.FloorSchemaVersion,
+				Floor:            floor,
+				HighestInstalled: floor,
+			}, nil
+		}
+	}
 }
 
 type instructionOptions struct {
@@ -1136,5 +1158,96 @@ func TestTheHandoffRefusesToStageWhereRootCannotLook(t *testing.T) {
 	}
 	if h.reporter.result != protocol.StateFailed {
 		t.Errorf("result = %q, want %q", h.reporter.result, protocol.StateFailed)
+	}
+}
+
+// --- The anti-rollback floor ------------------------------------------------
+
+// TestTheFloorRefusesASignedOlderRelease is the property the signature check
+// does not give.
+//
+// A release's signature is as valid years later as it was the day it was made,
+// so "the publisher built this" says nothing about whether it is the version
+// this host should be running. A controller that has been taken over would
+// choose a genuinely published release from before a fix. The floor is what
+// refuses it, and it is stored where a compromised controller cannot reach.
+func TestTheFloorRefusesASignedOlderRelease(t *testing.T) {
+	h := newHarness(t, func(o *updater.Options) {
+		o.InstalledVersion = "0.5.0"
+		floorAt("0.5.0")(o)
+	})
+	metadata := manifestFor(t, manifestOptions{version: "0.4.0"})
+
+	err := h.updater.Apply(context.Background(), instructionFor(t, instructionOptions{
+		metadata: metadata,
+		version:  "0.4.0",
+		// The controller says a downgrade is authorised. It is not the
+		// controller's call: an instruction field that opened this gate would
+		// be no gate at all.
+		allowDowngrade: true,
+	}), h.reporter)
+
+	if err == nil {
+		t.Fatal("a signed older release was installed over the floor")
+	}
+	if !updater.IsRefusal(err) {
+		t.Errorf("a floor refusal is a failure rather than a refusal: %v", err)
+	}
+	if !strings.Contains(err.Error(), "rollback") {
+		t.Errorf("the refusal does not name the cause: %v", err)
+	}
+	if len(h.fetched) != 0 {
+		t.Error("the agent downloaded an archive it was going to refuse")
+	}
+}
+
+func TestTheFloorPermitsAnUpgrade(t *testing.T) {
+	// The floor has to be invisible in the ordinary case, or it is a bug
+	// factory rather than a defence.
+	h := newHarness(t, func(o *updater.Options) {
+		o.InstalledVersion = "0.1.0"
+		floorAt("0.1.0")(o)
+	})
+
+	if err := h.updater.Apply(
+		context.Background(), instructionFor(t, instructionOptions{}), h.reporter,
+	); err != nil {
+		t.Fatalf("an upgrade above the floor was refused: %v", err)
+	}
+	if len(h.upgraded) != 1 {
+		t.Errorf("the installer ran %d times, want once", len(h.upgraded))
+	}
+}
+
+func TestAnAbsentFloorDoesNotBlockAnUpdate(t *testing.T) {
+	// Every host installed before the floor existed has none. If absence
+	// refused, this change would stop updates on the whole existing fleet.
+	h := newHarness(t, nil)
+
+	if err := h.updater.Apply(
+		context.Background(), instructionFor(t, instructionOptions{}), h.reporter,
+	); err != nil {
+		t.Fatalf("a host with no floor was refused: %v", err)
+	}
+}
+
+func TestACorruptFloorRefusesWhenThisProcessIsRoot(t *testing.T) {
+	// As root there is no privileged half to catch it afterwards, so this
+	// process is the last line and fails closed. An unprivileged agent logs
+	// and continues, because the installer re-reads the same file and is the
+	// authority — see the switch in Updater.check.
+	h := newHarness(t, func(o *updater.Options) {
+		o.Floor = func() (*install.State, error) {
+			return nil, fmt.Errorf("%w: it is not a usable document", install.ErrFloorUnsafe)
+		}
+	})
+
+	err := h.updater.Apply(context.Background(), instructionFor(t, instructionOptions{}), h.reporter)
+
+	if err == nil {
+		t.Fatal("a corrupt floor was ignored by a root agent")
+	}
+	if !strings.Contains(err.Error(), "cannot be trusted") {
+		t.Errorf("the refusal does not name the cause: %v", err)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/felixstaude/homelab-control-center/agents/linux/internal/release"
@@ -270,8 +271,17 @@ type ApplyOptions struct {
 	// store refuses everything, which is correct for a build nobody signs
 	// releases for.
 	TrustStore *release.TrustStore
-	System     System
-	Out        io.Writer
+	// InstalledVersion is what *this* binary reports, and this binary is the
+	// installed one: the privileged unit runs `hcc-agent apply-update` from
+	// the very path the upgrade is about to replace.
+	//
+	// Used to seed the anti-rollback floor on a host that has been running
+	// since before the floor existed, so the **first** controller-driven
+	// update after this code lands is already protected rather than the
+	// second. See internal/install/floor.go.
+	InstalledVersion string
+	System           System
+	Out              io.Writer
 	// ConnectTimeout bounds how long the upgrade waits for the restarted
 	// agent to come back before rolling back.
 	ConnectTimeout time.Duration
@@ -346,6 +356,26 @@ func ApplyUpdateRequest(ctx context.Context, options ApplyOptions) error {
 	fmt.Fprintf(options.Out, "Update request for %s (instruction %s)\n",
 		request.Version, request.InstructionID)
 
+	// The anti-rollback gate, before the signature check and before anything
+	// is read, because it is the cheapest and because it is the one a valid
+	// signature does not answer: the signature on an old release is as good
+	// today as it was the day it was made.
+	//
+	// Seeded first, so a host that predates the floor is protected on this
+	// update rather than on the next one.
+	state, err := EnsureFloor(options.Paths.VersionFloor(), options.InstalledVersion)
+	if err != nil {
+		options.writeOutcome(request, StateFailed, "", err.Error())
+		return err
+	}
+	if decision := state.PermitsInstruction(request.InstructionID, request.Version); !decision.Permitted {
+		err := fmt.Errorf("refusing to install %s: %s", request.Version, decision.Reason)
+		options.writeOutcome(request, StateFailed, "", err.Error())
+		return err
+	}
+	fmt.Fprintf(options.Out, "  version floor is %s; %s is at or above it\n",
+		state.FloorText(), request.Version)
+
 	artifact, err := request.verify(options.TrustStore)
 	if err != nil {
 		options.writeOutcome(request, StateFailed, "", err.Error())
@@ -353,23 +383,36 @@ func ApplyUpdateRequest(ctx context.Context, options ApplyOptions) error {
 	}
 	fmt.Fprintf(options.Out, "  signature verified; expecting sha256 %s\n", artifact.SHA256)
 
-	archive, err := options.resolveArchive(request.ArchivePath)
+	// Taken out of the agent's reach **before** it is read for real. See
+	// [ApplyOptions.stageArchivePrivately]: the directory the agent staged in
+	// belongs to the agent account, so every byte this process reads from it
+	// is a byte that account can still change.
+	handle, private, err := options.stageArchivePrivately(request.ArchivePath, artifact.SizeBytes)
+	// The agent's own copy has served its purpose either way, and a few
+	// megabytes left in the state directory is a puzzle for whoever finds it.
+	if removeErr := os.Remove(filepath.Clean(request.ArchivePath)); removeErr != nil &&
+		!errors.Is(removeErr, os.ErrNotExist) {
+		fmt.Fprintf(options.Out, "  ! could not remove the staged archive: %v\n", removeErr)
+	}
 	if err != nil {
 		options.writeOutcome(request, StateFailed, "", err.Error())
 		return err
 	}
+	defer func() {
+		_ = handle.Close()
+		if err := os.Remove(private); err != nil && !errors.Is(err, os.ErrNotExist) {
+			fmt.Fprintf(options.Out, "  ! could not remove %s: %v\n", private, err)
+		}
+	}()
+	fmt.Fprintf(options.Out, "  copied to %s, which the agent account cannot write\n", private)
 
 	upgradeErr := options.Upgrade(ctx, UpgradeOptions{
-		ArchivePath:    archive,
+		ArchivePath:    private,
+		ArchiveFile:    handle,
 		ExpectedSHA256: artifact.SHA256,
 		Out:            options.Out,
 		ConnectTimeout: options.ConnectTimeout,
 	})
-	// Removed whatever happened: a verified archive left in the state
-	// directory is a few megabytes and a puzzle for whoever finds it.
-	if err := os.Remove(archive); err != nil && !errors.Is(err, os.ErrNotExist) {
-		fmt.Fprintf(options.Out, "  ! could not remove the staged archive: %v\n", err)
-	}
 
 	if upgradeErr != nil {
 		state := StateFailed
@@ -381,6 +424,19 @@ func ApplyUpdateRequest(ctx context.Context, options ApplyOptions) error {
 		}
 		options.writeOutcome(request, state, "", upgradeErr.Error())
 		return upgradeErr
+	}
+
+	// The floor rises **here** and nowhere else: after the binary was
+	// replaced, the service restarted, and the replacement proved it
+	// reconnected. An attempt does not raise it, which is what keeps a failed
+	// upgrade from locking this host out of every version between where it is
+	// and where it tried to go.
+	if err := RecordSuccessfulInstall(
+		options.Paths.VersionFloor(), request.Version, request.InstructionID,
+	); err != nil {
+		// Not a failure of the update, which has already happened. Reported
+		// loudly because the next one is unprotected until it is fixed.
+		fmt.Fprintf(options.Out, "  ! could not record the version floor: %v\n", err)
 	}
 
 	options.writeOutcome(request, StateSucceeded, request.Version, "")
@@ -414,37 +470,195 @@ func (r UpdateRequest) verify(store *release.TrustStore) (release.Platform, erro
 	return artifact, nil
 }
 
-// resolveArchive refuses anything that is not a plain file the agent staged.
+// openArchive opens the staged archive, refusing anything that is not a plain
+// file the agent placed directly in its own state directory.
 //
-// Constrained to the state directory because there is no legitimate reason
-// for it to be anywhere else, and because a root process that will read any
-// path a less-privileged account names is a root process doing that account's
-// filesystem reconnaissance for it. The digest check is what makes the
-// contents safe; this is what keeps the *path* uninteresting.
-func (o ApplyOptions) resolveArchive(named string) (string, error) {
+// # Why a *direct child* and not merely "inside"
+//
+// A prefix test — "the cleaned path starts with the state directory" — is
+// satisfied by `/var/lib/hcc-agent/sub/archive.tar.gz`, and the agent account
+// owns that directory, so it can make `sub` a symbolic link to `/etc`.
+// `filepath.Clean` does not resolve symlinks, `O_NOFOLLOW` constrains only the
+// final component, and root would then open `/etc/<whatever>`. The digest
+// check would reject the contents, but root would have *read* a file the agent
+// account cannot, and a root process that reads any file a less-privileged
+// account names is doing that account's reconnaissance for it.
+//
+// Requiring the file to sit directly in the state directory removes every
+// intermediate component, so `O_NOFOLLOW` on the last one is the whole
+// defence and it is sufficient. Nothing legitimate is lost: the agent stages
+// with `filepath.Join(StateDir(), base)` and has no reason to nest.
+//
+// # Why the handle rather than the path
+//
+// Returned open, and the caller gives this exact handle to the upgrader. See
+// [UpgradeOptions.ArchiveFile] — reading the path twice lets the owner of the
+// directory substitute the bytes between the digest check and the extraction.
+func (o ApplyOptions) openArchive(named string) (*os.File, string, error) {
 	cleaned := filepath.Clean(named)
 	if !filepath.IsAbs(cleaned) {
-		return "", fmt.Errorf("archive_path %q is not absolute", named)
+		return nil, "", fmt.Errorf("archive_path %q is not absolute", named)
 	}
 	stateDir := filepath.Clean(o.Paths.StateDir())
-	if cleaned != stateDir && !strings.HasPrefix(cleaned, stateDir+string(filepath.Separator)) {
-		return "", fmt.Errorf(
-			"archive_path %q is outside the agent's state directory %s", named, stateDir,
+	if filepath.Dir(cleaned) != stateDir {
+		return nil, "", fmt.Errorf(
+			"archive_path %q is not directly inside the agent's state directory %s",
+			named, stateDir,
 		)
 	}
-	info, err := os.Lstat(cleaned)
-	if err != nil {
-		return "", fmt.Errorf("cannot stat the staged archive %s: %w", cleaned, err)
+	if err := o.checkStateDirectory(stateDir); err != nil {
+		return nil, "", err
 	}
-	// Lstat again: a symlink inside the state directory pointing at /etc/shadow
-	// would otherwise be hashed, fail the digest check, and be reported — but
-	// it would have been *read*, which is more than this needs to allow.
+
+	// O_NOFOLLOW: a symlink planted at this name is ELOOP rather than a read
+	// of whatever it points at.
+	handle, err := os.OpenFile(cleaned, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if errors.Is(err, syscall.ELOOP) {
+		return nil, "", fmt.Errorf(
+			"the staged archive %s is a symbolic link, which is refused", cleaned,
+		)
+	}
+	if err != nil {
+		return nil, "", fmt.Errorf("cannot open the staged archive %s: %w", cleaned, err)
+	}
+	info, err := handle.Stat()
+	if err != nil {
+		_ = handle.Close()
+		return nil, "", fmt.Errorf("cannot stat the staged archive %s: %w", cleaned, err)
+	}
+	// Fstat on the open handle rather than lstat on the name: this describes
+	// the inode that will actually be read, which is the only statement worth
+	// making about a file in a directory somebody else can write.
 	if !info.Mode().IsRegular() {
-		return "", fmt.Errorf(
+		_ = handle.Close()
+		return nil, "", fmt.Errorf(
 			"the staged archive %s is not a regular file (mode %s)", cleaned, info.Mode(),
 		)
 	}
-	return cleaned, nil
+	return handle, cleaned, nil
+}
+
+// PrivateArchiveName is where the privileged side keeps its own copy of the
+// archive while it installs from it.
+//
+// In [DefaultUpdateStateDir], which is root-owned, so the agent account
+// cannot reach it. A fixed name rather than a temporary one: there is at most
+// one install in flight, a leftover from a crash is cleared by the O_EXCL
+// retry below, and a predictable name is one an administrator debugging a
+// failed update can find.
+const PrivateArchiveName = "staged-update.tar.gz"
+
+// stageArchivePrivately copies the agent's staged archive somewhere the agent
+// cannot change it, and returns an open handle on the copy.
+//
+// # Why a copy and not just a descriptor
+//
+// A descriptor defeats substitution by rename and does nothing about
+// `open(O_TRUNC)` + rewrite, which modifies the inode the descriptor points
+// at. Since `/var/lib/hcc-agent` is owned by the unprivileged agent account —
+// deliberately, because the agent stages downloads there — anything read from
+// it twice can differ between the reads, and "hash archive A, install archive
+// B" is root executing whatever the agent account chose.
+//
+// Copying into a root-owned directory ends the argument rather than narrowing
+// it: after the copy returns, the bytes are in a file no unprivileged account
+// can open for writing, and the hash and the extraction read the same bytes
+// because nothing can change them. A mid-copy modification is still possible
+// and is harmless — it produces a copy whose digest does not match the signed
+// metadata, which is a refusal.
+//
+// expectedSize comes from the **signed** metadata, so the bound is the
+// publisher's statement about the archive rather than anything the agent said.
+// A file that is a different size is refused before it is read: there is no
+// case where the right archive is the wrong length.
+func (o ApplyOptions) stageArchivePrivately(named string, expectedSize int64) (*os.File, string, error) {
+	source, cleaned, err := o.openArchive(named)
+	if err != nil {
+		return nil, "", err
+	}
+	defer source.Close()
+
+	info, err := source.Stat()
+	if err != nil {
+		return nil, "", fmt.Errorf("cannot stat the staged archive %s: %w", cleaned, err)
+	}
+	limit := int64(MaxArchiveBytes)
+	if expectedSize > 0 {
+		if info.Size() != expectedSize {
+			return nil, "", fmt.Errorf(
+				"the staged archive is %d bytes and the signed metadata says %d",
+				info.Size(), expectedSize,
+			)
+		}
+		limit = expectedSize
+	}
+
+	directory := o.Paths.UpdateStateDir()
+	if err := os.MkdirAll(directory, UpdateStateDirMode); err != nil {
+		return nil, "", fmt.Errorf("cannot create %s: %w", directory, err)
+	}
+	if err := os.Chmod(directory, UpdateStateDirMode); err != nil {
+		return nil, "", fmt.Errorf("cannot set the mode on %s: %w", directory, err)
+	}
+	destination := filepath.Join(directory, PrivateArchiveName)
+	// A leftover from a crashed install is cleared deliberately rather than
+	// by opening without O_EXCL, so the open below still refuses a symlink
+	// and still refuses to write through something that is already there.
+	if err := removeIfExists(destination); err != nil {
+		return nil, "", fmt.Errorf("cannot clear %s: %w", destination, err)
+	}
+	target, err := os.OpenFile(
+		destination,
+		os.O_RDWR|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW,
+		PrivateArchiveMode,
+	)
+	if err != nil {
+		return nil, "", fmt.Errorf("cannot create %s: %w", destination, err)
+	}
+
+	copied, err := io.Copy(target, io.LimitReader(source, limit+1))
+	if err != nil {
+		_ = target.Close()
+		_ = os.Remove(destination)
+		return nil, "", fmt.Errorf("cannot copy the staged archive to %s: %w", destination, err)
+	}
+	if copied > limit {
+		_ = target.Close()
+		_ = os.Remove(destination)
+		return nil, "", fmt.Errorf(
+			"the staged archive grew past %d bytes while it was being copied", limit,
+		)
+	}
+	return target, destination, nil
+}
+
+// checkStateDirectory refuses a staging directory that is not what the
+// installer created.
+//
+// Cheap defence in depth against the case this file cannot otherwise detect:
+// a world-writable `/var/lib/hcc-agent` means *any* local account can stage an
+// archive and name it in a request, which widens the handoff from "the agent
+// account" to "anybody with a shell". It should be 0750 owned by the service
+// account, and systemd's StateDirectory= makes it so.
+func (o ApplyOptions) checkStateDirectory(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("cannot stat the agent's state directory %s: %w", path, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("the agent's state directory %s is a symbolic link", path)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("the agent's state directory %s is not a directory", path)
+	}
+	if info.Mode().Perm()&0o002 != 0 {
+		return fmt.Errorf(
+			"the agent's state directory %s is world-writable (mode %#o), so any local "+
+				"account could stage an archive there; refusing to read from it",
+			path, info.Mode().Perm(),
+		)
+	}
+	return nil
 }
 
 // writeOutcome records what happened, best-effort.

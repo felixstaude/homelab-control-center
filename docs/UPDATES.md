@@ -30,6 +30,7 @@ refuses to do, and what to look at when an update does not happen.
 
 - [The shape of the system](#the-shape-of-the-system)
 - [What establishes that a release is genuine](#what-establishes-that-a-release-is-genuine)
+- [What stops a host going backwards](#what-stops-a-host-going-backwards)
 - [Enabling automatic updates on a host](#enabling-automatic-updates-on-a-host)
 - [Update policies](#update-policies)
 - [Release channels](#release-channels)
@@ -120,6 +121,99 @@ HCC_RELEASE_SIGNING_KEYS=["SIzhD3FvCS6dVNTkzvyl74u7ICRaelCqbJNzZxHFkiY="]
 
 A **public** key is configuration, not a secret. It is in the agent binaries
 already.
+
+## What stops a host going backwards
+
+A signature says the publisher built these bytes. It says nothing about
+*when*, and nothing about whether this is the version a host should be
+running. The signature on 0.1.0 is as valid today as it was the day it was
+made — so a controller that has been taken over cannot forge a release, and
+can perfectly well offer a genuine old one from before a security fix.
+
+Each host therefore keeps its own **version floor**: the oldest version it
+will accept.
+
+```
+/var/lib/hcc-agent-update/version-floor.json     root:root, 0644
+```
+
+```json
+{
+  "schema_version": 1,
+  "floor": "0.2.0",
+  "highest_installed": "0.2.0",
+  "last_instruction_id": "0b1d…",
+  "updated_at": "2026-10-14T21:40:11Z"
+}
+```
+
+### Three versions, and they are not the same number
+
+| | What it means | Where it lives |
+| --- | --- | --- |
+| **Running version** | what the binary executing right now reports | the build stamp; `hcc-agent version` |
+| **`highest_installed`** | the newest version this host has ever run to a successful, health-checked conclusion | the floor file |
+| **`floor`** | the oldest version an update may target | the floor file |
+
+They come apart in ordinary operation. After a rollback the running version is
+*below* `highest_installed`, and that gap is the thing an operator needs to
+see rather than something the data model should forbid. `floor` is separate
+from `highest_installed` because lowering it is a legitimate root-authorised
+act that must not erase the record of what has run.
+
+### The rules
+
+- **It rises only on success.** An install that is attempted and fails leaves
+  the floor where it was. Raising it on an attempt would lock a host that
+  failed to reach 0.2.0 out of 0.1.5 as well.
+- **It never falls on its own.** Installing something older — which only root
+  can authorise — records the instruction and leaves the floor alone.
+- **No instruction field opens it.** `allow_downgrade` governs the step
+  between the floor and the running version; it does not reach below the
+  floor. A gate the controller can unlock is not a gate.
+- **Absence is permissive.** A host installed before this existed has no
+  floor and keeps updating normally. The first privileged update seeds the
+  floor at *what is already running*, before it judges the request — so that
+  update is protected, not the one after it.
+- **A file that exists and is wrong is a refusal.** Unparseable, symlinked,
+  not owned by root, writable by anyone but root, in a directory writable by
+  anyone but root: all refused, loudly, with the path named. If "unreadable"
+  meant "no floor", `echo garbage >` would be the bypass.
+
+### Where it is enforced
+
+In the **privileged** installer, which is the authority, and advisorily in the
+agent beforehand so the controller's update history says *why* rather than
+timing the instruction out. A compromised agent account can skip its own
+check; it cannot skip root's, and it cannot write the floor file.
+
+### Deliberately going back
+
+Root on the host, and nowhere else:
+
+```bash
+sudo hcc-agent upgrade \
+    --from hcc-agent_0.1.9_linux_amd64.tar.gz \
+    --sha256 <digest> \
+    --version 0.1.9 \
+    --allow-downgrade
+```
+
+This lowers the floor to 0.1.9 and leaves `highest_installed` alone, so the
+host still reports that it has run something newer. `--version` is required
+with `--allow-downgrade`: lowering the floor means recording what it is being
+lowered to, and the archive's own version is not read until after the floor
+has been consulted.
+
+### What this does not claim
+
+Nothing here resists a compromised **root** account on the host. Root can
+rewrite the floor, replace the binary, or remove the unit, and no file on that
+machine can prevent it. The property defended is narrower and exact: a
+compromised **controller**, or a compromised **unprivileged agent account**,
+cannot move a host to an older release.
+
+`hcc-agent doctor` prints the floor under `installation`.
 
 ## Enabling automatic updates on a host
 

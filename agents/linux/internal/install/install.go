@@ -98,6 +98,11 @@ type Options struct {
 	ConnectTimeout time.Duration
 	// ProcRoot is where /proc is mounted. Tests point it at a fixture.
 	ProcRoot string
+	// Version is what the binary being installed reports, used to seed this
+	// host's anti-rollback floor. Empty, or a development build's "dev",
+	// seeds nothing: there is no honest floor to derive from a version that
+	// does not order. See internal/install/floor.go.
+	Version string
 	// Enroll and Probe are injected for tests.
 	Enroll EnrollFunc
 	Probe  ProbeFunc
@@ -361,6 +366,9 @@ func (i *Installer) apply(ctx context.Context, mode Mode) error {
 		i.step("credential", i.Paths.Credential()+" (kept; this host is already enrolled)")
 	}
 	if err := i.ensureStateDirectory(ctx); err != nil {
+		return err
+	}
+	if err := i.seedVersionFloor(); err != nil {
 		return err
 	}
 	if err := i.writeUnit(ctx); err != nil {
@@ -761,6 +769,42 @@ func (i *Installer) ensureStateDirectory(ctx context.Context) error {
 	}
 	i.step("state directory", fmt.Sprintf(
 		"%s (mode %#o, owned by %s)", path, StateDirMode, ServiceUser,
+	))
+	return nil
+}
+
+// seedVersionFloor establishes this host's anti-rollback floor.
+//
+// At the version being installed, so a machine installed today refuses every
+// release published before today from the moment it is enrolled — rather than
+// from the first time it happens to be updated.
+//
+// Deliberately **not** a step that can fail the install. A host with no floor
+// is exactly as protected as every host was before this existed, which is a
+// weaker position and not a broken one, and refusing to complete an
+// installation over it would trade a working agent for a theoretical defence.
+// The failure is printed where an operator will see it.
+func (i *Installer) seedVersionFloor() error {
+	if i.Options.DryRun {
+		i.step("version floor", fmt.Sprintf(
+			"%s would record %s", i.Paths.VersionFloor(), orUnknown(i.Options.Version),
+		))
+		return nil
+	}
+	state, err := EnsureFloor(i.Paths.VersionFloor(), i.Options.Version)
+	if err != nil {
+		i.printf("  ! could not establish the version floor: %v\n", err)
+		return nil
+	}
+	if state == nil || state.Floor == "" {
+		// An unstamped development build. Said plainly rather than silently
+		// skipped, because "my test host accepts downgrades" should have a
+		// visible reason.
+		i.step("version floor", "none — this build reports no orderable version")
+		return nil
+	}
+	i.step("version floor", fmt.Sprintf(
+		"%s (root-owned; refuses anything older than %s)", i.Paths.VersionFloor(), state.Floor,
 	))
 	return nil
 }
