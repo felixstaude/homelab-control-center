@@ -124,16 +124,25 @@ func (d *Docker) Module() string { return "docker" }
 // actions: not configured, socket missing, permission denied, and daemon not
 // answering. "Docker monitoring does not work" would send an operator to the
 // wrong one three times out of four.
+// NotGrantedReason is what this host says when the socket is not granted.
+//
+// One string for both [Docker.Available] and [Docker.Collect], because both
+// reach an operator and they must not disagree. `Available` is read at the
+// point of configuration; `Collect`'s error is stored by the controller and
+// shown on the host page under the module's name, which is where somebody
+// who enabled the module and saw nothing happen will be looking.
+//
+// Short enough to survive the controller's 256-character bound on a
+// collector error — asserted by a test, because a message that is truncated
+// at the point it is needed is a message that was not written.
+const NotGrantedReason = "container monitoring is not enabled on this host: the Docker " +
+	"socket is equivalent to root, so it is granted on the machine rather than from the " +
+	"controller. Set HCC_AGENT_DOCKER_SOCKET in /etc/hcc-agent/agent.env, and make sure " +
+	"the agent account can read it"
+
 func (d *Docker) Available() Availability {
 	if d.Socket == "" {
-		return Availability{
-			Available: false,
-			Reason: "container monitoring is not enabled on this host. Access to the " +
-				"Docker socket is equivalent to root, so it is granted on the machine " +
-				"rather than from the controller: set HCC_AGENT_DOCKER_SOCKET=" +
-				"/var/run/docker.sock in /etc/hcc-agent/agent.env and make sure the " +
-				"agent account can read that socket",
-		}
+		return Availability{Available: false, Reason: NotGrantedReason}
 	}
 	info, err := os.Stat(d.Socket)
 	switch {
@@ -186,7 +195,7 @@ const ServiceAccountName = "hcc-agent"
 // Collect implements [Collector].
 func (d *Docker) Collect(ctx context.Context) ([]Sample, error) {
 	if d.Socket == "" {
-		return nil, errors.New("container monitoring is not enabled on this host")
+		return nil, errors.New(NotGrantedReason)
 	}
 
 	containers, err := d.list(ctx)

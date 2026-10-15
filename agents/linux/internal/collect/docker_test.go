@@ -450,3 +450,45 @@ func TestTheDockerCollectorIdentifiesItself(t *testing.T) {
 		t.Errorf("docker module = %q", got)
 	}
 }
+
+func TestTheUngrantedReasonFitsTheControllersBound(t *testing.T) {
+	// The controller stores a collector's error in a 256-character column and
+	// shows it on the host page under the module's name. A message longer
+	// than that is truncated at exactly the point somebody needs it — and
+	// this one is long because it has to name the environment variable and
+	// the file to set it in.
+	//
+	// The number is `hcc/agents/protocol.py`'s MAX_COLLECTOR_ERROR_LENGTH.
+	// Written out rather than imported, because Go cannot import it, and
+	// pinned here so the two move together deliberately rather than by luck.
+	const maxCollectorErrorLength = 256
+
+	if length := len(collect.NotGrantedReason); length > maxCollectorErrorLength {
+		t.Errorf("the ungranted reason is %d characters; the controller stores %d, "+
+			"so an operator would read a truncated sentence at the moment they "+
+			"need the whole one", length, maxCollectorErrorLength)
+	}
+	// And it still says the two things it exists to say.
+	for _, needed := range []string{"HCC_AGENT_DOCKER_SOCKET", "agent.env"} {
+		if !strings.Contains(collect.NotGrantedReason, needed) {
+			t.Errorf("the reason no longer mentions %q, which is the remedy", needed)
+		}
+	}
+}
+
+func TestAvailableAndCollectGiveTheSameReason(t *testing.T) {
+	// Two places an operator can meet this condition: the configuration
+	// screen, through Available, and the host page, through the error
+	// Collect returns. Two wordings would be two explanations of one fact.
+	collector := collect.NewDocker("")
+
+	availability := collector.Available()
+	_, err := collector.Collect(context.Background())
+
+	if err == nil {
+		t.Fatal("collecting with no socket produced no error")
+	}
+	if availability.Reason != err.Error() {
+		t.Errorf("Available says %q and Collect says %q", availability.Reason, err)
+	}
+}
