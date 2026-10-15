@@ -165,6 +165,240 @@
       "schedule_kinds": [
         "interval"
       ]
+    },
+    {
+      "allows_duplicate_runs": true,
+      "data_schema_version": 1,
+      "default_interval_seconds": 60,
+      "id": "filesystem",
+      "metrics": [
+        {
+          "id": "total",
+          "kind": "gauge",
+          "label_keys": [
+            "mount"
+          ],
+          "name": "Filesystem size",
+          "unit": "bytes"
+        },
+        {
+          "id": "used",
+          "kind": "gauge",
+          "label_keys": [
+            "mount"
+          ],
+          "name": "Used",
+          "unit": "bytes"
+        },
+        {
+          "id": "available",
+          "kind": "gauge",
+          "label_keys": [
+            "mount"
+          ],
+          "name": "Available",
+          "unit": "bytes"
+        },
+        {
+          "id": "utilisation",
+          "kind": "gauge",
+          "label_keys": [
+            "mount"
+          ],
+          "name": "Used",
+          "unit": "percent"
+        },
+        {
+          "id": "inodes_utilisation",
+          "kind": "gauge",
+          "label_keys": [
+            "mount"
+          ],
+          "name": "Inodes used",
+          "unit": "percent"
+        },
+        {
+          "id": "readonly",
+          "kind": "gauge",
+          "label_keys": [
+            "mount"
+          ],
+          "name": "Mounted read-only",
+          "unit": "count"
+        }
+      ],
+      "min_interval_seconds": 10,
+      "name": "Filesystem usage",
+      "platform": "linux",
+      "requires_privileges": false,
+      "schedule_kinds": [
+        "interval"
+      ]
+    },
+    {
+      "allows_duplicate_runs": true,
+      "data_schema_version": 1,
+      "default_interval_seconds": 10,
+      "id": "diskio",
+      "metrics": [
+        {
+          "id": "read_bytes",
+          "kind": "gauge",
+          "label_keys": [
+            "device"
+          ],
+          "name": "Read throughput",
+          "unit": "bytes_per_second"
+        },
+        {
+          "id": "write_bytes",
+          "kind": "gauge",
+          "label_keys": [
+            "device"
+          ],
+          "name": "Write throughput",
+          "unit": "bytes_per_second"
+        },
+        {
+          "id": "read_ops",
+          "kind": "gauge",
+          "label_keys": [
+            "device"
+          ],
+          "name": "Reads",
+          "unit": "operations_per_second"
+        },
+        {
+          "id": "write_ops",
+          "kind": "gauge",
+          "label_keys": [
+            "device"
+          ],
+          "name": "Writes",
+          "unit": "operations_per_second"
+        },
+        {
+          "id": "utilisation",
+          "kind": "gauge",
+          "label_keys": [
+            "device"
+          ],
+          "name": "Busy",
+          "unit": "percent"
+        }
+      ],
+      "min_interval_seconds": 1,
+      "name": "Disk throughput",
+      "platform": "linux",
+      "requires_privileges": false,
+      "schedule_kinds": [
+        "interval"
+      ]
+    },
+    {
+      "allows_duplicate_runs": true,
+      "data_schema_version": 1,
+      "default_interval_seconds": 10,
+      "id": "network",
+      "metrics": [
+        {
+          "id": "receive_bytes",
+          "kind": "gauge",
+          "label_keys": [
+            "interface"
+          ],
+          "name": "Download",
+          "unit": "bytes_per_second"
+        },
+        {
+          "id": "transmit_bytes",
+          "kind": "gauge",
+          "label_keys": [
+            "interface"
+          ],
+          "name": "Upload",
+          "unit": "bytes_per_second"
+        },
+        {
+          "id": "receive_packets",
+          "kind": "gauge",
+          "label_keys": [
+            "interface"
+          ],
+          "name": "Packets in",
+          "unit": "packets_per_second"
+        },
+        {
+          "id": "transmit_packets",
+          "kind": "gauge",
+          "label_keys": [
+            "interface"
+          ],
+          "name": "Packets out",
+          "unit": "packets_per_second"
+        },
+        {
+          "id": "receive_errors",
+          "kind": "gauge",
+          "label_keys": [
+            "interface"
+          ],
+          "name": "Receive errors",
+          "unit": "packets_per_second"
+        },
+        {
+          "id": "transmit_errors",
+          "kind": "gauge",
+          "label_keys": [
+            "interface"
+          ],
+          "name": "Transmit errors",
+          "unit": "packets_per_second"
+        },
+        {
+          "id": "receive_drops",
+          "kind": "gauge",
+          "label_keys": [
+            "interface"
+          ],
+          "name": "Receive drops",
+          "unit": "packets_per_second"
+        },
+        {
+          "id": "transmit_drops",
+          "kind": "gauge",
+          "label_keys": [
+            "interface"
+          ],
+          "name": "Transmit drops",
+          "unit": "packets_per_second"
+        },
+        {
+          "id": "up",
+          "kind": "gauge",
+          "label_keys": [
+            "interface"
+          ],
+          "name": "Link up",
+          "unit": "count"
+        },
+        {
+          "id": "speed",
+          "kind": "gauge",
+          "label_keys": [
+            "interface"
+          ],
+          "name": "Link speed",
+          "unit": "bits_per_second"
+        }
+      ],
+      "min_interval_seconds": 1,
+      "name": "Network traffic",
+      "platform": "linux",
+      "requires_privileges": false,
+      "schedule_kinds": [
+        "interval"
+      ]
     }
   ],
   "registry_version": 1

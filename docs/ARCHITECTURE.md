@@ -3176,6 +3176,37 @@ mismatch, which is a refusal.
 **Cost.** One extra copy of a ~3 MB archive per update, deleted when the
 install finishes.
 
+### ADR-065: The agent divides by the interval, not the controller
+
+**Decision.** Disk throughput, disk IOPS and network throughput are stored as
+**gauges already expressed per second**, computed by the agent from the
+difference between two of its own readings. The kernel's monotonic counters
+are never sent. Four new units carry them: `bytes_per_second`,
+`operations_per_second`, `packets_per_second`, `bits_per_second`.
+
+**Why not store the counters and derive rates at query time.** The agent is
+the only component that can tell a counter which *reset* from one that
+advanced. Given two readings from either side of a reboot, a device
+re-enumeration or a 32-bit wrap, the controller can only subtract them —
+producing a negative rate, or a spike of several gigabytes per second at the
+exact moment somebody is trying to work out what happened. The agent holds
+the previous reading and knows it came from the same boot, so it can do what
+the CPU collector already does: produce **nothing** for that interval.
+
+**Why not have the agent divide by its configured interval.** Because the
+scheduler is not a clock. A host under load fires a 10-second job at 10.4
+seconds, and a rate computed against 10 would read 4% high — consistently,
+and invisibly. The agent measures the elapsed time between its own two
+readings and divides by that.
+
+**Consequence.** A rate series is averageable, so the existing rollups are
+correct for it without a special case, and a gap in the raw series means
+"not measured" exactly as it does everywhere else. The cost is that the
+underlying totals are not recoverable: "how many bytes has this disk written
+since Tuesday" is not a question this schema can answer. That is the right
+trade for a monitoring product — nobody asks it — and it is stated here so
+the absence is a decision rather than a surprise.
+
 ---
 
 ## 14. Open design questions

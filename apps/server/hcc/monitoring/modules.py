@@ -27,6 +27,34 @@ The confusion this is shaped to avoid is real and is the mission's §5 warning:
   "enabled by default", so no migration and no code path can accidentally
   activate collection on an existing host (§2.1).
 
+## Filesystem capacity is not disk capacity, and they are different modules
+
+The two numbers people mean by "disk" are unrelated enough that conflating
+them produces answers that are wrong rather than imprecise:
+
+* **Filesystem capacity** (``filesystem``) is what ``statfs`` reports for a
+  mount point: how much a filesystem holds and how much is left. It is what
+  "am I about to run out of space" means. It is *smaller* than the block
+  device — filesystem metadata, the reserved-blocks percentage, the partition
+  table — and on LVM or btrfs it can be larger than any one device.
+* **Block-device throughput** (``diskio``) is what ``/proc/diskstats``
+  reports for a disk: bytes and operations per second, and the share of time
+  the device was busy. It says nothing about free space.
+
+They are separate modules rather than one, for the same reasons ``load`` is
+not part of ``cpu``: they have different natural sampling rates (free space
+moves over days, throughput over seconds), different cardinality (one series
+per *mount* against one per *device*), and an operator who wants to know
+whether a disk is filling up should not have to buy a 10-second I/O series to
+find out.
+
+**Nothing in this system sums either of them across entries, and that is
+deliberate.** Stacked devices — LVM on LUKS on a partition, or an md array —
+report the same I/O at every layer, so a fleet-wide "total disk throughput"
+would be inflated by however many layers each host has. Bind mounts and
+subvolumes do the same to capacity. There is no aggregate metric, so there is
+nothing to be wrong.
+
 ## Why five modules and not two
 
 ``MONITORING_MODULES.md`` §3 originally folded load average into ``cpu`` and
@@ -206,6 +234,20 @@ class MetricUnit(enum.StrEnum):
     #: Load average: a dimensionless number of runnable processes, which is
     #: *not* a percentage and must never be formatted as one.
     LOAD = "load"
+    #: A rate, already divided by the interval the agent measured it over.
+    #:
+    #: The agent computes these rather than shipping the kernel's monotonic
+    #: counters, for the reason the CPU collector computes utilisation: a
+    #: counter needs two samples and a reset has to become a gap rather than a
+    #: spike, and the only component that knows both samples came from the
+    #: same boot is the one that took them. See ADR-065.
+    BYTES_PER_SECOND = "bytes_per_second"
+    OPERATIONS_PER_SECOND = "operations_per_second"
+    PACKETS_PER_SECOND = "packets_per_second"
+    #: Link speed. Bits, not bytes, because that is the unit every network
+    #: interface is sold and configured in — a "1 Gb" port is 125 MB/s, and
+    #: rendering it as 125 would make an operator doubt the whole panel.
+    BITS_PER_SECOND = "bits_per_second"
 
 
 class MetricKind(enum.StrEnum):
@@ -411,11 +453,259 @@ UPTIME: Final = ModuleDescriptor(
 )
 
 
+FILESYSTEM: Final = ModuleDescriptor(
+    id="filesystem",
+    name="Filesystem usage",
+    description=(
+        "Capacity, usage and inode usage per mounted filesystem, from statfs "
+        "and /proc/self/mountinfo. Filesystem capacity, which is not disk capacity."
+    ),
+    platform=Platform.LINUX,
+    schedule_kinds=_SAMPLER_KINDS,
+    # Ten seconds, not one. A filesystem's free space is the slowest-moving
+    # number in this registry — a disk does not fill in a second — and the
+    # read is a statfs per mount rather than one pseudo-file, so the cost
+    # scales with the host's mount table.
+    min_interval_seconds=10,
+    default_interval_seconds=60,
+    data_schema_version=1,
+    requires_privileges=False,
+    allows_duplicate_runs=True,
+    metrics=(
+        MetricDescriptor(
+            id="total",
+            name="Filesystem size",
+            unit=MetricUnit.BYTES,
+            kind=MetricKind.GAUGE,
+            label_keys=("mount",),
+        ),
+        MetricDescriptor(
+            id="used",
+            name="Used",
+            unit=MetricUnit.BYTES,
+            kind=MetricKind.GAUGE,
+            label_keys=("mount",),
+        ),
+        MetricDescriptor(
+            id="available",
+            name="Available",
+            unit=MetricUnit.BYTES,
+            kind=MetricKind.GAUGE,
+            label_keys=("mount",),
+        ),
+        MetricDescriptor(
+            id="utilisation",
+            name="Used",
+            unit=MetricUnit.PERCENT,
+            kind=MetricKind.GAUGE,
+            label_keys=("mount",),
+        ),
+        MetricDescriptor(
+            # Separate from `utilisation` because they fail independently and
+            # the inode one is the confusing failure: a filesystem with
+            # 400 GB free and no inodes left reports "No space left on
+            # device", and an operator looking at a 12%-full bar has nothing
+            # to go on.
+            id="inodes_utilisation",
+            name="Inodes used",
+            unit=MetricUnit.PERCENT,
+            kind=MetricKind.GAUGE,
+            label_keys=("mount",),
+        ),
+        MetricDescriptor(
+            # 1 when the filesystem is mounted read-only.
+            #
+            # A metric rather than an attribute because it *changes*, and the
+            # change is the signal: the kernel remounts a filesystem read-only
+            # when it hits an I/O error, and on a machine nobody is watching
+            # that is the difference between "a disk is failing" and "writes
+            # have been silently failing since Tuesday".
+            id="readonly",
+            name="Mounted read-only",
+            unit=MetricUnit.COUNT,
+            kind=MetricKind.GAUGE,
+            label_keys=("mount",),
+        ),
+    ),
+)
+
+DISKIO: Final = ModuleDescriptor(
+    id="diskio",
+    name="Disk throughput",
+    description=(
+        "Read and write throughput and operation rates per block device, from "
+        "/proc/diskstats. Computed from the difference between two samples."
+    ),
+    platform=Platform.LINUX,
+    schedule_kinds=_SAMPLER_KINDS,
+    # One second: /proc/diskstats is one cheap read whatever the device count,
+    # and a 1-second delta is a real measurement of a burst.
+    min_interval_seconds=1,
+    default_interval_seconds=10,
+    data_schema_version=1,
+    requires_privileges=False,
+    allows_duplicate_runs=True,
+    metrics=(
+        MetricDescriptor(
+            id="read_bytes",
+            name="Read throughput",
+            unit=MetricUnit.BYTES_PER_SECOND,
+            # A gauge, not a counter, because the agent has already divided by
+            # the interval. See MetricUnit.BYTES_PER_SECOND.
+            kind=MetricKind.GAUGE,
+            label_keys=("device",),
+        ),
+        MetricDescriptor(
+            id="write_bytes",
+            name="Write throughput",
+            unit=MetricUnit.BYTES_PER_SECOND,
+            kind=MetricKind.GAUGE,
+            label_keys=("device",),
+        ),
+        MetricDescriptor(
+            id="read_ops",
+            name="Reads",
+            unit=MetricUnit.OPERATIONS_PER_SECOND,
+            kind=MetricKind.GAUGE,
+            label_keys=("device",),
+        ),
+        MetricDescriptor(
+            id="write_ops",
+            name="Writes",
+            unit=MetricUnit.OPERATIONS_PER_SECOND,
+            kind=MetricKind.GAUGE,
+            label_keys=("device",),
+        ),
+        MetricDescriptor(
+            # The share of the interval the device had at least one request in
+            # flight. Saturation rather than throughput: a disk at 100% with
+            # 2 MB/s is a disk doing random I/O, and that is the diagnosis
+            # throughput alone never gives.
+            id="utilisation",
+            name="Busy",
+            unit=MetricUnit.PERCENT,
+            kind=MetricKind.GAUGE,
+            label_keys=("device",),
+        ),
+    ),
+)
+
+
+NETWORK: Final = ModuleDescriptor(
+    id="network",
+    name="Network traffic",
+    description=(
+        "Throughput, packet rates, errors and link state per interface, from "
+        "/proc/net/dev and /sys/class/net. Computed from the difference "
+        "between two samples."
+    ),
+    platform=Platform.LINUX,
+    schedule_kinds=_SAMPLER_KINDS,
+    min_interval_seconds=1,
+    default_interval_seconds=10,
+    data_schema_version=1,
+    requires_privileges=False,
+    allows_duplicate_runs=True,
+    metrics=(
+        MetricDescriptor(
+            id="receive_bytes",
+            name="Download",
+            unit=MetricUnit.BYTES_PER_SECOND,
+            kind=MetricKind.GAUGE,
+            label_keys=("interface",),
+        ),
+        MetricDescriptor(
+            id="transmit_bytes",
+            name="Upload",
+            unit=MetricUnit.BYTES_PER_SECOND,
+            kind=MetricKind.GAUGE,
+            label_keys=("interface",),
+        ),
+        MetricDescriptor(
+            id="receive_packets",
+            name="Packets in",
+            unit=MetricUnit.PACKETS_PER_SECOND,
+            kind=MetricKind.GAUGE,
+            label_keys=("interface",),
+        ),
+        MetricDescriptor(
+            id="transmit_packets",
+            name="Packets out",
+            unit=MetricUnit.PACKETS_PER_SECOND,
+            kind=MetricKind.GAUGE,
+            label_keys=("interface",),
+        ),
+        MetricDescriptor(
+            # Errors and drops are separate series rather than one "problems"
+            # figure, because they mean different things: an error is a frame
+            # the hardware could not process — bad cable, duplex mismatch —
+            # and a drop is a frame the kernel discarded because a queue was
+            # full, which is a capacity problem.
+            id="receive_errors",
+            name="Receive errors",
+            unit=MetricUnit.PACKETS_PER_SECOND,
+            kind=MetricKind.GAUGE,
+            label_keys=("interface",),
+        ),
+        MetricDescriptor(
+            id="transmit_errors",
+            name="Transmit errors",
+            unit=MetricUnit.PACKETS_PER_SECOND,
+            kind=MetricKind.GAUGE,
+            label_keys=("interface",),
+        ),
+        MetricDescriptor(
+            id="receive_drops",
+            name="Receive drops",
+            unit=MetricUnit.PACKETS_PER_SECOND,
+            kind=MetricKind.GAUGE,
+            label_keys=("interface",),
+        ),
+        MetricDescriptor(
+            id="transmit_drops",
+            name="Transmit drops",
+            unit=MetricUnit.PACKETS_PER_SECOND,
+            kind=MetricKind.GAUGE,
+            label_keys=("interface",),
+        ),
+        MetricDescriptor(
+            # 1 when the kernel reports the link as up. A gauge, because the
+            # transition is the event: a flapping link is visible as a series
+            # that moves, which no attribute field could show.
+            id="up",
+            name="Link up",
+            unit=MetricUnit.COUNT,
+            kind=MetricKind.GAUGE,
+            label_keys=("interface",),
+        ),
+        MetricDescriptor(
+            # Absent rather than zero where the driver does not report it —
+            # wireless, and most virtual interfaces. "0 bit/s" on a working
+            # Wi-Fi link would be a lie the interface would render.
+            id="speed",
+            name="Link speed",
+            unit=MetricUnit.BITS_PER_SECOND,
+            kind=MetricKind.GAUGE,
+            label_keys=("interface",),
+        ),
+    ),
+)
+
+
 #: Every module that exists, in display order.
 #:
 #: A tuple rather than a dict literal so the order is the interface's order and
 #: is reviewable; :data:`MODULES` is the lookup.
-MODULE_LIST: Final[tuple[ModuleDescriptor, ...]] = (CPU, MEMORY, SWAP, LOAD, UPTIME)
+MODULE_LIST: Final[tuple[ModuleDescriptor, ...]] = (
+    CPU,
+    MEMORY,
+    SWAP,
+    LOAD,
+    UPTIME,
+    FILESYSTEM,
+    DISKIO,
+    NETWORK,
+)
 
 #: Lookup by identifier. The closed set §1 of the docstring describes.
 MODULES: Final[dict[str, ModuleDescriptor]] = {module.id: module for module in MODULE_LIST}

@@ -65,14 +65,69 @@ NOW = datetime(2026, 10, 12, 12, 0, 0, tzinfo=UTC)
 # ---------------------------------------------------------------------------
 
 
-def test_the_registry_holds_exactly_the_five_modules_this_phase_implements() -> None:
-    """Pinned so that a module added without a migration is a failing test.
+def test_the_registry_holds_the_modules_this_release_implements() -> None:
+    """Pinned so that adding a module is a deliberate act with a migration.
 
-    The ``module_id`` CHECK constraints in ``0007_monitoring_config`` enumerate
-    this list, so adding a member here without widening them produces a
-    constraint violation at runtime rather than at review.
+    The list itself matters less than the reason it is written down: the
+    ``module_id`` CHECK constraints enumerate it, and
+    :func:`test_every_module_is_in_the_database_allow_list` is what actually
+    checks they agree. This assertion is the human-readable half — it makes
+    "what does this release collect" a line somebody reviews.
     """
-    assert MODULE_IDS == ("cpu", "memory", "swap", "load", "uptime")
+    assert MODULE_IDS == (
+        "cpu",
+        "memory",
+        "swap",
+        "load",
+        "uptime",
+        "filesystem",
+        "diskio",
+        "network",
+    )
+
+
+def test_every_module_is_in_the_database_allow_list() -> None:
+    """The guard that cannot be satisfied by editing one tuple.
+
+    A module in the registry and not in the newest CHECK constraint is a row
+    the database refuses — and it refuses it at *runtime*, on a real host,
+    the first time somebody enables that module. That is the worst place to
+    find out, so it is found here instead.
+
+    Read out of the migrations rather than out of the models, deliberately.
+    ``hcc/models/monitoring.py`` renders its constraint from ``MODULE_IDS``,
+    so comparing the registry against the model compares a list with itself.
+    The migrations are the only statement of what is in a database that has
+    already been migrated.
+    """
+    import pathlib
+    import re
+
+    versions = pathlib.Path(__file__).resolve().parents[1] / "alembic" / "versions"
+    pattern = re.compile(r"(?:module_id|module) IN \(([^)]*)\)")
+
+    # Sorted by file name, which is the date-prefixed revision order this
+    # project uses, so the last match is the newest statement about the
+    # constraint. A migration that *narrows* it would be found by this too.
+    latest: set[str] | None = None
+    for path in sorted(versions.glob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        for match in pattern.finditer(text):
+            latest = {value.strip().strip("'\"") for value in match.group(1).split(",")}
+        # A migration may also build the list from a tuple, as 0011 does.
+        if "_AFTER" in text:
+            after = re.search(r"_AFTER = \(([^)]*)\)", text)
+            if after:
+                names = re.findall(r"\"([a-z_]+)\"", after.group(1))
+                latest = (latest or set()) | set(names)
+
+    assert latest is not None, "no migration defines a module allow-list"
+    missing = sorted(set(MODULE_IDS) - latest)
+    assert not missing, (
+        f"{missing} are in the registry and not in the newest CHECK constraint. "
+        f"Enabling one on a real host would fail with a constraint violation. "
+        f"Add a migration that widens the allow-list."
+    )
 
 
 def test_no_module_can_express_being_enabled_by_default() -> None:

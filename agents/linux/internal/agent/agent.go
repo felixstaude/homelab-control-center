@@ -324,6 +324,9 @@ func New(cfg config.Config, logger *slog.Logger, opts ...Option) (*Agent, error)
 				collect.NewSwap(cfg.ProcRoot),
 				collect.NewLoad(cfg.ProcRoot),
 				collect.NewUptime(cfg.ProcRoot),
+				collect.NewFilesystem(cfg.ProcRoot),
+				collect.NewDiskIO(cfg.ProcRoot, cfg.SysRoot),
+				collect.NewNetwork(cfg.ProcRoot, cfg.SysRoot, cfg.NetworkInterfaces),
 			},
 		)
 	}

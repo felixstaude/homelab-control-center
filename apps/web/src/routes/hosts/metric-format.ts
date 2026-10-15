@@ -18,7 +18,16 @@ import type { LatestValue, MetricSeries } from '@/api/types';
  */
 
 /** Units the backend declares. Anything else is rendered as a bare number. */
-export type MetricUnit = 'percent' | 'bytes' | 'seconds' | 'count' | 'load';
+export type MetricUnit =
+  | 'percent'
+  | 'bytes'
+  | 'seconds'
+  | 'count'
+  | 'load'
+  | 'bytes_per_second'
+  | 'operations_per_second'
+  | 'packets_per_second'
+  | 'bits_per_second';
 
 /** A formatted value, split so a tile can style the unit separately. */
 export type FormattedMetric = {
@@ -116,6 +125,66 @@ export function formatCount(value: number): FormattedMetric {
 }
 
 /**
+ * A byte rate.
+ *
+ * Binary multiples, like {@link formatBytes}, and for the same reason: every
+ * other tool on the host reports transfer in MiB/s and a dashboard that
+ * disagreed by 4.8% would be read as broken.
+ *
+ * A separate function rather than `formatBytes(value).value + '/s'` because
+ * the rounding is different. A byte *count* of 1023 is "1023 B"; a byte
+ * *rate* of 1023 is also "1023 B/s", but a rate of 0 is extremely common —
+ * most interfaces are idle most of the time — and rendering it as "0 B/s"
+ * rather than "0.00 B/s" is what keeps a column of idle interfaces readable.
+ */
+export function formatRate(bytesPerSecond: number): FormattedMetric {
+  const formatted = formatBytes(bytesPerSecond);
+  return { value: formatted.value, unit: `${formatted.unit ?? 'B'}/s` };
+}
+
+/** Decimal multiples for a quantity that is counted rather than addressed. */
+const DECIMAL_UNITS = ['', 'k', 'M', 'G', 'T'] as const;
+
+function scaleDecimal(value: number): { scaled: number; prefix: string } {
+  const sign = value < 0 ? -1 : 1;
+  let remaining = Math.abs(value);
+  let index = 0;
+  while (remaining >= 1000 && index < DECIMAL_UNITS.length - 1) {
+    remaining /= 1000;
+    index += 1;
+  }
+  return { scaled: sign * remaining, prefix: DECIMAL_UNITS[index] ?? '' };
+}
+
+/**
+ * A rate of discrete things — disk operations, network packets.
+ *
+ * Decimal multiples, not binary: these are counts of events, and nobody has
+ * ever said "1 kibi-IOPS". The same reasoning that makes bytes binary makes
+ * these decimal — match what the rest of the world prints.
+ */
+export function formatEventRate(perSecond: number, noun: string): FormattedMetric {
+  const { scaled, prefix } = scaleDecimal(perSecond);
+  const digits = prefix === '' ? (Number.isInteger(scaled) ? 0 : 1) : 1;
+  return { value: scaled.toFixed(digits), unit: `${prefix}${noun}` };
+}
+
+/**
+ * A link speed, in the unit the hardware is sold in.
+ *
+ * Decimal, and bits rather than bytes: a "1 Gb" port is 1,000,000,000 bit/s
+ * and 125 MB/s, and rendering it as 125 would make an operator doubt the
+ * whole panel.
+ */
+export function formatBitRate(bitsPerSecond: number): FormattedMetric {
+  const { scaled, prefix } = scaleDecimal(bitsPerSecond);
+  return {
+    value: Number.isInteger(scaled) ? String(scaled) : scaled.toFixed(1),
+    unit: `${prefix}bit/s`,
+  };
+}
+
+/**
  * A configured interval, in the unit an operator thinks in.
  *
  * Distinct from {@link formatDuration}, which renders a *measured* duration
@@ -145,6 +214,14 @@ export function formatMetric(value: number, unit: string): FormattedMetric {
       return formatLoad(value);
     case 'count':
       return formatCount(value);
+    case 'bytes_per_second':
+      return formatRate(value);
+    case 'operations_per_second':
+      return formatEventRate(value, 'IOPS');
+    case 'packets_per_second':
+      return formatEventRate(value, 'pkt/s');
+    case 'bits_per_second':
+      return formatBitRate(value);
     default:
       // A unit this release does not know about. The number is shown with the
       // unit as a literal suffix rather than hidden: the data exists, and an
@@ -201,7 +278,16 @@ export function axisDomain(unit: string): [number, number] | undefined {
  * A stable order matters more than which order: values that reshuffle between
  * polls are unreadable, and the eye learns a fixed position.
  */
-const MODULE_ORDER = ['cpu', 'memory', 'swap', 'load', 'uptime'];
+const MODULE_ORDER = [
+  'cpu',
+  'memory',
+  'swap',
+  'load',
+  'uptime',
+  'filesystem',
+  'diskio',
+  'network',
+];
 
 export function compareSeries(left: MetricSeries, right: MetricSeries): number {
   const leftModule = MODULE_ORDER.indexOf(left.module);

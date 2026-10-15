@@ -39,6 +39,7 @@ from hcc.api.v1.metrics import (
     MIN_FRESHNESS_SECONDS,
 )
 from hcc.models.user import UserRole
+from hcc.monitoring.modules import MODULE_IDS
 from hcc.services.metrics import MAX_QUERY_POINTS
 
 if TYPE_CHECKING:
@@ -159,13 +160,12 @@ async def test_a_host_with_no_series_reports_every_module_as_empty(
         assert body["sample_count"] == 0
         assert body["series_count"] == 0
         assert body["last_sample_at"] is None
-        assert {module["module"] for module in body["modules"]} == {
-            "cpu",
-            "memory",
-            "swap",
-            "load",
-            "uptime",
-        }
+        # Against the registry rather than a copy of it: the property worth
+        # asserting is "the endpoint reports every module the controller
+        # knows", and a pinned list asserts instead that somebody remembered
+        # to edit two files. test_monitoring_config.py is where the registry's
+        # own contents are pinned.
+        assert {module["module"] for module in body["modules"]} == set(MODULE_IDS)
         for module in body["modules"]:
             assert module["series_count"] == 0
             assert module["last_sample_at"] is None

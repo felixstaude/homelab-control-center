@@ -97,7 +97,7 @@ func (d Descriptor) Accepts(kind string) bool {
 	return false
 }
 
-// intervalOnly is every module in this phase: all five are samplers, and a
+// intervalOnly is every module so far: all of them are samplers, and a
 // sampler on a calendar is a measurement taken at a time chosen for human
 // convenience rather than for the signal.
 var intervalOnly = []string{KindInterval}
@@ -142,6 +142,30 @@ var registry = []Descriptor{
 		Name:               "System uptime",
 		ScheduleKinds:      intervalOnly,
 		MinIntervalSeconds: 60,
+		DataSchemaVersion:  1,
+	},
+	{
+		// Ten seconds: free space is the slowest-moving number here, and the
+		// read is a statfs per mount rather than one pseudo-file, so the cost
+		// scales with the host's mount table.
+		ID:                 "filesystem",
+		Name:               "Filesystem usage",
+		ScheduleKinds:      intervalOnly,
+		MinIntervalSeconds: 10,
+		DataSchemaVersion:  1,
+	},
+	{
+		ID:                 "diskio",
+		Name:               "Disk throughput",
+		ScheduleKinds:      intervalOnly,
+		MinIntervalSeconds: 1,
+		DataSchemaVersion:  1,
+	},
+	{
+		ID:                 "network",
+		Name:               "Network traffic",
+		ScheduleKinds:      intervalOnly,
+		MinIntervalSeconds: 1,
 		DataSchemaVersion:  1,
 	},
 }
